@@ -1,6 +1,6 @@
 # BLEMMA — gaze-board (視線の板)
 
-> **Built with Claude: Japan 2026** (2026-11-02 12:00 〜 11-08 20:00 JST) の作品。この README は公開時点 (11/2) の仕様 = **設計 (docs/design.md) に書いた予定**です。code は 11/2 12:00 以後に書き、作った物に合わせて期間中にこの README を直します。
+> **Built with Claude: Japan 2026** (2026-11-02 12:00 〜 11-08 20:00 JST) の作品。この README は repo を作った時点 (2026-11-04) の仕様 = **設計 (docs/design.md) に書いた予定**です。code は 11/2 12:00 以後に書き、作った物に合わせて期間中にこの README を直します。
 
 ## 一言で
 
@@ -53,11 +53,11 @@ claude --settings examples/settings.blemma.json --mcp-config examples/mcp.blemma
 
 ## 工程
 
-11/2 公開と初日の確かめ → 11/3 板の server と権限の口 → 11/4 質問の口・MCP の口・`ask_board` → 11/5 スイッチと携帯と実機の検収 → 11/6 README と外の目 → 11/7 デモの録り → 11/8 提出 (1 日 1 皿・毎日 push)。
+11/4 repo を作って初日の確かめ → 11/4〜11/5 板の server と頁・4 本の口・`ask_board`・スイッチと携帯・実機の検収 → 11/6 README と外の目 → 11/7 デモの録り → 11/8 提出 (毎日 push)。
 
 ## 期間前に書いた文書について
 
-`docs/` の設計の文書 (`design.md`・`research_official_docs.md`) は、ハッカソンの開始 (2026-11-02 12:00 JST) より前の 2026-10-14〜11-01 に書いた物です (各 file の冒頭に日付)。開始前には code を 1 行も書いていません。BLEMMA の実装・試験・実行用の設定は 2026-11-02 12:00 JST 以後に新しく作ります。この repo の git の記録で区別できます = 最初の commit (tag `pre-event-docs`) が期間前の文書の区切りで、実装は以後の履歴に入ります (以後の履歴には文書の直しも含みます)。公開時点 (11/2) では実装は未着手です。期間前の文書を含めることは、主催者に事前に確認しました (2026-11-01)。
+`docs/` の設計の文書 (`design.md`・`research_official_docs.md`) は、ハッカソンの開始 (2026-11-02 12:00 JST) より前の 2026-10-14〜11-01 に書いた物です (各 file の冒頭に日付)。開始前には code を 1 行も書いていません。BLEMMA の実装・試験・実行用の設定は 2026-11-02 12:00 JST 以後に新しく作ります。この repo の git の記録で区別できます = 最初の commit (tag `pre-event-docs`) が期間前の文書の区切りで、実装は以後の履歴に入ります (以後の履歴には文書の直しも含みます)。tag `pre-event-docs` の時点では実装は未着手です。期間前の文書を含めることは、主催者に事前に確認しました (2026-11-01)。
 
 ## 文書
 
@@ -80,7 +80,7 @@ Three points: (1) **pre-emptive choices** — the agent prepares 2–6 options v
 
 Safety: official hooks only; if the board is absent or times out, the hook returns nothing and Claude Code falls back to its normal prompt; **never auto-allow**; 127.0.0.1 only, per-launch token, logs keep only the choice, the time and counts.
 
-**Pre-event documents:** the design documents under `docs/` were written before the hackathon started (Oct 14 – Nov 1, 2026; each file is dated). Nothing but documents existed before Nov 2, 12:00 JST — no code. All code, tests and config are created after the start, and the git history keeps them apart (the first commit, tagged `pre-event-docs`, is the documents-only baseline; the implementation lands in later commits, which may also update the documents). At the time of publishing (Nov 2) no implementation exists yet. Including the pre-event documents was confirmed with the organizers beforehand (Nov 1, 2026).
+**Pre-event documents:** the design documents under `docs/` were written before the hackathon started (Oct 14 – Nov 1, 2026; each file is dated). Nothing but documents existed before Nov 2, 12:00 JST — no code. All code, tests and config are created after the start, and the git history keeps them apart (the first commit, tagged `pre-event-docs`, is the documents-only baseline; the implementation lands in later commits, which may also update the documents). At the `pre-event-docs` tag, no implementation exists yet. Including the pre-event documents was confirmed with the organizers beforehand (Nov 1, 2026).
 
 ---
 
