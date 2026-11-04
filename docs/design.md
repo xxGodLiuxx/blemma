@@ -85,6 +85,7 @@
 - Bash = `command` を**省かず全部** (尾に危ない物を隠させない・長ければ札の中で巻物にする) + `description`。
 - Edit = `file_path` と `old_string` → `new_string` (長ければ折りたたむ)。Write = `file_path` と頭の 40 行。
 - MCP の道具 = `mcp__<server>__<tool>` と入力の JSON (2,000 字まで・超えたら「続きは端末で」)。他の道具 = 入力の JSON。
+- 実装で決めた事 (11/4): `command` を持つ道具 (Bash・PowerShell など) は Bash と同じ扱い・`command` の外の入力 (timeout・sandbox の旗など) も隠さず JSON で添える。Edit の old / new と Write の頭は 6,000 字まで (切ったら見出しに「先頭 n 字・全 m 字・続きは端末で」)。見えない字 (制御・書字方向など) は `⟨U+XXXX⟩` にして見せる (表示だけ・返す JSON は変えない)。札の payload が 256 KiB を超えたら、command を切らずに札を出さない (無出力 = 端末へ)。
 
 返す JSON:
 ```json
@@ -94,18 +95,19 @@
 - **欄の契約は裏取りの定義で確定** = `decision` の中に `behavior` (`allow` / `deny`)。allow だけ `updatedInput` と `updatedPermissions` (配列)、deny だけ任意の `message` ("tells Claude why the permission was denied") と `interrupt` ("if `true`, stops Claude") (裏取り §1.5【断片】)。公式頁に無いのは deny の**完成した例**だけで、契約は分かっている。`updatedPermissions` の 1 件の例 = `{"type":"setMode","mode":"acceptEdits","destination":"session"}` (hooks-guide【raw】・裏取り §1.5)。
 - 許可 (今回) = 上の通り。
 - 次から訊かない = 同じ allow に `"updatedPermissions": [ <選んだ suggestion を入力から逐語で写す> ]`。
-- 拒否 = `"decision": { "behavior": "deny", "message": "<定型の理由>", "interrupt": false }` (Claude は理由を見て別の道を探す)。定型 3 つ = 「別のやり方でお願いします」「いまは要りません」「先に説明してください」(v1 の判断・頁の言葉に合わせて英語も)。
-- 作業を止める = `"decision": { "behavior": "deny", "message": "BLEMMA: the user stopped the work", "interrupt": true }` (Claude を止める = 作業全体を止められるのはこの口だけ・§5.4)。
+- 拒否 = `"decision": { "behavior": "deny", "message": "<定型の理由>", "interrupt": false }` (Claude は理由を見て別の道を探す)。定型 3 つ = 「別のやり方でお願いします」「いまは要りません」「先に説明してください」(v1 の判断・頁の言葉に合わせて英語も)。実装の `message` = `BLEMMA: the user denied this on the board: <日本語> / <英語>` (hook の定型の表から組む・板の文字は使わない)。
+- 作業を止める = `"decision": { "behavior": "deny", "message": "BLEMMA: the user stopped the work", "interrupt": true }` (Claude を止める = 作業全体を止められるのはこの口だけ・§5.4)。実機では Claude に渡るのは `message` でなく定型の「STOP …」の文 (§10.3)。
 
 「次から訊かない」の字 (v1.1 の判断・保存先の種 = 裏取り §1.5【断片】):
 - 規則を足す suggestion (`addRules`) = 「次から訊かない: Bash(git commit …) — <保存期間>」。保存期間の字 = `session`「このセッションの間」/ `localSettings`「この project・この機械で恒久」/ `projectSettings`「この project の共有の設定で恒久 (commit されうる)」/ `userSettings`「全部の project で恒久」。
 - モードを替える suggestion (`setMode`) = 別の字「モードを替える: 編集を訊かない (acceptEdits) — このセッションの間」(規則を 1 つ足す釦と同じ字にしない)。**`bypassPermissions` へ移す物は釦にしない** (一押しで確認が全部消える物は板で出さない)。
 - `replaceRules`・`removeRules`・`addDirectories`・`removeDirectories` = 中身を逐語で出す (例「このフォルダも許す: <路>」)。複数あれば 2 件まで (3 件目からは端末で)。
 - #91216【報告】= suggestion が端末の行と一致しない事がある → 板は suggestion の中身そのものを見せ、それをそのまま写す。
+- 板に出す列は hook が絞る (11/4) = 公式の 6 種だけ・`bypassPermissions` へ移す物を除き・先頭から 2 件。板の答えの番号はこの列で引き、その要素を `updatedPermissions` へ逐語で写す。
 
 **板に出さない物** (script が無出力で返す・v1.1 の判断):
 - `tool_name` が `ExitPlanMode` = allow が効かない回帰が open で 3 件 (§5.5)。計画の承認は端末で。
-- `tool_name` が `AskUserQuestion` = 質問の口を PreToolUse で答える間 (§2.2 の排他)。
+- `tool_name` が `AskUserQuestion` = 質問の口を PreToolUse で答える間 (§2.2 の排他)。PreToolUse が決めない (無出力の) 時は PermissionRequest も `AskUserQuestion` で呼ばれる = この除外は要る (§10.3 で確定)。
 - `permission_mode` が `plan` = plan mode では ExitPlanMode 以外の編集に hook の allow が効かない (permissions.md "Hook approvals in plan mode"【raw】・裏取り §1.6)。
 - 除外の表 = 上の定数 + 環境変数 `BLEMMA_TERMINAL_ONLY` (カンマ区切りの道具の名)。利用者が端末で答えたい道具 (下の `requiresUserInteraction` の道具など) をここに書く。
 
@@ -135,8 +137,9 @@
       "answers": { "Which framework?": "React" } } } }
 ```
 - `updatedInput` = 元の `tool_input` を丸ごと写して `answers` を足す (v1 の判断)。`answers` は "Maps question text to the selected option label." = 鍵は `question` の文そのまま (hook が自分の stdin の写しから組む・板からは番号だけ・§3.3)。
-- `multiSelect` = label を ", " でつないだ 1 本の文 (SDK の頁は「label の配列か ", " 区切り」【raw】・CLI の hook で通る形は未確認 = 初日に、カンマを含む label も確かめる)。通らなければ複数選択の問いは板に出さない (§10.2)。
-- この質問に答えない = `"permissionDecision": "deny"` + `"permissionDecisionReason": "BLEMMA: the user did not answer this question"` (欄名 `permissionDecisionReason` はこの裏取りに無い = 初日に確かめる)。理由の欄が使えなくても deny の意味 (この道具の呼び出しを断る) は変わらない = **作業全体の停止ではない** (Claude は続けうる・§5.4)。
+- `multiSelect` = label を ", " でつないだ 1 本の文 (SDK の頁は「label の配列か ", " 区切り」【raw】)。実機では配列も通ったが、Claude にはどちらも ", " で繋いだ文に見える = label にカンマがあると区切りが曖昧 (§10.3)。実装は文の形。
+- この質問に答えない = `"permissionDecision": "deny"` + `"permissionDecisionReason": "BLEMMA: the user did not answer this question"` (欄名は実機で効いた = Claude に「PreToolUse:AskUserQuestion hook error: <理由>」で届き、作業は続く・§10.3)。deny の意味は「この道具の呼び出しを断る」= **作業全体の停止ではない** (Claude は続けうる・§5.4)。
+- 板で描けない形 (11/4) = 問いの文が重なる (`answers` の鍵がぶつかる)・問いの数 1〜4 / 選択肢の数 2〜4 の外・`label` が空か文でない → 無出力で端末へ。
 - `permissionDecision` の 4 値 = `allow`・`deny`・`ask`・`defer` (`defer` は `-p` だけ)。複数の hook が食い違えば deny > defer > ask > allow (裏取り §1.6・SDK【raw】)。hook の `allow` は deny / ask の規則を超えない (permissions.md【raw】)。
 
 **経路の排他** (v1.1 の判断): 提出版の主 = PreToolUse。その間 permission.py は `AskUserQuestion` を除く。初日に PreToolUse で答えられず、PermissionRequest の allow + `updatedInput` で答えられた時は、PreToolUse の登録を外すのと同時に permission.py の除外も外し、PermissionRequest の側で答える (両方に同時に登録しない = 札が二重にならない)。両方とも答えられなければ ask.py を外す (§10.2)。
@@ -160,18 +163,21 @@
 { "hookSpecificOutput": { "hookEventName": "Elicitation",
     "action": "accept", "content": { "choice": "2" } } }
 ```
-- `hookEventName` を入れるのは他の口と揃えた形 = 要るかは初日に確かめる。
+- `hookEventName` は**必須** (省くと検証で出力ごと捨てられ、`-p` では cancel になる・§10.3)。
 
 欄 (`requested_schema.properties`) の描き方 (MCP の form は "flat objects with primitive properties only"・裏取り §2.2【raw】・v1 の判断):
 
 | 欄の形 | 板 |
 |---|---|
 | `enum`、または `oneOf` の [{`const`,`title`}] (単一選択) | 選択肢ごとに釦 (字は `title`、無ければ値) |
-| `type: array` + `items` の `enum` / `anyOf` (複数選択) | 印の付く釦 + 「送る」 |
+| `type: array` + `items` の `enum` / `anyOf` (複数選択) | 印の付く釦 + 「送る」(`minItems` が 2 以上・`maxItems` が選択肢の数より少ない欄は板で守れない = 描けない欄) |
 | `boolean` | 2 釦 (はい / いいえ・欄の `title` を問いに) |
-| `integer` / `number` で `minimum`〜`maximum` が 10 個以内 | 数の釦 |
-| `string` (enum なし)・幅の広い数 | `default` が在れば「既定の値で: <値>」の釦 1 つ (候補の釦)、無ければ「端末で答える」だけ (板で文字は書かない) |
+| `integer` / `number` で `minimum`〜`maximum` が 10 個以内 | 数の釦 (**提出版の外** = 描けない欄の扱い) |
+| `string` (enum なし)・幅の広い数 | `default` が在れば「既定の値で: <値>」の釦 1 つ (候補の釦)、無ければ「端末で答える」だけ (板で文字は書かない) (**提出版の外** = 描けない欄の扱い) |
+| ask_board の「ほかの答え」(const `"other"` + 任意の書く欄 `other_text`・§2.5) | 「ほかの答え」は端末で答える釦 (押すと無出力)・`other_text` は板に出さない |
 | 上のどれでもない・欄が 7 つ以上 | 札を出さず無出力 (端末へ) |
+
+- 描けない欄 (11/4 の実装): 必須 (`required`) なら札ごと無出力で端末へ・任意なら板では空のまま (`content` に入れない・書きたい時は「端末で答える」)。1 欄の選択肢が 13 個以上も描けない欄。欄の数は `properties` の数で数える。
 
 - `default` は釦に印を付けるだけで、押すまで送らない。`required` の欄が埋まるまで「送る」を出さない。
 - `mode` が `url` = 板では答えない (`accept` を返すと dialog が出ず URL は開かない・裏取り §1.7【raw】) → 無出力で端末へ。Notification の `elicitation_url_dialog` で板は光るだけ (§2.4)。
