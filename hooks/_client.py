@@ -39,6 +39,8 @@ notify) と、要れば `mcp/blemma_mcp.py` が同じ関数を呼ぶ。設計 = 
             _client.debug(f"hook の例外: {type(e).__name__}")
         sys.exit(0)
 
+上の `__main__` の 4 行は `_client.run_hook(main)` 1 行でもよい (中断と stdout の切断も exit 0 にする)。
+
 終わり方まで知りたい時は `ask_detail()` = `(end, choice)` を使う。`end` は
 `answered` (choice あり) / `released` (端末で答える) / `expired` / `disconnected` / `closed` /
 `no_board` / `busy` (待ちが満杯) / `refused` / `timeout` / `invalid` / `error` のどれか。
@@ -111,13 +113,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 # client だけが持つ数 (残りの数は board/server.py の Limits = §3.4 が持ち、/ask の返りで来る)
 ASK_GIVEUP_SEC = 2.0        # POST /ask を諦める秒 (= Limits.ask_giveup)
 NOTIFY_GIVEUP_SEC = 1.0     # POST /notify を諦める秒 (§2.4)
 MAX_DEADLINE_SEC = 3600.0   # server が返す期限の正気の上限 (超える・負 = 壊れた返り)
 MAX_RESPONSE_BYTES = 1_000_000
+MAX_PAYLOAD_BYTES = 256 * 1024   # 札の payload の上限 (ensure_ascii の JSON の bytes・上の docstring)
 
 KINDS = ("permission", "question", "elicitation")
 
@@ -131,6 +134,7 @@ DENY_REASONS = (
 
 RUN_FILE_ENV = "BLEMMA_RUN_FILE"   # run.json の路を差し替える (試験・特別な置き方の時だけ)
 DEBUG_ENV = "BLEMMA_DEBUG"
+TERMINAL_ONLY_ENV = "BLEMMA_TERMINAL_ONLY"   # 板に出さず端末で答える道具の名 (カンマ区切り・§2.1)
 
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # proxy を通さない
 
@@ -162,6 +166,46 @@ def emit(obj: Any) -> None:
     """公式の JSON を 1 個だけ stdout へ書く (ASCII だけ = Windows の cp932 でも壊れない)。"""
     sys.stdout.write(json.dumps(obj, ensure_ascii=True))
     sys.stdout.flush()
+
+
+def run_hook(main: Callable[[], Any]) -> None:
+    """hook の入口。main() を走らせ、何があっても (例外・中断・stdout の切断) exit 0 で終わる (§2.0)。
+
+    main() の途中の例外は無出力のまま (`emit` は最後の 1 回だけ = その前の例外では何も出ない)。
+    stdout が切れていた (BrokenPipe) 時は、終わりの flush で騒がないよう stdout を空の行き先へ付け替える。
+    """
+    try:
+        main()
+    except BaseException as e:      # KeyboardInterrupt・SystemExit も含めて
+        debug(f"hook の例外: {type(e).__name__}")
+    try:
+        sys.stdout.flush()
+    except BaseException:
+        try:
+            fd = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(fd, sys.stdout.fileno())
+        except BaseException:
+            pass
+    sys.exit(0)
+
+
+def payload_fits(payload: Any) -> bool:
+    """payload が札にできる大きさか (ensure_ascii の JSON で MAX_PAYLOAD_BYTES 以下)。
+
+    超える札は出さない = hook は無出力で端末へ (Bash の command は切らない約束なので、切らずに諦める)。
+    """
+    try:
+        return len(json.dumps(payload, ensure_ascii=True)) <= MAX_PAYLOAD_BYTES
+    except (TypeError, ValueError):
+        return False
+
+
+def terminal_only(tool_name: Any) -> bool:
+    """道具の名が環境変数 BLEMMA_TERMINAL_ONLY (カンマ区切り) に在るか = 板に出さず端末で答える (§2.1)。"""
+    if not isinstance(tool_name, str) or not tool_name:
+        return False
+    names = os.environ.get(TERMINAL_ONLY_ENV, "")
+    return tool_name in {n.strip() for n in names.split(",") if n.strip()}
 
 
 def run_file_path(run_file: Any = None) -> Path:
