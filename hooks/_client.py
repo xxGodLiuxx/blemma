@@ -200,6 +200,10 @@ class _Connection(http.client.HTTPConnection):
         except BaseException:
             sock.close()
             raise
+        try:                         # 標準の connect と同じ (見出しと本文の 2 回の送りで ACK を待たない)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
         self.sock = sock
 
 
