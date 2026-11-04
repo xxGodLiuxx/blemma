@@ -653,6 +653,36 @@ v1.2 = 締切が 11/8 20:00 (参加者ガイド・10/31) なので v1.1 の 8 �
 | multiSelect の答えの形が通らない | 複数選択の問いは板に出さない (端末へ) | — |
 | `--settings` / `--mcp-config` が効かない | 旗で足す道 | 隔離したデモ用の project の設定で成立させる (利用者の全体の設定は触らない) |
 
+### 10.3 初日の確かめの結果 (2026-11-04・実機 = Claude Code v2.1.318)
+
+> 使い捨ての試し (repo の外) = 固定の答えを返す試しの hook 1 本 (4 つの口)・最小の MCP の種 (`ask_board` の頭・2025-11-25)・hooks を §7.2 の形で配線した試しの project。`claude -p` (stream-json と debug の log) と、実の対話の `claude` (端末の画面を文字で読んだ) で測った。Windows 11・Python 3.13。§10 の見出しの v2.1.314 から版が進んでいる。判定は測った分だけ。
+
+| # | 判定 | 根拠 |
+|---|---|---|
+| 1 権限の口 | 成立 | `allow` で Edit・Bash が通る / `deny` + `message` = Claude は理由の文を受けて続ける / `deny` + `interrupt: true` = Claude が止まる (`-p` で測った・Claude に渡るのは `message` でなく定型の「STOP …」の文・result は `error_during_execution`) / `setMode acceptEdits (session)` = 2 回目から hook が呼ばれない / `addRules` (`Bash(git commit *)`) = `destination: session` なら 2 回目から呼ばれない・`localSettings` は file に書かれるが、設定の源に `local` が無い起こし方ではその回に効かない (下の発見 2)。日本語を含む Edit・Bash の入力は UTF-8 で解けた。hook が待つ間も端末の dialog は同時に出る (Edit・Bash・PermissionRequest に来た AskUserQuestion)。端末で先に答えた時は §12.3 の 1 |
+| 2 質問の口 | 成立 | PreToolUse の `allow` + `updatedInput` で、2 問 (4 択と multiSelect) を 1 回の呼び出しで、2 択を別の回で答えられた (2 問の回に Claude が受けた文 = `"どの果物にしますか?"="みかん", "どの色を使いますか? (複数可)"="青, 濃い, 緑"`)。待つ間は質問の dialog が出ず、spinner の行に `statusMessage` (「BLEMMA: waiting on the board…」) が出る。`deny` + `permissionDecisionReason` = Claude に「PreToolUse:AskUserQuestion hook error: <理由>」で届き、作業は続く。PermissionRequest の道は要らない |
+| 3 MCP の口 | 成立 | 種が 2025-11-25 で initialize に答え、Claude Code は `elicitation: {form: {}, url: {}}` を宣言した。`accept` + `content` / `decline` / `cancel` が `ask_board` の戻り (§2.5 の表) になった。**`hookEventName` は必須** (省くと検証で出力ごと捨てられ、`-p` では cancel になる)。待つ間は form が出ず、「Calling blemma…」と spinner の `statusMessage` だけ。subagent の中からの `ask_board` も hook に来た (ただし Elicitation の stdin に `agent_id`・`agent_type` は無い) |
+| 4 退化 | 成立 (対話) | 閉じた port への POST・run.json なし・期限 20 秒の無出力で、3 つの口とも端末のいつもの dialog・質問・form に戻り、端末の答えが通った。Windows では閉じた 127.0.0.1 の port への接続がすぐには断られず、hook の諦め (2 秒) まで掛かった (run.json が無い時は即時)。`-p` の無出力は拒否 (権限)・cancel (MCP) になる = 退化は対話でだけ確かめられる |
+| 5 起動 | 成立 | `--setting-sources project` (か空の `""`) + `--settings <file>` + `--strict-mcp-config --mcp-config <file>` で、走った hook は BLEMMA の分だけ・MCP は `blemma` だけ (debug の log)。作り手の個人の plugin は入らず (入るのは Claude Code 同梱の plugin だけ)、対話の端末の帯も Claude Code 本体の表示だけだった。`--settings` だけ (user の設定も読む既定) は走らせていない = 公式 doc の "Hook entries merge across settings levels rather than replacing each other" で混ざる。`CLAUDE_CONFIG_DIR` は名を公式 doc で確かめた (その dir での login が要るので走らせていない) |
+
+**§12.2 の 7 件**: 1 成立 (4 つの口とも UTF-8) / 2 上の表の 1〜3 (権限 = dialog が同時に出る・`statusMessage` は画面に出ない / 質問と MCP = dialog も form も出ず、`statusMessage` が spinner の行に出る) / 3 成立 (", " で繋いだ文字列も配列も通る。Claude に見えるのはどちらも ", " で繋いだ文字列 = label にカンマがあると区切りが曖昧) / 4 成立 / 5 要る / 6 成立 (改行区切り・`mcpServers` の `command` + `args` + `env` を `--mcp-config` で渡した) / 7 成立。
+
+**§12.3 の 5 件**:
+1. 端末の先着は**答えの種で分かれる** = 権限の dialog で許可の側 (Yes) を選ぶと hook は止められず最後まで走る (遅れた答えは効かない = (b))。No (turn を止める) では hook が `cancelled` で殺される (= (a))。質問と MCP の口は待つ間に端末の dialog が無く、端末でできるのは Esc (中断) だけ = 殺される (a・質問の口で測った・MCP の口も同じ見込み)。→ §3.7 の (a) と (b) を両方作る。
+2. 質問の道 = PreToolUse (主のまま)。PreToolUse が決めないと PermissionRequest も `AskUserQuestion` で呼ばれる = §2.1 の除外は要る。
+3. 自作の server = 2025-11-25 で通った・subagent の中からの問いも通った。
+4. 未確定 (その印の道具では試していない)。PermissionRequest の `mcp_server` は `{"name", "source"}` だけで、道具の `_meta` は来ない = stdin から見分ける道は無い見込み → 除外の表と「渡しました」の文 (§2.1・§3.5) のまま。
+5. 無い = PermissionRequest の stdin に `tool_use_id` が来ない (`prompt_id` は turn の id)。
+
+**§10.2 で削る物 = `/resolve` (作らない)**。理由 = 許可の側の端末の答えでは hook が止まらず、1 対 1 の照合の鍵も無い。古い権限の札は「端末で答えた・閉じる」で人が閉じ、`--perm-wait` を縮める (§3.7 (b))。他の行 (ask.py・ask_board・elicitation.py・multiSelect・旗で足す道) は成立したので削らない。
+
+**初日に出た、本文に響く発見** (§2・§3.2・§7.2・§9 の本文は以後の皿で直す):
+1. **v2.1.318 の対話の既定の mode は auto** (起動の画面に "Auto mode is now Claude Code's default permission mode.")。auto のままだと Edit は PermissionRequest を呼ばずに通った = 板の権限の札が出ない。→ 雛形・README・デモの起動の行に `--permission-mode default` を足す (端末の帯は「manual mode on」)。
+2. 「次から訊かない」の `addRules` (`destination: localSettings`) は、起こし方の設定の源に `local` が無いと、その回に効かない (file には書かれる)。→ 隔離して起こす形は `--setting-sources project,local`。
+3. project の `.claude/settings.json` の `permissions.allow` (`mcp__blemma__ask_board`) は、信頼の確認を通るまで無視される (`-p` の警告・対話の信頼の確認に "This folder pre-approves 1 tool permission")。`--settings` で渡した `permissions.allow` は信頼の前でも効いた。
+4. 待つ間の端末: 権限の口では `statusMessage` は画面に出ない (dialog が前に出る)・質問と MCP の口では spinner の行に出る。端末の form で `ask_board` に答えるのは、この試しの操作で 5 打鍵 (→ ↓ Space ↓ Enter)。
+5. stdin の欄: `effort` は object (`{"level": …}`)・`scratchpad_dir` は対話でだけ来る・Elicitation には subagent の中からでも `agent_id`・`agent_type` が来ない (札の「出どころ」に `agent_type` を出せるのは権限の口だけ)。
+
 ---
 
 ## 11. 決め
