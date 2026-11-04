@@ -280,6 +280,69 @@ def test_answer_received_after_own_deadline_is_none(tmp_path, monkeypatch):
     assert C.ask_detail(HOOK_IN, "permission", PERM, run_file=p) == ("timeout", None)
 
 
+@pytest.mark.parametrize("code", [302, 307])
+@pytest.mark.parametrize("where", ["/ask", "/wait"])
+def test_redirect_is_not_followed(tmp_path, where, code):
+    """転送 (3xx) は追わない = 判断なし・token の見出しは別の宛先 (別の port) へ渡らない。"""
+    seen = []
+
+    class Target(BaseHTTPRequestHandler):            # 別の port = 何を訊かれても答え (allow_once) を返す
+        def log_message(self, *a):
+            pass
+
+        def _reply(self):
+            seen.append((self.command, self.path, self.headers.get("X-Blemma-Token")))
+            raw = json.dumps({"id": "t", "hard_deadline_in": 5, "wait_giveup": 1,
+                              "state": "answered", "answer": {"type": "allow_once"}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):
+            self._reply()
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self._reply()
+
+    target = _serve(Target)
+    loc = f"http://127.0.0.1:{target.server_address[1]}{where}"
+
+    class Source(BaseHTTPRequestHandler):            # run.json の板 = where で転送を返す
+        def log_message(self, *a):
+            pass
+
+        def _redirect(self):
+            self.send_response(code)
+            self.send_header("Location", loc + ("?id=t" if where == "/wait" else ""))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if where == "/ask":
+                return self._redirect()
+            raw = json.dumps({"id": "abc", "hard_deadline_in": 5, "wait_giveup": 1}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):
+            self._redirect()
+
+    source = _serve(Source)
+    p = tmp_path / "run.json"
+    p.write_text(json.dumps({"port": source.server_address[1], "token": "x"}), encoding="utf-8")
+    try:
+        end, choice = C.ask_detail(HOOK_IN, "permission", PERM, run_file=p)
+        assert choice is None and end == ("refused" if where == "/ask" else "timeout")
+        assert seen == []                            # 2 つ目の宛先には何も (token も) 届かない
+    finally:
+        _stop(source, target)
+
+
 def test_bad_kind_is_none(tmp_path):
     assert C.ask_detail(HOOK_IN, "plan", {}, run_file=tmp_path / "x") == ("invalid", None)
 
