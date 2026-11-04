@@ -316,10 +316,17 @@
 ## 3. 答えが戻るまでの流れ = 板の server (`board/server.py`)
 
 ### 3.1 流れ
-Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`POST /ask` → `GET /wait` の long-poll で待つ) → 板の server (127.0.0.1・待ち行列) → 板の頁 (`GET /pending` の long-poll で札を受ける → 人が選ぶ → `POST /answer`) → server が取り消しの猶予を持つ → hook の `GET /wait` に答え → hook が自分の stdin の写しから公式の JSON を組んで stdout へ → Claude Code。札の終わりは §3.5 の 5 つのどれか 1 つに排他で決まる。
+Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`POST /ask` → `GET /wait` の long-poll で待つ) → 板の server (127.0.0.1・待ち行列) → 板の頁 (`GET /pending` の long-poll で札を受ける → 人が選ぶ → `POST /answer`) → server が取り消しの猶予を持つ → hook の `GET /wait` に答え → hook が自分の stdin の写しから公式の JSON を組んで stdout へ → Claude Code。札の終わりは §3.5 の 4 つ (11/4 = `resolved` は作らない) のどれか 1 つに排他で決まる。
 
 ### 3.2 起動と在処 (v1 の判断)
-- `python board/server.py [--port 8765] [--wait 300] [--perm-wait SEC] [--undo-ms 3000] [--allow-host NAME] [--no-browser] [--no-log]` で利用者が起こす (hook から自動では起こさない = 隠れた常駐を作らない)。数の意味と上限 = §3.4。起きたら頁を既定のブラウザで開く (`webbrowser`)。URL は `localhost` でなく `127.0.0.1` で出す (localhost は ::1 に引かれうる)。
+- **起こし方の 1 行** (11/4 の実装・`blemma.py`): `python blemma.py [--demo] [--small|--large] [--port PORT] [--keep-board] [--print-only] [--window-size W,H] [--window-position X,Y] [-- claude の引数]`。
+  1. 板を用意する = `board/state/run.json` の記録が 24 時間以内で、token つきの照会に板が答えれば、その板を使い回す (照会は札を作らず、見る人にも数えない)。居なければ `board/server.py --no-browser --port PORT` を裏で起こす (最長 10 秒待つ)。
+  2. 頁を開く = `--small` (既定) は Chrome / Edge の app モードの小窓 (`--window-size` 既定 480,360・`--window-position` 既定 = 画面の作業領域の右下・環境変数 `BLEMMA_WINDOW_SIZE` / `BLEMMA_WINDOW_POSITION` でも)。`--large` か、app モードが使えない環境 (Chrome / Edge が無い・画面の寸法が取れない) は既定のブラウザ。URL に `?mode=small|large` を付ける (頁の側は未対応 = §1)。
+  3. 設定を生成する = hooks 4 本と同梱の MCP の設定を `board/state/settings.generated.json`・`mcp.generated.json` に書く (§7.2 の形・路はこの repo の絶対路)。
+  4. claude を起こす = `claude --settings <生成> --mcp-config <生成> --permission-mode default` (`--demo` なら `--setting-sources project,local --strict-mcp-config` を足す = 個人の設定と MCP を混ぜない・§10.3 の 5) + `--` の後の引数。`--print-only` か claude が見つからない時は、起動の行を表示するだけ (Windows は PowerShell に貼れる形)。
+  5. claude が終わったら、自分で起こした板を止める (`--keep-board` で残す・使い回した板は止めない)。誤りの時も引数と例外の文は出さない (prompt や token つきの URL を含みうる)。
+- 子の process (板の server・hook・MCP server) は**本体の python** で起こす (venv の中なら `sys._base_executable`)。理由 = Windows の venv の `python.exe` は本体を孫として起こす転送役 = run.json の pid が子と合わず、hook の起動も 1 段遅い (実装の判断)。
+- 板だけを起こす時 (`blemma.py` も裏でこれを起こす) = `python board/server.py [--port 8765] [--wait 300] [--perm-wait SEC] [--undo-ms 3000] [--allow-host NAME] [--no-browser] [--no-log]` で利用者が起こす (hook から自動では起こさない = 隠れた常駐を作らない)。数の意味と上限 = §3.4。起きたら頁を既定のブラウザで開く (`webbrowser`)。URL は `localhost` でなく `127.0.0.1` で出す (localhost は ::1 に引かれうる)。
 - 起動ごとに token = `secrets.token_urlsafe(32)`。在処の file = `board/state/run.json` (`{"port":…, "token":…, "pid":…, "started":…}`・`board/state/` は .gitignore 済み・POSIX は 0600)。hook は自分の路から `../board/state/run.json` を読む (利用者の project の cwd に依らない)。file が無い・読めない = 板なし = 無出力。止まる時に消す (落ちて残っても、接続が断られて無出力になるだけ)。
 - port は既定 8765・使用中なら起動を断る (黙って別の port に移らない)。
 - 待ち受けは **127.0.0.1 だけ** (0.0.0.0・LAN の IP には bind しない)。`http.server.ThreadingHTTPServer` (`daemon_threads = True`)。札の状態は 1 つの錠の下で変える。
@@ -328,22 +335,24 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 
 | 口 | 呼び手 | 送る物 | 返り |
 |---|---|---|---|
-| `POST /ask` | hook | `kind` (permission / question / elicitation)・`from` (cwd の末尾の名・session の頭 6 字・agent_type)・`payload` (表示に要る物だけ) | `200` + `id` (札の一意の ID)・`hard_deadline` (§3.4) / `401` (token 違い) / `503` (待ちが上限を超えた → hook は無出力) |
-| `GET /wait?id=…` | hook | long-poll (server は最長 15 秒抱える・hook はすぐ呼び直す) | `state` = waiting / answered (+ `answer`) / released / expired / closed |
+| `POST /ask` | hook | `kind` (permission / question / elicitation)・`from` (cwd の末尾の名・session の頭 6 字・agent_type)・`payload` (表示に要る物だけ) | `200` + `id` (札の一意の ID)・`hard_deadline` (時刻)・`hard_deadline_in` (秒 = 555・§3.4)・`wait_giveup` (20)・`wait_hold` (15) / `400` (形が違う) / `401` (token 違い) / `503` + `no_viewer` (見る人なし・§3.4) か `queue_full` (待ちが上限を超えた) → hook は無出力 |
+| `GET /wait?id=…` | hook | long-poll (server は最長 15 秒抱える・hook はすぐ呼び直す) | `state` = waiting (+ `card` = 札の状態・`remaining`) / answered (+ `answer`) / released / expired / disconnected。答えを渡し終えた札と終わった札への再照会は closed・知らない id は `404` |
 | `POST /notify` | notify.py | `type`・`from`・`title`・`message` | `204` (待たない) |
-| `GET /pending?seq=N` | 頁 | long-poll (最長 25 秒・seq が進んだら返す) | `seq`・`card` (無ければ null・`id` と `state` と期限を含む)・`queue` (待ちの数)・`light`・`stats` |
-| `POST /answer` | 頁 | `id`・`seq` (描いた時の seq)・`choice` (下)・`by` (dwell / key / switch / touch / click)・`presses` (その札で押した数) | `200` + `undo_until` / `409` (札が shown でない・seq が古い・期限を過ぎた・先に決まった) |
-| `POST /undo` | 頁 | `id`・`by`・`presses` (猶予のうちだけ) | `200` / `409` |
-| `POST /resolve` | 観察の hook (`PostToolUse`・`PermissionDenied`・**提出版では登録しない**) | `session`・`event` (post_tool_use / permission_denied)・`key` (要求と 1 対 1 に結べる照合の鍵) | `200` + `closed` (id か null)・`reason` (none / ambiguous / no_key) |
-| `GET /`・`/static/…` | 頁 | 板の頁 (data を持たない) | token なしで返す |
+| `GET /pending?seq=N` | 頁 | long-poll (最長 25 秒・seq が進んだら返す) | `seq`・`card` (無ければ null・`id`・`kind`・`from`・`payload`・`state`・`view_seq`・`remaining`、deciding の時は `choice` と `undo_remaining`)・`queue` (待ちの数)・`last` (直前に終わった札の種と終わり)・`light`・`stats`・`undo_ms` |
+| `POST /answer` | 頁 | `id`・`seq` (= 札の `view_seq`)・`choice` (下)・`by` (dwell / key / switch / touch / click)・`presses` (まだ送っていない押しの数・§4.5) | `200` + `undo_ms`・`undo_remaining` / `409` + `ended` (終わった札・終わりの種つき)・`not_current`・`expired`・`not_shown`・`stale` / `400` (`bad_choice`) |
+| `POST /undo` | 頁 | `id`・`by`・`presses` (猶予のうちだけ) | `200` + `state` (shown・期限の後なら expired) / `409` (`not_undoable`) |
+| `POST /stats/reset` | 頁 | 空の object (11/4 の実装) | `204` (計を 0 に・§4.5) |
+| `POST /resolve` | 観察の hook (`PostToolUse`・`PermissionDenied`・**提出版では登録しない**) | `session`・`event` (post_tool_use / permission_denied)・`key` (要求と 1 対 1 に結べる照合の鍵) | **提出版では作らない** (11/4・§10.3 = 1 対 1 の鍵が無い) = 他の知らない口と同じ `404`。作るなら `200` + `closed` (id か null)・`reason` (none / ambiguous / no_key) |
+| `GET /`・`/static/…` | 頁 | 板の頁 (data を持たない) | token なしで返す (自分の file だけを許す CSP・`X-Frame-Options: DENY`) |
 
-- **choice = 番号だけ** (hook が自分の stdin の写しから文と公式の JSON を組む = 板が文を作り変えられない・`answers` の鍵が 1 字もずれない):
+- **choice = 種と番号だけ** (hook が自分の stdin の写しから文と公式の JSON を組む = 板が文を作り変えられない・`answers` の鍵が 1 字もずれない)。形は object = `{"type": …}` + 添字 (0 から・11/4 の実装):
   - permission = `allow_once` / `allow_always` + `suggestion` (何番目) / `deny` + `reason` (定型の何番目) / `stop` / `terminal`
   - question = `answer` + `picks` (問いごとの選んだ番号の列) / `skip` (この質問に答えない) / `terminal`
-  - elicitation = `accept` + `values` (欄の名 → const・真偽・数) / `decline` / `cancel` / `terminal`
+  - elicitation = `accept` + `picks` (欄ごとの選んだ番号の列・空のままの欄は `[]`) / `decline` / `cancel` / `terminal`。**値 (`values` = 欄の名 → const・真偽・数) は板でなく共通の client が自分の payload の写しから組む** (実装の判断 = v1.1 の「板が values を返す」より、板が値を 1 つも作らない形の方が安全)
   - hook は受け取った値を自分の入力 (選択肢の数・schema) と照らし、外れていれば無出力。
-- **`/answer` を受ける条件**: `id` が今出している札・札が shown・`seq` が札の今の表示と同じ・server の時計で期限の前。どれかが外れれば `409` (古い画面への押しは効かない・§4.2 の世代)。
-- **`/resolve` の採用の条件**: `key` が要求と 1 対 1 に結べる時だけ (初日に見つかった時・§3.7)。1 件だけ一致すれば閉じ、0 件・2 件以上・鍵なしは何もしない。
+- **`/answer` を受ける条件**: `id` が今出している札・札が shown・`seq` が札の `view_seq` と同じ・server の時計で期限の前。どれかが外れれば `409` (古い画面への押しは効かない・§4.2 の世代)。`view_seq` は札を出した時と取り消しで戻した時にだけ進む = 帯や待ちの数で進む全体の `seq` とは別 (実装の判断)。
+- **終わりは 4 つ** (answered・released・expired・disconnected・§3.5)。終わった札への `/answer` は `409` (+ `ended`)・`410` は返さない (11/4)。
+- **`/resolve` の採用の条件** (作るなら): `key` が要求と 1 対 1 に結べる時だけ (初日に見つかった時・§3.7)。1 件だけ一致すれば閉じ、0 件・2 件以上・鍵なしは何もしない。11/4 = 鍵が無いので作らない (§10.3)。
 - **token**: hook と頁は見出し `X-Blemma-Token` で送る。頁は URL の `#t=<token>` を読む (fragment は server へ送られない = 記録と referer に残りにくい)。`/` と `/static/…` の外は token が合わなければ `401`。
 - **Host の照合**: `Host` の名の部分 (port は問わない) が `127.0.0.1`・`localhost`・`--allow-host` で足した名でなければ `403` (DNS rebinding で外の頁から叩かれない)。CORS の見出しは出さない (外の頁の `fetch` は token の見出しで preflight に落ちる)。
 - 本文 (`payload`・`message`) は札が生きている間だけ記憶に持ち、閉じたら捨てる。server の記録 (`log_message`) は口の名と状態だけ。
@@ -356,14 +365,16 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 | 数 | 値 | 決まり |
 |---|---|---|
 | 待ち (`--wait`) | 既定 300 秒 (表示から) | 作成からの上限以下 |
-| 権限の札の待ち (`--perm-wait`) | 既定 = `--wait` | 縮小の時 (§10.2) に縮める (例 120 秒) |
+| 権限の札の待ち (`--perm-wait`) | 既定 = `--wait` (指定が無ければ `--wait` と同じ) | 縮小の時 (§10.2) に縮める (例 120 秒) |
 | 作成からの上限 | 540 秒 (定数) | = settings の hook の `timeout` 600 − 60 |
 | 表示の最小の残り | 30 秒 | 切っていれば表示しない |
 | 取り消しの猶予 (`--undo-ms`) | 既定 3,000 ms | 0〜5,000 ms・5,000 を超える値は起動を断る |
 | hook の自前の期限 (`hard_deadline`) | 作った時 + 540 + 5 + 10 = 555 秒 | settings の `timeout` 600 より 45 秒短い |
-| `POST /ask` / `GET /wait` の諦め | 2 秒 / 20 秒 | server は `/wait` を最長 15 秒抱える |
+| `POST /ask` / `GET /wait` の諦め | 2 秒 / 20 秒 | server は `/wait` を最長 15 秒抱える。`/ask` の 2 秒は繋ぐ所から受け終えるまでの総期限 = Windows では閉じた 127.0.0.1 の port への接続がすぐには断られず、この 2 秒まで掛かる (§10.3 の 4)。2 秒は client の側の数 (`hooks/_client.py`・server の `Limits` の値は写しで、試験が両方を照らす) |
+| `POST /notify` の諦め | 2 秒 | `hooks/notify.py` の 1 か所 (§2.4) |
 | 接続の終了の判定 | 最後の `/wait` が返ってから 5 秒 | 次の `/wait` が来なければ disconnected |
-| 待ちの上限 | 20 件 | 超えたら `503` → hook は無出力 |
+| 待ちの上限 | 20 件 | 超えたら `503` (`queue_full`) → hook は無出力 |
+| 見る人の判定 (11/4 の実装) | 30 秒 | 開いている `GET /pending` が無く、最後の返りから 30 秒を過ぎたら「見る人なし」(板の起動も「見た」と数える)。見る人なしの間は `/ask` に `503` (`no_viewer`) = hook は無出力で端末へ・待ちと表示の札は expired (決めた札は猶予を完走・§3.5)。`None` にすると判定しない (試験だけ・旗は無い) |
 
 - **settings の `timeout` を変える時は 3 つを一緒に直す**: 作成からの上限 (= `timeout` − 60)・hook の自前の期限 (= 上限 + 猶予の上限 5 秒 + 10 秒)・`--wait` の上限 (= 作成からの上限)。不等式 = `--wait` ≤ 上限 < 上限 + 15 < `timeout`。
 - hook の自前の期限 (と `/ask`・`/wait` の諦めの秒) は**受信の完了まで効く総期限** (単調時計) = 通信の無応答の時間 (読み書き 1 回の待ち) とは別。少しずつ返されても延びず、受け終えた後にも見直し、過ぎていれば答えでも判断なし (無出力)。
@@ -377,17 +388,18 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 | deciding | 期限の前に `/answer` を受けた (§3.3 の条件) | 「決まりました・取り消す (n)」 | waiting |
 | **answered** (終わり) | 猶予が過ぎ、hook の `/wait` へ答えを返し終えた | 「板の答えを Claude Code へ渡しました (端末の確認が続くことがあります)」 | 公式の JSON を組んで stdout・exit 0 |
 | **released** (終わり) | 「端末で答える」の猶予が過ぎ、hook へ返し終えた | 「端末で答えてください」 | 無出力・exit 0 |
-| **expired** (終わり) | 期限 (表示の前の失効を含む) | 「時間切れ。端末で答えてください」 | 無出力・exit 0 |
+| **expired** (終わり) | 期限 (表示の前の失効を含む)・**見る人なし** (§3.4 = 待ちと表示の札だけ・決めた札 (deciding) は猶予を完走して渡す・11/4 の実装) | 「時間切れ。端末で答えてください」 | 無出力・exit 0 |
 | **disconnected** (終わり) | どの途中の状態でも、最後の `/wait` から 5 秒、次の `/wait` が来ない | 「接続が終了しました。端末を確認してください」(deciding からなら「板の答えは届いていません」を足す) | (hook は居ない) |
-| **resolved** (終わり) | `/resolve` の 1 対 1 の一致 (採用した時だけ) | 「端末の側で終わりました」 | 残っていれば次の `/wait` で closed → 無出力 |
+| resolved (**作らない**・11/4) | `/resolve` の 1 対 1 の一致 (採用した時だけ) = 1 対 1 の鍵が無いので作らない (§10.3) = この終わりは来ない | (「端末の側で終わりました」= 頁の字だけ残る) | — |
 
+- **終わりは 4 つ** (11/4 の実装 = answered・released・expired・disconnected)。
 - **終わりは排他**: server の錠の下で最初に決まった 1 つだけが効き、後から来た出来事 (遅れた `/answer`・`/undo`・`/resolve`) は捨てて、状態の数だけ記録する。
 - answered は「hook へ渡した」までで、Claude Code が使ったかは分からない (端末の答えが先なら捨てられる) = 「許可されました」とは書かない。hook への書き込みが失敗したら disconnected。
 - disconnected は「端末で答えが出た」と書かない (通信の失敗・hook の異常な終わりと見分けられない)。
 
 ### 3.6 取り消しの猶予と優先の順
 - 頁が `POST /answer` → 札は deciding (猶予 = `--undo-ms`) → 全部の頁に「決まりました・取り消す (3)」 → 猶予のうちに `POST /undo` が来れば shown へ戻す → 来なければ猶予の後に hook の `/wait` へ返して answered (「端末で答える」なら released)。
-- = **1 答あたり猶予の分だけ遅れる** (既定 3 秒・0 にもできる)。server の側で持つ理由 = PC と携帯の 2 枚の頁が開いていても、決まった事が両方に同時に出る (2 枚で別々に押されて答えが 2 つにならない)。
+- = **1 答あたり猶予の分だけ遅れる** (既定 3 秒・0 にもできる)。server の側で持つ理由 = 2 枚の頁 (大きな頁と小窓・PC と携帯など) が開いていても、決まった事が両方に同時に出る (2 枚で別々に押されて答えが 2 つにならない)。
 - 優先の順 (上が勝つ):
   1. 期限の前に受けた答えは猶予を完走する (猶予の分だけ期限を越えてよい・最大 5 秒 = §3.4 の hook の自前の期限の内)。
   2. 猶予のうちの取り消し: 期限の前なら shown へ戻る (残りの時間はそのまま)・期限を過ぎていれば expired。
@@ -399,7 +411,10 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 - 端末で先に答えた時に Claude Code が hook の process を止めるかは**公式の文が無い** (【報告】#103115 が「早い方が勝つ」と書くのは AskUserQuestion の場合だけ・初日の確かめ 1)。
 - (a) **止められる**: hook の呼び直しが途絶え、5 秒で disconnected (「接続が終了しました。端末を確認してください」)。hook の process が殺されても (Windows の止め方では後始末が走らない) 呼び直しが途絶えるだけで閉じる。
 - (b) **止められない**: hook は待ち続け、札は期限まで残って次の札を塞ぐ。縮小 (§10.2) = 古い札は人が「端末で答えた・閉じる」(= 端末で答える と同じ動き = released・§4.3) で閉じる + 権限の札の待ちを縮める (`--perm-wait`)。
-- `/resolve` (§3.3) は、要求と 1 対 1 に結べる鍵が初日に見つかった時だけ作る。**指紋 (session_id + tool_name + tool_input) は 1 対 1 にならない** (同じ入力の要求が同じセッションで並ぶ・規則で自動で許された同じ呼び出しの PostToolUse も来る) = 指紋では閉じない。PermissionRequest の入力に `tool_use_id` は無い (裏取り §1.5)。
+- **11/4 の確定** (§10.3 の §12.3 の 1・実機): **答えの種で分かれる**。権限の dialog で許可の側 (Yes) を選ぶと、hook は止められず最後まで走る = 板の遅れた答えは効かない (= (b))。No (turn を止める) では hook が殺される (= (a))。質問と MCP の口は待つ間に端末の dialog が無く、端末でできるのは Esc (中断) だけ = 殺される (a)。→ (a) と (b) を両方作った:
+  - (a) = 呼び直しの途絶えで 5 秒の後に disconnected。
+  - (b) = 端末で許可した権限の札は板に残る = 人が「端末で答える」で閉じる (釦の下に常に「端末で答えた時も、これで閉じる」・§4.3)。端末で答えることが多い人には `--perm-wait` を縮める助言 (例 120 秒・README)。
+- `/resolve` (§3.3) は、要求と 1 対 1 に結べる鍵が初日に見つかった時だけ作る (11/4 = 見つからなかったので作らない)。**指紋 (session_id + tool_name + tool_input) は 1 対 1 にならない** (同じ入力の要求が同じセッションで並ぶ・規則で自動で許された同じ呼び出しの PostToolUse も来る) = 指紋では閉じない。PermissionRequest の入力に `tool_use_id` は無い (裏取り §1.5)。
 
 ### 3.8 記録と通信の範囲
 - `board/state/log-YYYY-MM-DD.jsonl` に 1 札 1 行 = `{"t":"<時刻>","kind":"permission","end":"answered","choice":"allow_once","sec":2.4,"by":"dwell","presses":1,"undo":0}`。道具の名・入力・問いの文・答えの文字は**書かない**。`--no-log` なら書かない。
@@ -483,7 +498,9 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 - 人が押した時だけ allow。時限・板なし・壊れた = 無出力 (判断を返さない)。allow を既定にする設定は作らない。
 - hook は stdout に JSON 1 個か空・exit 0・例外と通信の失敗は無出力・公式の JSON は hook が自分の入力から組む (§2.0・§3.3)。
 - 127.0.0.1 だけ・起動ごとの token (見出しで)・Host の照合・CORS なし (§3.3)。
-- 札ごとの一意の ID と、終わり 5 つの排他の確定・期限は表示から数え作成からの上限で抑える・「渡しました」と「許可されました」を分ける (§3.4〜§3.6)。
+- 札ごとの一意の ID と、終わり 4 つ (11/4 = `resolved` は作らない) の排他の確定・期限は表示から数え作成からの上限で抑える・「渡しました」と「許可されました」を分ける (§3.4〜§3.6)。
+- 頁がどこにも開いていない時は札を受けない (見る人の判定・§3.4 = hook は無出力で端末へ・待ちと表示の札は expired・決めた札は猶予を完走)。
+- 端末で先に許可の側を答えた権限の札は、hook が止められず遅れた板の答えは効かない = 人が「端末で答える」で閉じる・`--perm-wait` を縮める助言 (§3.7 (b))。
 - 札は 1 件ずつ・出どころを頭に・Bash の command は省かない・「次から訊かない」は対象と保存期間を見せ、モードの切り替えは別の字・`bypassPermissions` へ移す suggestion は出さない (§2.1)。
 - 取り消しは hook へ返す前・4 つの入力とも・表示の世代が変わったら滞留と選択を解く (§3.6・§4.2)。
 - 記録は選択と時刻と数だけ・BLEMMA は外のサービスへ自動では送らない (§3.8)。
