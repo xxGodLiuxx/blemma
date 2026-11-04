@@ -323,8 +323,8 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
   1. 板を用意する = `board/state/run.json` の記録が 24 時間以内で、token つきの照会に板が答えれば、その板を使い回す (照会は札を作らず、見る人にも数えない)。居なければ `board/server.py --no-browser --port PORT` を裏で起こす (最長 10 秒待つ)。
   2. 頁を開く = `--small` (既定) は Chrome / Edge の app モードの小窓 (`--window-size` 既定 480,360・`--window-position` 既定 = 画面の作業領域の右下・環境変数 `BLEMMA_WINDOW_SIZE` / `BLEMMA_WINDOW_POSITION` でも)。`--large` か、app モードが使えない環境 (Chrome / Edge が無い・画面の寸法が取れない) は既定のブラウザ。URL に `?mode=small|large` を付ける (頁の側は未対応 = §1)。
   3. 設定を生成する = hooks 4 本と同梱の MCP の設定を `board/state/settings.generated.json`・`mcp.generated.json` に書く (§7.2 の形・路はこの repo の絶対路)。
-  4. claude を起こす = `claude --settings <生成> --mcp-config <生成> --permission-mode default` (`--demo` なら `--setting-sources project,local --strict-mcp-config` を足す = 個人の設定と MCP を混ぜない・§10.3 の 5) + `--` の後の引数。`--print-only` か claude が見つからない時は、起動の行を表示するだけ (Windows は PowerShell に貼れる形)。
-  5. claude が終わったら、自分で起こした板を止める (`--keep-board` で残す・使い回した板は止めない)。誤りの時も引数と例外の文は出さない (prompt や token つきの URL を含みうる)。
+  4. claude を起こす = `claude --settings <生成> --mcp-config <生成> --permission-mode default` (`--demo` なら `--setting-sources project,local --strict-mcp-config` を足す = 個人の設定と MCP を混ぜない・§10.3 の 5) + `--` の後の引数。`--print-only` か claude が見つからない時は、起動の行を表示するだけ (Windows は PowerShell に貼れる形・板を残すには `--keep-board` も付ける)。
+  5. claude が終わったら (`--print-only` なら表示の後に)、自分で起こした板を止める (`--keep-board` で残す・使い回した板は止めない)。誤りの時も引数と例外の文は出さない (prompt や token つきの URL を含みうる)。
 - 子の process (板の server・hook・MCP server) は**本体の python** で起こす (venv の中なら `sys._base_executable`)。理由 = Windows の venv の `python.exe` は本体を孫として起こす転送役 = run.json の pid が子と合わず、hook の起動も 1 段遅い (実装の判断)。
 - 板だけを起こす時 (`blemma.py` も裏でこれを起こす) = `python board/server.py [--port 8765] [--wait 300] [--perm-wait SEC] [--undo-ms 3000] [--allow-host NAME] [--no-browser] [--no-log]` で利用者が起こす (hook から自動では起こさない = 隠れた常駐を作らない)。数の意味と上限 = §3.4。起きたら頁を既定のブラウザで開く (`webbrowser`)。URL は `localhost` でなく `127.0.0.1` で出す (localhost は ::1 に引かれうる)。
 - 起動ごとに token = `secrets.token_urlsafe(32)`。在処の file = `board/state/run.json` (`{"port":…, "token":…, "pid":…, "started":…}`・`board/state/` は .gitignore 済み・POSIX は 0600)。hook は自分の路から `../board/state/run.json` を読む (利用者の project の cwd に依らない)。file が無い・読めない = 板なし = 無出力。止まる時に消す (落ちて残っても、接続が断られて無出力になるだけ)。
@@ -800,7 +800,7 @@ v1.2 = 締切が 11/8 20:00 (参加者ガイド・10/31) なので v1.1 の 8 �
 - 釦 = 許可 (今回)・次から訊かない (対象と保存期間・モードの切り替えは別の字)・拒否 (定型 3)・固定の位置の釦 (口ごとの字と意味・§4.3)・端末で答える (96px 以上)。
 - 板は選択式の問いだけ・自由記述と入力の直しは端末へ (候補の釦と最小の打鍵の道で補う・§4.3)。
 - 板に出さない物 = ExitPlanMode・plan mode の権限・URL mode・描けない schema・`bypassPermissions` へ移す suggestion・除外の表の道具。
-- server の口・choice は番号だけ・`seq` で古い画面を断る・token の見出し・Host の照合・待ち 20 件 (§3.3)。
+- server の口・choice は番号だけ・`seq` で古い画面を断る・token の見出し・Host の照合・待ち 20 件 (§3.3)。→ 11/4 = choice は種と番号の object・MCP の問いの値は client が組む・`seq` は札の `view_seq` (§3.3)。
 - 期限と数 (§3.4)・札の状態と終わり 5 つの排他 (§3.5)・優先の順 (§3.6)・`/resolve` は 1 対 1 の鍵がある時だけ (§3.7)。→ 11/4 = 鍵が無く `/resolve` は作らない = 終わりは 4 つ (§10.3)。
 - 表示の世代で滞留と選択を解く・1 鍵の取り消し (§4.2)。
 - 携帯は利用者の転送 (LAN に bind しない・§4.4)・計は押下と送った答えを分ける (§4.5)。→ 11/4 = 携帯の場面は提出版の外 (§1 の転換)。
@@ -898,8 +898,8 @@ v1.2 = 締切が 11/8 20:00 (参加者ガイド・10/31) なので v1.1 の 8 �
 3. 初日の確かめ 5 つ = 5 つとも成立 (§10.3)。削る物は `/resolve` だけ (§10.2)。
 4. 実装 (commit は 12:39〜14:27) = server + client + 頁 / hook 3 本 / MCP + notify / 起こし方の 1 行を、Claude Code の働き手 3 体と別のコーディングエージェントで並列に書いた。
 5. 実装への外部のレビュー (読むだけ) 2 本:
-   - 板の server と client の反証 = 判定 WARNING (MEDIUM 4) → 採否を決めて直した (期限・終わりの 1 回・記録を錠の外へ・既定の待ち)。
-   - 差分レビュー (repo を作った後から skill までの 21 file) = 判定 BLOCKED (BLOCKER 3・HIGH 1・MEDIUM 3)。7 件とも実物で再現してから直した = 自前の期限を過ぎた答えを受理していた (→ 総期限)・`python -I` で起こすと notify だけ exit 1・長く外れて戻った瞬間に滞留が押す・転送 (3xx) で token の見出しを別の宛先へ渡しうる・`/answer` の返りより先に取り消すと押しを二重に送る・`minItems` 0 の必須の配列に `[]` を返せない・skill が時間切れを「引数を直す」の行に入れていた。直しの後に、総期限の直しで標準の接続の処理を置き換えた時に落ちていた TCP_NODELAY を戻した。
+   - 板の server と client の反証 = 判定 WARNING (MEDIUM 4) → 採否を決めて直した (期限・終わりの 1 回・記録を錠の外へ・既定の待ち)。一部の部品は所見が返らず、差分レビューへ回した。
+   - 差分レビュー (repo を作った後から skill までの 21 file) = 判定 BLOCKED (BLOCKER 3・HIGH 1・MEDIUM 3)。7 件とも直した (code の 6 件は実物で再現してから直し、skill の 1 件は文を直した) = 自前の期限を過ぎた答えを受理していた (→ 総期限)・`python -I` で起こすと notify だけ exit 1・長く外れて戻った瞬間に滞留が押す・転送 (3xx) で token の見出しを別の宛先へ渡しうる・`/answer` の返りより先に取り消すと押しを二重に送る・`minItems` 0 の必須の配列に `[]` を返せない・skill が時間切れを「引数を直す」の行に入れていた。直しの後に、総期限の直しで標準の接続の処理を置き換えた時に落ちていた TCP_NODELAY を戻した。
 6. 転換の決め = 既定の前面は同じ板の頁の小型の見え方 (§1)。転換の案への外部の反証 (判定 NEEDS_REVISION = 全面の転換には反対・同じ板を小窓でも使う形には条件つきで賛成) を受けた。起こし方の小窓は作った・頁の側の小型の見え方と Picture-in-Picture は未対応 (今後)。
 
 **試験の本数** (commit ごとに数えた): server 95 → 頁 96 → 権限の口 142 → 質問の口 170 → server の直し 174 → MCP + notify 254 → MCP の問いの口 285 → 見る人の判定 292 → 差分レビューの直し (6 本の commit で再現の試験 +21)・起こし方 (+33) → **346**。
