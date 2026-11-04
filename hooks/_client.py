@@ -13,6 +13,9 @@ notify) と、要れば `mcp/blemma_mcp.py` が同じ関数を呼ぶ。設計 = 
 - 待つ秒・期限・取り消しの猶予の数は板の server の `Limits` (§3.4) が持つ。client は `/ask` の
   返りの `hard_deadline_in` (自前の期限) と `wait_giveup` (1 回の `/wait` を諦める秒) に従う。
   client だけが持つ数は `/ask` と `/notify` を諦める秒の 2 つ。
+- 諦めの秒と自前の期限は**通信の全体に効く総期限** (単調時計・繋ぐ・送る・見出しと本文を受け終えるまで)。
+  読み書き 1 回ごとに残りの秒を当てる = 少しずつ返されても延びない。受け終えた後にも見直し、過ぎていれば
+  答えでも使わない (判断なし)。通信は 127.0.0.1 へだけ・proxy を通さない。
 - 返る答えは**取り消しの猶予が過ぎて確定した物だけ** (猶予のうちは server が持つ)。
 
 ## 使い方 (hook の側)
@@ -105,17 +108,18 @@ multi は値の list) / `{"type": "decline"}` (断る) / `{"type": "cancel"}` (�
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import socket
 import sys
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
 # client だけが持つ数 (残りの数は board/server.py の Limits = §3.4 が持ち、/ask の返りで来る)
+# どちらも通信の全体の秒 (総期限・1 回の読み書きの待ちではない)
 ASK_GIVEUP_SEC = 2.0        # POST /ask を諦める秒 (= Limits.ask_giveup)
 NOTIFY_GIVEUP_SEC = 1.0     # POST /notify を諦める秒 (§2.4)
 MAX_DEADLINE_SEC = 3600.0   # server が返す期限の正気の上限 (超える・負 = 壊れた返り)
@@ -136,7 +140,64 @@ RUN_FILE_ENV = "BLEMMA_RUN_FILE"   # run.json の路を差し替える (試験�
 DEBUG_ENV = "BLEMMA_DEBUG"
 TERMINAL_ONLY_ENV = "BLEMMA_TERMINAL_ONLY"   # 板に出さず端末で答える道具の名 (カンマ区切り・§2.1)
 
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # proxy を通さない
+
+class _HTTPStatus(Exception):
+    """板が 2xx の外を返した (転送の 3xx も = 追わない)。`code` = HTTP の状態の数。"""
+
+    def __init__(self, code: int) -> None:
+        super().__init__(f"HTTP {code}")
+        self.code = code
+
+
+class _DeadlineSocket(socket.socket):
+    """総期限つきの socket。繋ぐ・読み書きの 1 回ごとに「総期限までの残り」を timeout にし、過ぎていれば
+    timeout を起こす。標準の timeout は 1 回ごと = 本文を少しずつ返されると全体はいくらでも延びる (§3.4)。"""
+
+    deadline = 0.0                   # time.monotonic() の総期限 (作った後に入れる)
+
+    def _arm(self) -> None:
+        remain = self.deadline - time.monotonic()
+        if remain <= 0:
+            raise socket.timeout("BLEMMA: the total deadline passed")
+        self.settimeout(remain)
+
+    def connect(self, address: Any) -> None:
+        self._arm()
+        super().connect(address)
+
+    def send(self, data: Any, flags: int = 0) -> int:
+        self._arm()
+        return super().send(data, flags)
+
+    def sendall(self, data: Any, flags: int = 0) -> None:
+        self._arm()
+        super().sendall(data, flags)
+
+    def recv(self, bufsize: int, flags: int = 0) -> bytes:
+        self._arm()
+        return super().recv(bufsize, flags)
+
+    def recv_into(self, buffer: Any, nbytes: int = 0, flags: int = 0) -> int:
+        self._arm()
+        return super().recv_into(buffer, nbytes, flags)
+
+
+class _Connection(http.client.HTTPConnection):
+    """127.0.0.1 の板への 1 回きりの接続 = 総期限つきの socket で繋ぐ (proxy も転送の追いかけも無い)。"""
+
+    def __init__(self, port: int, deadline: float) -> None:
+        super().__init__("127.0.0.1", port)
+        self._blemma_deadline = deadline
+
+    def connect(self) -> None:
+        sock = _DeadlineSocket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.deadline = self._blemma_deadline
+        try:
+            sock.connect((self.host, self.port))
+        except BaseException:
+            sock.close()
+            raise
+        self.sock = sock
 
 
 def debug(msg: Any) -> None:
@@ -251,17 +312,32 @@ def _load_run(run_file: Any) -> Optional[Tuple[int, str]]:
 
 def _call(method: str, port: int, token: str, path: str, body: Any = None,
           timeout: float = ASK_GIVEUP_SEC) -> Tuple[int, Any]:
-    """127.0.0.1 の板へ 1 回だけ HTTP で話す。失敗は例外のまま呼び手へ (呼び手が None に変える)。"""
-    headers = {"X-Blemma-Token": token}
+    """127.0.0.1 の板へ 1 回だけ HTTP で話す。失敗は例外のまま呼び手へ (呼び手が None に変える)。
+
+    timeout = 通信の全体 (繋ぐ・送る・見出しと本文を受け終える) の総期限の秒 (単調時計)。読み書き 1 回ごとに
+    残りを当て、受け終えた後にも見直す。2xx の外は `_HTTPStatus` (転送の 3xx も追わない)。
+    """
+    deadline = time.monotonic() + timeout
+    headers = {"X-Blemma-Token": token, "Connection": "close"}
     data = None
     if body is not None:
         data = json.dumps(body, ensure_ascii=True).encode("ascii")
         headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data,
-                                 headers=headers, method=method)
-    with _OPENER.open(req, timeout=timeout) as resp:
+    conn = _Connection(port, deadline)
+    resp = None
+    try:
+        conn.request(method, path, body=data, headers=headers)
+        resp = conn.getresponse()
         status = resp.status
+        if not 200 <= status < 300:
+            raise _HTTPStatus(status)
         raw = resp.read(MAX_RESPONSE_BYTES)
+    finally:
+        if resp is not None:
+            resp.close()
+        conn.close()
+    if time.monotonic() >= deadline:
+        raise socket.timeout("BLEMMA: the total deadline passed")
     if not raw:
         return status, None
     return status, json.loads(raw.decode("utf-8"))
@@ -383,7 +459,7 @@ def _ask(hook_input: Any, kind: str, payload: dict, run_file: Any) -> Tuple[str,
         _, res = _call("POST", port, token, "/ask",
                        {"kind": kind, "from": source_of(hook_input), "payload": payload},
                        timeout=ASK_GIVEUP_SEC)
-    except urllib.error.HTTPError as e:
+    except _HTTPStatus as e:
         debug(f"/ask が {e.code}")
         return ("busy" if e.code == 503 else "refused"), None
     except ValueError:
@@ -413,6 +489,9 @@ def _ask(hook_input: Any, kind: str, payload: dict, run_file: Any) -> Tuple[str,
             _, res = _call("GET", port, token, path, timeout=min(float(giveup), remain))
         except Exception as e:
             debug(f"/wait が失敗: {type(e).__name__}")
+            return "timeout", None
+        if time.monotonic() >= deadline:           # 受け終えた後にも見直す = 期限の後の答えは使わない
+            debug("自前の期限 (hard_deadline) を過ぎてから受けた = 使わない")
             return "timeout", None
         state = res.get("state") if isinstance(res, dict) else None
         if state == "waiting":

@@ -9,7 +9,7 @@ import socket
 import threading
 import time
 from dataclasses import replace
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import pytest
 
@@ -202,6 +202,82 @@ def test_broken_server_replies_are_none(tmp_path, mode, end):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def _serve(handler) -> ThreadingHTTPServer:
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    httpd.daemon_threads = True
+    httpd.block_on_close = False
+    threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+    return httpd
+
+
+def _stop(*servers) -> None:
+    for httpd in servers:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+class _Drip(BaseHTTPRequestHandler):
+    """/ask = 自前の期限 0.3 秒・/wait = 答え (allow_once) を 2 byte ずつ 0.05 秒おきに返す。
+    1 回の読みは 0.05 秒で届く = 1 回ごとの時間切れでは止まらない (全部を返し終えるのは 1.3 秒以上の後)。
+    head = 状態の行と見出しも少しずつ返す。"""
+    head = False
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        raw = json.dumps({"id": "abc", "hard_deadline_in": 0.3, "wait_giveup": 5}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        raw = json.dumps({"state": "answered", "answer": {"type": "allow_once"}}).encode()
+        head = b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n" % len(raw)
+        out, start = head + raw, 0
+        self.close_connection = True
+        try:
+            if not self.head:
+                self.wfile.write(head)
+                start = len(head)
+            for i in range(start, len(out), 2):
+                self.wfile.write(out[i:i + 2])
+                time.sleep(0.05)
+        except OSError:
+            pass                                         # client が諦めて切った
+
+
+@pytest.mark.parametrize("head", [False, True])
+def test_slow_reply_cannot_outlive_own_deadline(tmp_path, head):
+    """自前の期限は受け終えるまで効く総期限 (§3.4)。少しずつ返されても延びず、判断なしで終わる。"""
+    httpd = _serve(type("H", (_Drip,), {"head": head}))
+    p = tmp_path / "run.json"
+    p.write_text(json.dumps({"port": httpd.server_address[1], "token": "x"}), encoding="utf-8")
+    try:
+        t = time.monotonic()
+        assert C.ask_detail(HOOK_IN, "permission", PERM, run_file=p) == ("timeout", None)
+        assert time.monotonic() - t < 1.0             # 返し終える (1.3 秒以上) のを待たない
+    finally:
+        _stop(httpd)
+
+
+def test_answer_received_after_own_deadline_is_none(tmp_path, monkeypatch):
+    """/wait を受け終えたのが自前の期限の後なら、答えでも使わない (受けた後にも期限を見直す)。"""
+    p = tmp_path / "run.json"
+    p.write_text(json.dumps({"port": 9, "token": "x"}), encoding="utf-8")
+
+    def late_call(method, port, token, path, body=None, timeout=0.0):
+        if path == "/ask":
+            return 200, {"id": "abc", "hard_deadline_in": 0.2, "wait_giveup": 5}
+        time.sleep(0.3)                                  # 受け終えた時には期限 (0.2 秒) を過ぎている
+        return 200, {"state": "answered", "answer": {"type": "allow_once"}}
+
+    monkeypatch.setattr(C, "_call", late_call)
+    assert C.ask_detail(HOOK_IN, "permission", PERM, run_file=p) == ("timeout", None)
 
 
 def test_bad_kind_is_none(tmp_path):
