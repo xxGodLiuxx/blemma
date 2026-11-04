@@ -76,7 +76,7 @@ def test_static_page_needs_no_token_and_has_csp(live, tmp_path):
 
 
 def test_page_flow_answer_undo_answer_and_hook_gets_it(live):
-    srv = live()
+    srv = live(replace(FAST, disconnect=5.0))             # hook の /wait なしで頁を操る = 接続の終了を待たせる
     cid = post_ask(srv)["id"]
     card = srv.wait_card()
     assert card["id"] == cid and card["state"] == "shown" and card["payload"]["head"] == "Bash"
