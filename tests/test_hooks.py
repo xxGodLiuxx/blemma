@@ -438,6 +438,141 @@ def test_ask_without_board_is_silent(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# MCP の問いの口 = hooks/elicitation.py (§2.3)
+# ---------------------------------------------------------------------------
+
+def elicit(schema, message="次の一手を選んでください", **extra) -> dict:
+    d = {k: v for k, v in BASE.items() if k not in ("permission_mode", "effort")}   # form では来ない (実機)
+    d.update(hook_event_name="Elicitation", mcp_server_name="blemma", message=message, mode="form",
+             requested_schema=schema)
+    d.update(extra)
+    return d
+
+
+CHOICES = [{"const": "1", "title": "PR の本文を書く"}, {"const": "2", "title": "試験を回す"},
+           {"const": "3", "title": "ここで止める"}]
+ASK_BOARD = {"type": "object", "required": ["choice"], "properties": {
+    "choice": {"type": "string", "title": "次の一手を選んでください", "oneOf": CHOICES}}}
+ASK_BOARD_FREE = {"type": "object", "required": ["choice"], "properties": {
+    "choice": {"type": "string", "title": "次の一手を選んでください",
+               "oneOf": CHOICES + [{"const": "other", "title": "ほかの答え (書いて伝える)"}]},
+    "other_text": {"type": "string", "title": "ほかの答え", "maxLength": 200}}}
+CHOICE_FIELD = {"name": "choice", "title": "次の一手を選んでください", "multi": False, "required": True,
+                "options": [{"label": "PR の本文を書く", "value": "1"}, {"label": "試験を回す", "value": "2"},
+                            {"label": "ここで止める", "value": "3"}]}
+
+
+def test_elicit_ask_board_accept(board):
+    board.answer({"type": "accept", "picks": [[1]]})
+    assert one_json(run("elicitation.py", elicit(ASK_BOARD), board.run_file)) == {"hookSpecificOutput": {
+        "hookEventName": "Elicitation", "action": "accept", "content": {"choice": "2"}}}
+    ask = board.asks[0]
+    assert (ask["kind"], ask["from"]["agent"]) == ("elicitation", None)
+    assert board.payload == {"head": "blemma", "text": "次の一手を選んでください", "fields": [CHOICE_FIELD]}
+
+
+@pytest.mark.parametrize("action", ["decline", "cancel"])
+def test_elicit_decline_and_cancel(board, action):
+    board.answer({"type": action})
+    assert one_json(run("elicitation.py", elicit(ASK_BOARD), board.run_file)) == {"hookSpecificOutput": {
+        "hookEventName": "Elicitation", "action": action}}
+
+
+def test_elicit_free_text_choice_goes_to_the_terminal(board):
+    """「ほかの答え」は端末で答える釦・書く欄 other_text は板に出さない (空のまま)。"""
+    board.answer({"type": "accept", "picks": [[0]]})
+    out = one_json(run("elicitation.py", elicit(ASK_BOARD_FREE), board.run_file))
+    assert out["hookSpecificOutput"]["content"] == {"choice": "1"}
+    field = dict(CHOICE_FIELD, options=CHOICE_FIELD["options"] + [
+        {"label": "ほかの答え (書いて伝える)", "terminal": True}])
+    assert board.payload["fields"] == [field]
+
+
+def test_elicit_free_text_picked_on_the_board_is_silent(board):
+    board.answer({"type": "accept", "picks": [[3]]})        # 端末の印の釦は accept に入らない
+    silent(run("elicitation.py", elicit(ASK_BOARD_FREE), board.run_file))
+
+
+def test_elicit_boolean_enum_and_multi_select(board):
+    schema = {"type": "object", "required": ["ok"], "properties": {
+        "ok": {"type": "boolean", "title": "続けますか?", "default": True},
+        "color": {"type": "string", "description": "色", "enum": ["red", "green", "blue"],
+                  "enumNames": ["赤", "緑", "青"], "default": "green"},
+        "tags": {"type": "array", "title": "札", "minItems": 1,
+                 "items": {"anyOf": [{"const": "a", "title": "甲"}, {"const": "b", "title": "乙"},
+                                     {"const": "c", "title": "丙"}]}, "default": ["b"]}}}
+    board.answer({"type": "accept", "picks": [[1], [2], [0, 2]]})
+    out = one_json(run("elicitation.py", elicit(schema, message="選んでください"), board.run_file))
+    assert out["hookSpecificOutput"]["content"] == {"ok": False, "color": "blue", "tags": ["a", "c"]}
+    ok, color, tags = board.payload["fields"]
+    assert ok == {"name": "ok", "title": "続けますか?", "multi": False, "required": True, "default": [0],
+                  "options": [{"label": {"ja": "はい", "en": "Yes"}, "value": True},
+                              {"label": {"ja": "いいえ", "en": "No"}, "value": False}]}
+    assert (color["title"], color["required"], color["default"]) == ("色", False, [1])
+    assert [o["label"] for o in color["options"]] == ["赤", "緑", "青"]
+    assert (tags["multi"], tags["default"], [o["value"] for o in tags["options"]]) == (True, [1], ["a", "b", "c"])
+
+
+def test_elicit_optional_fields_left_empty(board):
+    """任意の欄は空のまま送れる・板で描けない任意の欄 (文字・数) は札に出さない。"""
+    schema = {"type": "object", "required": ["choice"], "properties": {
+        "choice": ASK_BOARD["properties"]["choice"],
+        "note": {"type": "string", "title": "メモ"},
+        "count": {"type": "integer", "minimum": 1, "maximum": 3},
+        "flag": {"type": "boolean"}}}
+    board.answer({"type": "accept", "picks": [[2], []]})
+    out = one_json(run("elicitation.py", elicit(schema), board.run_file))
+    assert out["hookSpecificOutput"]["content"] == {"choice": "3"}
+    assert [f["name"] for f in board.payload["fields"]] == ["choice", "flag"]
+
+
+def _props(n):
+    return {f"f{i}": {"type": "boolean"} for i in range(n)}
+
+
+@pytest.mark.parametrize("data", [
+    elicit(ASK_BOARD, mode="url", url="https://example.com/login"),
+    elicit(ASK_BOARD, url="https://example.com/login"),
+    elicit({"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}),
+    elicit({"type": "object", "required": ["n"], "properties": {"n": {"type": "integer", "minimum": 1}}}),
+    elicit({"type": "object", "properties": _props(7)}),
+    elicit({"type": "object", "properties": {}}),
+    elicit({"type": "object", "properties": {"note": {"type": "string"}}}),      # 描く欄が 0
+    elicit({"type": "object", "required": ["t"], "properties": {"t": {
+        "type": "array", "minItems": 2, "items": {"enum": ["a", "b", "c"]}}}}),
+    elicit({"type": "object", "required": ["t"], "properties": {"t": {
+        "type": "array", "maxItems": 1, "items": {"enum": ["a", "b", "c"]}}}}),
+    elicit({"type": "object", "required": ["c"], "properties": {"c": {"enum": [str(i) for i in range(13)]}}}),
+    elicit({"type": "object", "required": ["c"], "properties": {"c": {"enum": [{"x": 1}, "b"]}}}),
+    elicit({"type": "array"}),
+    elicit(None),
+    {k: v for k, v in elicit(ASK_BOARD).items() if k != "mcp_server_name"},
+    dict(elicit(ASK_BOARD), hook_event_name="PreToolUse"),
+])
+def test_elicit_forms_the_board_cannot_take_are_silent(board, data):
+    board.answer({"type": "cancel"})
+    silent(run("elicitation.py", data, board.run_file))
+    assert board.asks == []
+
+
+@pytest.mark.parametrize("reply", [
+    {"state": "released"}, {"state": "expired"}, {"state": "disconnected"},
+    {"state": "answered", "answer": {"type": "terminal"}},
+    {"state": "answered", "answer": {"type": "accept", "picks": [[]]}},           # 必須の欄が空
+    {"state": "answered", "answer": {"type": "accept", "picks": [[0, 1]]}},       # 単一に 2 つ
+    {"state": "answered", "answer": {"type": "accept", "picks": [[5]]}},
+    {"state": "answered", "answer": {"type": "deny", "reason": 0}},
+])
+def test_elicit_no_decision_is_silent(board, reply):
+    board.reply = reply
+    silent(run("elicitation.py", elicit(ASK_BOARD), board.run_file))
+
+
+def test_elicit_without_board_is_silent(tmp_path):
+    silent(run("elicitation.py", elicit(ASK_BOARD), tmp_path / "none.json"))
+
+
+# ---------------------------------------------------------------------------
 # 共通の入口 = _client.run_hook (何があっても exit 0)
 # ---------------------------------------------------------------------------
 
