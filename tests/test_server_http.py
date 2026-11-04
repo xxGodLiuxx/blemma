@@ -196,3 +196,25 @@ def test_run_file_write_and_remove_only_own(tmp_path):
 @pytest.mark.parametrize("argv", [["--undo-ms", "5001"], ["--wait", "541"], ["--port", "0"]])
 def test_main_refuses_bad_numbers(argv):
     assert S.main(argv + ["--no-browser", "--no-log"]) == 2
+
+
+def test_notify_text_and_session_are_not_kept(live, monkeypatch, capsys):
+    """待ちの合図の文は記録にも server の debug の行にも出ない・session は 6 字に切る (§3.3・§3.8)。"""
+    monkeypatch.setattr(S, "DEBUG", True)
+    srv = live(replace(FAST, disconnect=1.0))
+    secret = "SECRET-NOTIFY-TEXT"
+    assert srv.request("POST", "/notify", {"type": "idle_prompt", "title": secret, "message": secret + "-m"})[0] == 204
+    st, _, _, _ = srv.request("POST", "/ask", {"kind": "permission", "from": {"cwd": "repo", "session": "abcdefghij"},
+                                               "payload": {"head": "x"}})
+    assert st == 200
+    assert srv.wait_card()["from"]["session"] == "abcdef"
+    t0 = time.monotonic()
+    logs = []
+    while time.monotonic() - t0 < 4 and not logs:   # hook が居ない = 接続の終了で 1 行書かれる
+        logs = list(srv.state.glob("log-*.jsonl"))
+        time.sleep(0.05)
+    assert logs, "記録が書かれない"
+    text = logs[0].read_text(encoding="utf-8")
+    assert '"end": "disconnected"' in text and secret not in text
+    err = capsys.readouterr().err
+    assert "POST /notify 204" in err and secret not in err

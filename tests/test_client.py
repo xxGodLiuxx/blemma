@@ -81,7 +81,7 @@ def test_terminal_is_released_and_none(live):
 def test_expired_is_none(live):
     srv = live(replace(FAST, wait=0.6, perm_wait=0.6))
     (end, choice), sec, _ = run_ask(srv, "permission", PERM, None)
-    assert (end, choice) == ("expired", None)
+    assert end in ("expired", "closed") and choice is None   # /wait の合間に切れたら closed
     assert sec < 3
 
 

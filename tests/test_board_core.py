@@ -44,7 +44,9 @@ def card_of(board, cid):
 def test_defaults_match_design_table():
     lim = S.Limits()
     assert S.HOOK_TIMEOUT_SEC == 600
-    assert (lim.wait, lim.perm_wait, lim.create_cap, lim.min_show) == (300, 300, 540, 30)
+    assert (lim.wait, lim.create_cap, lim.min_show) == (300, 540, 30)
+    assert lim.perm_wait is None and lim.wait_for("permission") == 300 and lim.wait_for("question") == 300
+    assert replace(lim, wait=120).wait_for("permission") == 120          # 権限の札の待ちの既定 = --wait
     assert (lim.undo_ms, lim.undo_max_ms) == (3000, 5000)
     assert lim.hard_deadline == 555
     assert (lim.ask_giveup, lim.wait_giveup, lim.wait_hold, lim.pending_hold) == (2, 20, 15, 25)
@@ -131,8 +133,8 @@ def test_answer_grace_then_delivery_is_answered(clock, tmp_path):
     # 遅れた出来事は捨てる
     assert b.undo(a, "key", 1)[0] == 409
     assert b.answer(a, seq, {"type": "allow_once"}, "key", 1) == (409, {"error": "ended", "end": "answered"})
-    # 同じ id の /wait は終わりを返す
-    assert b.wait(a)[1]["state"] == "answered"
+    # 答えは渡す時の 1 回だけ = 終わった札への /wait は closed
+    assert b.wait(a)[1] == {"state": "closed"}
 
 
 def test_terminal_is_released(clock):
@@ -355,3 +357,54 @@ def test_pending_returns_new_seq(clock):
     assert b.pending(s1)["seq"] == s1                # 変わらなければ同じ (抱える秒 0)
     ask(b)
     assert b.pending(s1)["seq"] > s1
+
+
+def test_undo_keeps_the_first_deadline(clock):
+    """取り消しで shown へ戻しても期限は最初の表示のまま (延びない・§3.6 の 2)。"""
+    b = new_board(clock)
+    t0 = clock.t
+    a = ask(b)
+    for _ in range(62):                               # 248 秒
+        clock.advance(4)
+        keepalive(b, a)
+    seq = b.pending(-1)["card"]["view_seq"]
+    assert b.answer(a, seq, {"type": "allow_once"}, "dwell", 1)[0] == 200
+    clock.advance(1)
+    assert b.undo(a, "key", 1) == (200, {"state": "shown"})
+    assert card_of(b, a).deadline == pytest.approx(t0 + 300)
+    for _ in range(12):                               # 297 秒
+        clock.advance(4)
+        keepalive(b, a)
+    assert card_of(b, a).state == "shown"
+    clock.advance(3.5)
+    keepalive(b, a)
+    assert card_of(b, a).state == "expired"           # 最初の表示から 300 秒で切れる
+
+
+def test_finish_twice_counts_and_logs_once(clock, tmp_path):
+    b = new_board(clock, tmp_path)
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    b.answer(a, seq, {"type": "allow_once"}, "dwell", 1)
+    clock.advance(3.0)
+    _, _, card = b.wait(a)
+    b.delivered(card, True)
+    with b.cond:
+        b._finish(card, "expired", clock())          # 後から来た終わりは捨てる
+    b._flush_logs()
+    assert card.end == "answered"
+    assert b.pending(-1)["stats"]["answers"] == 1
+    lines = next(tmp_path.glob("log-*.jsonl")).read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+
+
+def test_answer_still_ok_after_other_ask_and_notify(clock):
+    """全体の seq が進んでも (別の札・待ちの合図)、表示が同じなら押しは通る。"""
+    b = new_board(clock)
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    s0 = b.seq
+    ask(b)
+    b.notify({"type": "idle_prompt", "message": "m"})
+    assert b.seq > s0 and b.pending(-1)["card"]["view_seq"] == seq
+    assert b.answer(a, seq, {"type": "allow_once"}, "dwell", 1)[0] == 200

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import collections
+import functools
 import hmac
 import json
 import os
@@ -50,7 +51,7 @@ HOOK_TIMEOUT_SEC = 600          # settings の hook の timeout (examples の雛
 @dataclass(frozen=True)
 class Limits:
     wait: float = 300.0                          # 待ち (--wait・表示から)
-    perm_wait: float = 300.0                     # 権限の札の待ち (--perm-wait・既定 = --wait)
+    perm_wait: Optional[float] = None            # 権限の札の待ち (--perm-wait・None = wait と同じ)
     create_cap: float = HOOK_TIMEOUT_SEC - 60    # 作成からの上限 = 540
     min_show: float = 30.0                       # 表示の最小の残り (切っていれば表示しない)
     undo_ms: int = 3000                          # 取り消しの猶予 (--undo-ms・0〜undo_max_ms)
@@ -71,12 +72,18 @@ class Limits:
         """hook の自前の期限 (作った時から) = 540 + 5 + 10 = 555 秒。"""
         return self.create_cap + self.undo_max_ms / 1000.0 + self.hard_margin
 
+    def wait_for(self, kind: str) -> float:
+        """札の種ごとの待ち (表示から)。権限の札だけ perm_wait (無ければ wait)。"""
+        if kind == "permission" and self.perm_wait is not None:
+            return self.perm_wait
+        return self.wait
+
 
 def check_limits(lim: Limits) -> None:
     """起動を断る値なら ValueError (§3.4 の決まり)。"""
     if not 0 < lim.wait <= lim.create_cap:
         raise ValueError(f"--wait は 0 より大きく {lim.create_cap:g} 秒 (作成からの上限) 以下")
-    if not 0 < lim.perm_wait <= lim.create_cap:
+    if not 0 < lim.wait_for("permission") <= lim.create_cap:
         raise ValueError(f"--perm-wait は 0 より大きく {lim.create_cap:g} 秒 (作成からの上限) 以下")
     if not 0 <= lim.undo_ms <= lim.undo_max_ms:
         raise ValueError(f"--undo-ms は 0〜{lim.undo_max_ms} ms")
@@ -88,7 +95,7 @@ def check_limits(lim: Limits) -> None:
 
 KINDS = ("permission", "question", "elicitation")
 INPUTS = ("dwell", "key", "switch", "touch", "click")   # §4.2 の入力 (by)
-FINAL = ("answered", "released", "expired", "disconnected", "resolved")
+FINAL = ("answered", "released", "expired", "disconnected")   # resolved (/resolve) は作らない (§10.2)
 CHOICES = {
     "permission": ("allow_once", "allow_always", "deny", "stop", "terminal"),
     "question": ("answer", "skip", "terminal"),
@@ -149,7 +156,7 @@ def _clean_from(v: Any) -> dict:
         x = d.get(key)
         return x[:80] if isinstance(x, str) and x else None
 
-    return {"cwd": s("cwd") or "", "session": s("session") or "", "agent": s("agent")}
+    return {"cwd": s("cwd") or "", "session": (s("session") or "")[:6], "agent": s("agent")}
 
 
 def _presses_of(by: str, presses: Any) -> Dict[str, int]:
@@ -162,6 +169,17 @@ def _presses_of(by: str, presses: Any) -> Dict[str, int]:
     elif isinstance(presses, int) and not isinstance(presses, bool) and 0 <= presses <= 1000:
         out[by if by in out else "click"] = presses
     return out
+
+
+def _flushing(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Board の外側の口 = 錠を離した後に、溜まった記録を file へ書く。"""
+    @functools.wraps(fn)
+    def inner(self: "Board", *args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(self, *args, **kwargs)
+        finally:
+            self._flush_logs()
+    return inner
 
 
 class Card:
@@ -207,6 +225,8 @@ class Board:
         self.light: Optional[dict] = None
         self.light_until = 0.0
         self.closed = False
+        self._logq: "collections.deque[Tuple[str, dict]]" = collections.deque()
+        self._log_lock = threading.Lock()
         self._reset_stats_locked(clock())
 
     # ---- 内側 (錠の下で呼ぶ) ----
@@ -230,15 +250,17 @@ class Board:
         return self.live[0] if self.live else None
 
     def _show(self, c: Card, now: float) -> None:
-        wait = self.lim.perm_wait if c.kind == "permission" else self.lim.wait
         c.state = "shown"
         if c.first_shown is None:
             c.first_shown = now
-        c.deadline = min(now + wait, c.created + self.lim.create_cap)
+        if c.deadline is None:              # 期限は最初の表示で 1 回だけ決める (取り消しで延ばさない・§3.6 の 2)
+            c.deadline = min(now + self.lim.wait_for(c.kind), c.created + self.lim.create_cap)
         self._bump()
         c.view_seq = self.seq
 
     def _finish(self, c: Card, end: str, now: float) -> None:
+        if c.end is not None:               # 終わりは 1 回だけ (排他・§3.5)
+            return
         c.from_deciding = c.state == "deciding"
         c.end = end
         c.state = end
@@ -273,13 +295,25 @@ class Board:
             "presses": sum(c.presses.values()),
             "undo": c.undos,
         }
-        try:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            path = self.log_dir / f"log-{datetime.now().strftime('%Y-%m-%d')}.jsonl"
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        except OSError as e:
-            _debug(f"記録を書けない: {type(e).__name__}")
+        self._logq.append((datetime.now().strftime("%Y-%m-%d"), rec))   # 書くのは錠の外 (_flush_logs)
+
+    def _flush_logs(self) -> None:
+        """溜まった記録を file へ書く。板の錠を持たずに呼ぶ (file の待ちで板を止めない)。"""
+        if self.log_dir is None or not self._logq:
+            return
+        with self._log_lock:
+            items = []
+            while self._logq:
+                items.append(self._logq.popleft())
+            if not items:
+                return
+            try:
+                self.log_dir.mkdir(parents=True, exist_ok=True)
+                for day, rec in items:
+                    with open(self.log_dir / f"log-{day}.jsonl", "a", encoding="utf-8") as f:
+                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            except OSError as e:
+                _debug(f"記録を書けない: {type(e).__name__}")
 
     def _advance(self, now: float) -> None:
         """時間で進む物 (接続の終了・期限・表示・猶予の終わり・帯) を進める。"""
@@ -313,13 +347,13 @@ class Board:
             self._bump()
 
     def _final_body(self, c: Card) -> dict:
-        if c.end == "answered":
-            return {"state": "answered", "answer": c.choice}
-        if c.end == "resolved":
-            return {"state": "closed"}
-        return {"state": c.end}
+        """/wait を抱えている間に終わった札の返り。答えは渡す時の 1 回だけ = 渡し終えた札は closed。"""
+        if c.end in ("expired", "disconnected"):
+            return {"state": c.end}
+        return {"state": "closed"}
 
-    # ---- 外側 (錠を取る) ----
+    # ---- 外側 (錠を取る・終わった札の記録は錠を離してから書く) ----
+    @_flushing
     def tick(self) -> None:
         with self.cond:
             self._advance(self.clock())
@@ -329,6 +363,7 @@ class Board:
             self.closed = True
             self.cond.notify_all()
 
+    @_flushing
     def ask(self, kind: Any, frm: Any, payload: Any) -> Tuple[int, dict]:
         if kind not in KINDS or not isinstance(payload, dict):
             return 400, {"error": "bad_request"}
@@ -350,6 +385,7 @@ class Board:
                 "wait_hold": self.lim.wait_hold,
             }
 
+    @_flushing
     def wait(self, cid: Any, alive: Callable[[], bool] = lambda: True) -> Tuple[int, dict, Optional[Card]]:
         """hook の long-poll。答えを渡す時は第 3 の値に札を返す (書けたら delivered を呼ぶ)。"""
         if not isinstance(cid, str):
@@ -357,10 +393,9 @@ class Board:
         with self.cond:
             c = self._find(cid)
             if c is None:
-                d = self.done.get(cid)
-                if d is None:
+                if cid not in self.done:
                     return 404, {"error": "unknown"}, None
-                return 200, self._final_body(d), None
+                return 200, {"state": "closed"}, None      # 終わった札への /wait は closed だけ
             c.wait_inflight += 1
             try:
                 until = self.clock() + self.lim.wait_hold
@@ -386,6 +421,7 @@ class Board:
                 c.wait_inflight -= 1
                 c.last_wait_end = self.clock()
 
+    @_flushing
     def delivered(self, c: Card, ok: bool) -> None:
         """答えを /wait へ書き終えた (ok) か、書けなかった。終わりを確定する。"""
         with self.cond:
@@ -400,6 +436,7 @@ class Board:
             self._bump()
             self._advance(now)                     # 次の札をすぐ出す
 
+    @_flushing
     def answer(self, cid: Any, seq: Any, choice: Any, by: Any, presses: Any) -> Tuple[int, dict]:
         with self.cond:
             now = self.clock()
@@ -431,6 +468,7 @@ class Board:
             self._bump()
             return 200, {"undo_ms": self.lim.undo_ms, "undo_remaining": self.lim.undo_ms / 1000.0}
 
+    @_flushing
     def undo(self, cid: Any, by: Any, presses: Any) -> Tuple[int, dict]:
         with self.cond:
             now = self.clock()
@@ -517,6 +555,7 @@ class Board:
             "undo_ms": self.lim.undo_ms,
         }
 
+    @_flushing
     def pending(self, seen: Any) -> dict:
         """頁の long-poll。seq が seen と違えばすぐ、同じなら変わるまで (最長 pending_hold) 待つ。"""
         with self.cond:
@@ -797,7 +836,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     lim = Limits(wait=args.wait,
-                 perm_wait=args.perm_wait if args.perm_wait is not None else args.wait,
+                 perm_wait=args.perm_wait,
                  undo_ms=args.undo_ms)
     try:
         check_limits(lim)
