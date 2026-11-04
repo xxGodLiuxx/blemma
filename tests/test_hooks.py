@@ -335,6 +335,109 @@ def test_perm_debug_writes_only_blemma_lines(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# 質問の口 = hooks/ask.py (§2.2)
+# ---------------------------------------------------------------------------
+
+def opts(*labels) -> list:
+    return [{"label": x, "description": f"{x} の説明"} for x in labels]
+
+
+FRUIT = {"question": "どの果物にしますか?", "header": "果物", "multiSelect": False,
+         "options": opts("りんご", "みかん", "ぶどう", "もも")}
+COLOR = {"question": "どの色を使いますか? (複数可)", "header": "色", "multiSelect": True,
+         "options": opts("赤", "青, 濃い", "緑")}
+PRINT = {"question": "印刷しますか?", "header": "印刷", "multiSelect": False,
+         "options": opts("印刷する", "印刷しない")}
+
+
+def question(*qs, **extra) -> dict:
+    ti = {"questions": list(qs)}
+    ti.update(extra.pop("tool_input_extra", {}))
+    d = dict(BASE, hook_event_name="PreToolUse", tool_name="AskUserQuestion", tool_input=ti,
+             tool_use_id="toolu_demo")
+    d.update(extra)
+    return d
+
+
+def test_ask_two_questions_in_one_card(board):
+    """2 問 (4 択 + multiSelect) を 1 枚で = §10.3 で通った形 (label のカンマはそのまま)。"""
+    data = question(FRUIT, COLOR)
+    board.answer({"type": "answer", "picks": [[1], [1, 2]]})
+    out = one_json(run("ask.py", data, board.run_file))["hookSpecificOutput"]
+    assert (out["hookEventName"], out["permissionDecision"]) == ("PreToolUse", "allow")
+    assert out["updatedInput"] == dict(data["tool_input"], answers={
+        "どの果物にしますか?": "みかん", "どの色を使いますか? (複数可)": "青, 濃い, 緑"})
+    assert board.asks[0]["kind"] == "question"
+    assert board.payload == {"questions": [FRUIT, COLOR]}     # 問いはそのまま (番号を照らす元)
+
+
+def test_ask_one_question_keeps_other_input(board):
+    data = question(PRINT, tool_input_extra={"metadata": {"source": "demo"}})
+    board.answer({"type": "answer", "picks": [[0]]})
+    out = one_json(run("ask.py", data, board.run_file))["hookSpecificOutput"]
+    assert out["updatedInput"] == {"questions": [PRINT], "metadata": {"source": "demo"},
+                                   "answers": {"印刷しますか?": "印刷する"}}
+
+
+def test_ask_multiselect_with_one_pick_is_the_label(board):
+    board.answer({"type": "answer", "picks": [[2]]})
+    out = one_json(run("ask.py", question(COLOR), board.run_file))["hookSpecificOutput"]
+    assert out["updatedInput"]["answers"] == {"どの色を使いますか? (複数可)": "緑"}
+
+
+def test_ask_skip_is_deny_with_reason(board):
+    board.answer({"type": "skip"})
+    assert one_json(run("ask.py", question(PRINT), board.run_file)) == {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": "BLEMMA: the user did not answer this question"}}
+
+
+@pytest.mark.parametrize("reply", [
+    {"state": "released"}, {"state": "expired"}, {"state": "disconnected"},
+    {"state": "answered", "answer": {"type": "terminal"}},
+    {"state": "answered", "answer": {"type": "answer", "picks": [[1]]}},          # 問いの数と違う
+    {"state": "answered", "answer": {"type": "answer", "picks": [[0, 1], [0]]}},  # 単一選択に 2 つ
+    {"state": "answered", "answer": {"type": "answer", "picks": [[4], [0]]}},     # 範囲の外
+    {"state": "answered", "answer": {"type": "answer", "picks": [[0], []]}},      # multiSelect も 1 つ以上
+    {"state": "answered", "answer": {"type": "allow"}},
+])
+def test_ask_no_decision_is_silent(board, reply):
+    board.reply = reply
+    silent(run("ask.py", question(FRUIT, COLOR), board.run_file))
+
+
+@pytest.mark.parametrize("data", [
+    question(),                                                    # 0 問
+    question(FRUIT, COLOR, PRINT, dict(PRINT, question="別"), dict(PRINT, question="もう 1 つ")),  # 5 問
+    question(PRINT, dict(PRINT, header="同じ問い")),               # 問いの文が重なる = answers の鍵がぶつかる
+    question(dict(PRINT, options=opts("1 つだけ"))),
+    question(dict(PRINT, options=opts("a", "b", "c", "d", "e"))),
+    question(dict(PRINT, options=[{"label": 1}, {"label": "b"}])),
+    question(dict(PRINT, options=[{"label": ""}, {"label": "b"}])),
+    question(dict(PRINT, multiSelect="yes")),
+    question(dict(PRINT, question="")),
+    dict(question(PRINT), tool_input={"questions": "印刷しますか?"}),
+    {k: v for k, v in question(PRINT).items() if k != "tool_input"},
+    dict(question(PRINT), tool_name="Bash"),
+    dict(question(PRINT), hook_event_name="PermissionRequest"),
+])
+def test_ask_shapes_the_board_cannot_take_are_silent(board, data):
+    board.answer({"type": "skip"})
+    silent(run("ask.py", data, board.run_file))
+    assert board.asks == []
+
+
+def test_ask_terminal_only_env(board):
+    board.answer({"type": "skip"})
+    silent(run("ask.py", question(PRINT), board.run_file, env={"BLEMMA_TERMINAL_ONLY": "AskUserQuestion"}))
+    assert board.asks == []
+
+
+def test_ask_without_board_is_silent(tmp_path):
+    silent(run("ask.py", question(FRUIT, COLOR), tmp_path / "none.json"))
+
+
+# ---------------------------------------------------------------------------
 # 共通の入口 = _client.run_hook (何があっても exit 0)
 # ---------------------------------------------------------------------------
 
