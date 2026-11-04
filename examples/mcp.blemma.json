@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "blemma": { "command": "<PY>", "args": ["<BLEMMA>/mcp/blemma_mcp.py"] }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "permissions": { "allow": ["mcp__blemma__ask_board"] },
+  "hooks": {
+    "PermissionRequest": [
+      { "matcher": ".*", "hooks": [
+        { "type": "command", "command": "<PY>", "args": ["<BLEMMA>/hooks/permission.py"],
+          "timeout": 600, "statusMessage": "BLEMMA: 板 (ブラウザ) で答えを待っています / waiting on the board" }
+      ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "AskUserQuestion", "hooks": [
+        { "type": "command", "command": "<PY>", "args": ["<BLEMMA>/hooks/ask.py"],
+          "timeout": 600, "statusMessage": "BLEMMA: 板 (ブラウザ) で答えを待っています / waiting on the board" }
+      ] }
+    ],
+    "Elicitation": [
+      { "matcher": ".*", "hooks": [
+        { "type": "command", "command": "<PY>", "args": ["<BLEMMA>/hooks/elicitation.py"],
+          "timeout": 600, "statusMessage": "BLEMMA: 板 (ブラウザ) で答えを待っています / waiting on the board" }
+      ] }
+    ],
+    "Notification": [
+      { "matcher": "permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input", "hooks": [
+        { "type": "command", "command": "<PY>", "args": ["<BLEMMA>/hooks/notify.py"],
+          "timeout": 10, "statusMessage": "BLEMMA: 板 (ブラウザ) で答えを待っています / waiting on the board" }
+      ] }
+    ]
+  }
+}
