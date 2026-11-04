@@ -2,6 +2,8 @@
 
 > **この文書はハッカソン (Built with Claude: Japan 2026・2026-11-02 12:00 JST 開始) の前に書いた設計のメモです** (v0 = 2026-10-14 → v1 = 10-31 → v1.2 = 11-01)。開始前に書いたのは文書だけで、実装・試験・設定の file は 11/2 12:00 以後に新しく作る (この repo の最初の commit = 文書だけ = tag `pre-event-docs`・以後の履歴に実装が入り、文書の直しも含む)。文書の中の JSON (§2.5・§7.2) は契約の形の例で、動く file ではない。開始後に変えた所はこの file の git の履歴に残る。
 
+> **11/4 の同期** = 本文を 11/4 の実装 (板の server・共通の client・板の頁・hook 4 本・MCP server・起こし方の 1 行) と 11/4 の転換 (§1) に合わせた。食い違いは code を正とし、code の方が良い所は「実装の判断」、code がまだ設計に届かない所は「未対応 (今後)」と書いた。その日の記録 = §15。
+
 > **v1.2 = 2026-11-01** = 規約 (参加者ガイド・10/31 に読んだ) と主催の回答 (11/1) を反映した版。変えた所 = **提出の締切は 11/8 (日) 20:00 JST** → 工程を前倒し (§8・11/7 録り・11/8 15:00 提出)・デモは字幕も日本語・尺 2:50 前後・冒頭 30 秒に 3 点とテーマ (§9)・名乗るテーマ = テーマ 2「本来、誰にでも届くべきものを。」(§1・§6.2)・§11.4 の 6 件を確定に (期間前の設計の文書は主催の回答で repo に入れてよい・公開の形は新しい repo と新しい履歴)。技術の契約 (§2〜§5・§7・§10・§12) は v1.1 のまま。
 > **v1.1 = 2026-10-31** (v1 = 同日)。外部のレビュー (別の LLM による反証) 1 巡目 (2026-10-31・MAJOR_REVISION・BLOCKER 0・HIGH 5・MEDIUM 4・LOW 2) の **11 件に対応した = 10 件を本書で閉じ、#11 (公開前の資料の門) は本書の側だけを閉じた** (他の file の直しは公開の門で・対応表 = §14)。
 > - v1 = 設計 v0 (2026-10-14・非公開の作業メモ) + v0 → v1 の差分 (2026-10-30・同) + 公式の裏取り (2026-10-30・`docs/research_official_docs.md`) を 1 枚にした物。**code は 2026-11-02 12:00 (JST) から** = この file は文書だけ (code・試験・設定の file はまだ 1 行も無い)。
@@ -39,6 +41,13 @@
 
 **名乗るテーマ** (v1.2・作り手の決め 10/31): 公募のテーマ 2「本来、誰にでも届くべきものを。」= 壁を取り払って、届いていない人の手に。BLEMMA が取り払う壁 = **操作の壁** (端末の小さな dialog と打鍵。公募の例に挙がる専門知識・費用・言語・手続きには無い壁 = 自分の言葉で名指しする)。壁の外側の具体的なひとり = 視線だけで打つ作り手本人。同じ板が携帯・片手・スイッチの人にも届く。概要・README・動画の冒頭でこの順に言う (§9)。
 
+**11/4 の転換** (作り手の決め・外部のレビュー (別の LLM による反証) を受けた): 板の既定の前面を、同じ板の頁の**小型**の見え方にする。
+- 位置・大きさ・字・配色は設定で替え、釦を大きくする切り替えも同じ頁の中 (別の画面は作らない)。起こし方は 1 コマンド (`python blemma.py`・§3.2) = Chrome / Edge の app モードの小窓で開く。常に手前に置くのは利用者の操作 (ブラウザの Picture-in-Picture = 開くには利用者の操作が要り、位置は頁から決められない)。
+- 携帯の場面と転送は提出版の外 (§4.4)。携帯から答えたい人には、公式の Remote Control が使える環境ならそちらを案内する。
+- 語りの順は変えない = 視線で使う作り手の壁 → 端末から目を離して働く机の全員へ。
+- 理由 = 外部のレビューの反証: 「誰でも使う小窓」への全面の転換は、実在するひとりの壁を、規模の分からない一般の不便に置き換えて危うい (同じ板を小窓でも使う形には条件つきで賛成)。OS 固有の「常に手前・焦点を奪わない」窓は、標準ライブラリだけでは 3 つの OS で保証できない = 専用の窓は作らず、ブラウザの頁を共用する。焦点を奪わない窓にはキーが届かない = スイッチの走査は板に焦点がある時だけ効く。
+- 11/4 の時点の実装 = 起こし方の app モードの小窓 (`--small`・既定 480×360・画面の右下) と、既定のブラウザで開く `--large` まで。頁の側の小型の見え方 (URL の `?mode=small` を読む見た目・設定・釦を大きくする切り替え) と Picture-in-Picture の釦は**未対応 (今後)**。今の小窓 (幅 480) では、頁は携帯の幅の見え方 (縦 1 列・余白 16px・§4.1) になる。
+
 ---
 
 ## 2. 4 つの口と先回りの 1 本 — 契約
@@ -48,6 +57,7 @@
 - 形: settings の `hooks` = イベント → matcher の組 → hook の定義 (`type: "command"`・exec 形 = `command` + `args`・`timeout`・`statusMessage`)。exec 形は "No shell tokenization happens on any platform." (裏取り §1.3【断片】 https://code.claude.com/docs/en/hooks.md)。
 - matcher: 英字・数字・`_`・`-`・空白・`,`・`|` だけの matcher は完全一致の一覧、それ以外の字を含む matcher は "JavaScript regular expression, unanchored" (裏取り §1.3【断片】) = **全部に当てる時は `.*` と明示する** (省略に頼らない)。
 - 共通の入力欄 (stdin の JSON): `session_id`・`prompt_id`・`transcript_path`・`cwd`・`scratchpad_dir`・`permission_mode`・`effort`・`hook_event_name`、subagent の中だけ `agent_id`・`agent_type` (裏取り §1.4【断片】)。板は `cwd` の末尾の名・`session_id` の頭 6 字・`agent_type` で札の「出どころ」を見せる (v1 の判断)。
+  - 実機で確かめた形 (§10.3 の発見 5・v2.1.318): `effort` は object (`{"level": …}`)・`scratchpad_dir` は対話でだけ来る・`prompt_id` は turn の id。**Elicitation の stdin には subagent の中からでも `agent_id`・`agent_type` が来ない** = 札の「出どころ」に `agent_type` が出るのは権限の口だけ (質問の口は subagent の中では起きない・§2.2)。
 - 公式の出力の決まり: "Exit 0 means success, and is the intended exit code when you print JSON for structured control." / "Print nothing but the JSON object to stdout." (裏取り §1.4【断片】)。
 - **BLEMMA の hook の約束** (v1.1 の判断):
   - 判断を返す時は stdout に JSON 1 個だけ・exit 0。返さない時 (板が居ない・時限・端末で答える・板で描けない形・例外) は何も書かず exit 0 = Claude Code の通常の判断の流れへ。stderr も既定は空 (`BLEMMA_DEBUG=1` の時だけ 1 行)。
@@ -58,16 +68,16 @@
   - 雛形に `onFailure` を書かない (既定 `"continue"`。`"block"` にすると板の不調と時限で道具が止まる・v2.1.295 以降の欄・裏取り §1.3)。
   - 公式の JSON を組むのは hook だけ。板の頁と server は「口の種」と「選んだ番号」しか知らない (§3.3)。
   - 待つ秒・期限・取り消しの猶予の数は §3.4 の 1 か所で決める。
-- **待っている間の端末の見え方** (口で違う・確かめ = §10.1):
+- **待っている間の端末の見え方** (口で違う・確かめ = §10.1・**11/4 に実機で確定** = §10.3 の 1〜3・v2.1.318):
 
 | 口 | hook が待つ間の端末 | 出典 |
 |---|---|---|
-| PermissionRequest (AskUserQuestion の確認) | 端末の dialog も同時に出て、早い方の答えが勝つ | 【報告】#103115 = AskUserQuestion についての報告 (裏取り §1.7) |
-| PermissionRequest (Edit・Bash・MCP の道具) | 同じかは分からない | 上の報告の一般化は憶測 |
-| PreToolUse (AskUserQuestion) | 質問の dialog は出ない (憶測) | 【raw】"PreToolUse hooks run before the permission prompt" (裏取り §1.6)。質問の dialog まで出ないのは、この文からの憶測 |
-| Elicitation | form は出ない (hook が終わってから描く) | 【報告】#103115 "Claude Code awaits every Elicitation hook before it draws the form" |
+| PermissionRequest (Edit・Bash・PermissionRequest に来た AskUserQuestion) | 端末の dialog も同時に出る (答えの種で結末が分かれる・§3.7)。`statusMessage` は画面に出ない (dialog が前に出る・80×24 の端末で) | 実機 (§10.3 の 1)。【報告】#103115 (AskUserQuestion についての報告・裏取り §1.7) と同じ |
+| PermissionRequest (MCP の道具) | 測っていない (上と同じ見込み = 推測) | — |
+| PreToolUse (AskUserQuestion) | 質問の dialog は出ない。spinner の行に `statusMessage` が出る | 実機 (§10.3 の 2)。v1.2 までの憶測を確定した |
+| Elicitation | form は出ない (hook が終わってから描く)。「Calling blemma…」と spinner の行の `statusMessage` だけ | 実機 (§10.3 の 3)。【報告】#103115 "Claude Code awaits every Elicitation hook before it draws the form" |
 
-  = ask.py と elicitation.py が待つ間は**板が唯一の窓**で、端末は固まって見える。対処 = hook の定義の `statusMessage` (共通欄・裏取り §1.3) に「BLEMMA: waiting on the board」を入れて端末に出す (端末での見え方は憶測) + 板の全部の札に「端末で答える」(§4.3) を置く。
+  = ask.py と elicitation.py が待つ間は**板が唯一の窓**で、端末は spinner の行のほかは固まって見える。対処 = ①hook の定義の `statusMessage` (共通欄・裏取り §1.3) に「BLEMMA: 板 (ブラウザ) で答えを待っています / waiting on the board」を入れて spinner の行に出す (§7.2) ②板の全部の札に「端末で答える」(§4.3) を置く ③頁がどこにも開いていない時は板が札を受けない (見る人の判定・§3.4 = hook は判断なしで端末へ = 頁を閉じたまま端末が止まって見えない・11/4 の実装)。
 
 ### 2.1 権限の確認 = `PermissionRequest` (`hooks/permission.py`)
 
@@ -169,15 +179,27 @@
 
 | 欄の形 | 板 |
 |---|---|
-| `enum`、または `oneOf` の [{`const`,`title`}] (単一選択) | 選択肢ごとに釦 (字は `title`、無ければ値) |
-| `type: array` + `items` の `enum` / `anyOf` (複数選択) | 印の付く釦 + 「送る」(`minItems` が 2 以上・`maxItems` が選択肢の数より少ない欄は板で守れない = 描けない欄) |
+| `enum`、または `oneOf` の [{`const`,`title`}] (単一選択) | 選択肢ごとに釦 (字は `title`、無ければ値)。実装 (11/4) は `anyOf` の [{`const`,`title`}] と、旧い `enumNames` (在れば釦の字) も読む |
+| `type: array` + `items` の `enum` / `oneOf` / `anyOf` (複数選択) | 印の付く釦 + 「送る」(`minItems` が 2 以上・`maxItems` が選択肢の数より少ない欄は板で守れない = 描けない欄) |
 | `boolean` | 2 釦 (はい / いいえ・欄の `title` を問いに) |
-| `integer` / `number` で `minimum`〜`maximum` が 10 個以内 | 数の釦 (**提出版の外** = 描けない欄の扱い) |
-| `string` (enum なし)・幅の広い数 | `default` が在れば「既定の値で: <値>」の釦 1 つ (候補の釦)、無ければ「端末で答える」だけ (板で文字は書かない) (**提出版の外** = 描けない欄の扱い) |
+| `integer` / `number` で `minimum`〜`maximum` が 10 個以内 | 数の釦 (**提出版の外** = 描けない欄の扱い・11/4 の実装も作っていない) |
+| `string` (enum なし)・幅の広い数 | `default` が在れば「既定の値で: <値>」の釦 1 つ (候補の釦)、無ければ「端末で答える」だけ (板で文字は書かない) (**提出版の外** = 描けない欄の扱い・既定の値の釦も 11/4 の実装は作っていない) |
 | ask_board の「ほかの答え」(const `"other"` + 任意の書く欄 `other_text`・§2.5) | 「ほかの答え」は端末で答える釦 (押すと無出力)・`other_text` は板に出さない |
 | 上のどれでもない・欄が 7 つ以上 | 札を出さず無出力 (端末へ) |
 
 - 描けない欄 (11/4 の実装): 必須 (`required`) なら札ごと無出力で端末へ・任意なら板では空のまま (`content` に入れない・書きたい時は「端末で答える」)。1 欄の選択肢が 13 個以上も描けない欄。欄の数は `properties` の数で数える。
+- **欄の必須と、送れる最小の選択の数は別** (11/4 の実装・外部のレビューの MEDIUM を受けて分けた): 必須の単一選択と `boolean` = 1 つ選ぶまで先へ進めない・必須の複数選択 = `minItems` が 0 なら印 0 個でも送れて値は `[]`、`minItems` が無いか 1 なら 1 個以上・任意の欄 = 頁に「空のまま」の釦が出て、空のまま送った欄は `content` に入れない (任意の欄はどの形でも空なら入れない = 上の描けない欄と同じ扱い)。
+- **描けない形の一覧** (11/4 の実装・どれも無出力 = Claude Code の既定の form へ):
+
+| 形 | 扱い |
+|---|---|
+| 欄が 7 つ以上 (`properties` の数)・描ける欄が 0・`requested_schema` の `type` が `object` でない | 札ごと端末へ |
+| `mode` が `form` でない (無ければ form と見る)・stdin に `url` がある (URL mode・下) | 札ごと端末へ |
+| `mcp_server_name` が無い (誰が訊いているか出せない = MCP の MUST を守れない) | 札ごと端末へ |
+| 札の payload が 256 KiB を超える | 札ごと端末へ |
+| 複数選択の `minItems` が 2 以上・`maxItems` が選択肢の数より少ない (板で数の縛りを守れない) | 描けない欄 (必須なら札ごと・任意なら空のまま) |
+| 1 欄の選択肢が 13 個以上 (釦は 1 欄 12 個まで) | 描けない欄 |
+| enum の無い `string`・`integer` / `number` (文字と数の入力・上の表の提出版の外) | 描けない欄 |
 
 - `default` は釦に印を付けるだけで、押すまで送らない。`required` の欄が埋まるまで「送る」を出さない。
 - `mode` が `url` = 板では答えない (`accept` を返すと dialog が出ず URL は開かない・裏取り §1.7【raw】) → 無出力で端末へ。Notification の `elicitation_url_dialog` で板は光るだけ (§2.4)。
@@ -199,27 +221,29 @@
 | 公式の入力 (stdin の鍵) | 共通欄 + `message`・任意で `title`・`notification_type` |
 | 板に出す物 | 板の縁を光らせ、上の帯に `message` を 10 秒 (音は設定で入 / 切)。札が出ていれば札を点滅。`idle_prompt` = 「Claude が次の指示を待っています (端末へ)」。`elicitation_url_dialog` = 「端末でリンクを開くか決めてください」。決める釦は出さない (観察だけ) |
 | 返す出力 (stdout) | 何も書かない・exit 0 ("Exit code and stderr are ignored"・裏取り §1.4) |
-| 時限と退化 | settings の `timeout` 10 秒・板へは 1 回 POST して待たない (1 秒で諦める・v1 の判断)。板が居なければ何もしない |
+| 時限と退化 | settings の `timeout` 10 秒・板へは 1 回 POST して待たない (v1 の判断)。通信の全体の期限 = **2 秒** (11/4 の実装・繋ぐ所から受け終えるまでの総期限・数は `hooks/notify.py` の 1 か所 = 共通の client の既定の 1 秒をここで上書き)・転送 (3xx) は追わない。`python -I` で起こされても自分の dir を `sys.path` の頭に足して `_client` を読む。板が居ない・通信の失敗・壊れた入力・例外・それでも `_client` を読めない置き方でも、何も返さず exit 0 (他の 3 本と同じ守り) |
 | 出典 | https://code.claude.com/docs/en/hooks.md (Notification 節)・https://code.claude.com/docs/en/hooks-guide.md・裏取り §1.8 |
 
-- matcher = `permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input` (英字・`_`・`|` だけ = `|` 区切りの完全一致の一覧・裏取り §1.3)。型の全部 = 裏取り §1.8。
+- matcher = `permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input` (英字・`_`・`|` だけ = `|` 区切りの完全一致の一覧・裏取り §1.3)。型の全部 = 裏取り §1.8。notify.py も `notification_type` を見て、この 5 つの外は送らない (11/4 の実装)。
 - 主経路にしない理由: `permission_prompt` は "Expect `permission_prompt` once you haven't typed for about six seconds." (約 6 秒)、`idle_prompt` は応答の後 約 60 秒 (裏取り §1.8) = 板の札は PermissionRequest / PreToolUse / Elicitation で先に出ている。Notification は光と音の役。
 
 ### 2.5 先回りの 1 本 = 同梱の MCP server `blemma` の道具 `ask_board` (`mcp/blemma_mcp.py`)
 
 役: エージェントが文脈から用意した 2〜6 個の選択肢を、MCP の elicitation (form・enum) で人に出す。Elicitation の hook (§2.3) が板に出し、選ばれた物が道具の戻りになる。独自の注入の口は要らない。
 
-**道具の schema** (`tools/list` で返す・v1 の判断):
+**道具の schema** (`tools/list` で返す・v1 の判断。下は 11/4 の実装の通り = v1 の案から `minLength`・`uniqueItems` と、説明文の「ここで止める」の 2 文を足した):
 ```json
 {
   "name": "ask_board",
-  "description": "Ask the human to pick one of 2-6 short choices (big buttons on the BLEMMA board, or the normal form without it). Use at a decision point or to offer next steps. Always include one choice that stops or waits.",
+  "description": "Ask the human to pick one of 2-6 short choices (big buttons on the BLEMMA board, or the normal form without it). Use at a decision point or to offer next steps. The server adds 'ここで止める' if absent; reserve one of the six slots for it. A stop or cancel answer instructs you to stop and wait; it cannot enforce a stop.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "title": { "type": "string", "description": "One-sentence question, up to 80 characters" },
-      "choices": { "type": "array", "items": { "type": "string", "maxLength": 40 },
-                   "minItems": 2, "maxItems": 6, "description": "Short, distinct labels" },
+      "title": { "type": "string", "minLength": 1, "maxLength": 80,
+                 "description": "One-sentence question, up to 80 characters" },
+      "choices": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 40 },
+                   "minItems": 2, "maxItems": 6, "uniqueItems": true,
+                   "description": "Short, distinct labels; at most five if the stop choice is absent" },
       "allow_free_text": { "type": "boolean", "default": false,
                            "description": "Also accept an answer in the human's own words" }
     },
@@ -228,6 +252,7 @@
 }
 ```
 - 道具の説明文は英語 (Claude が読む物・README と揃える)。字の上限・重複・数を道具の側で確かめ、外れたら `isError: true` で理由を返す。
+- **「ここで止める」は server が足す** (11/4 の実装): 選択肢に「ここで止める」が無ければ末尾に足す = 自分の選択肢は 5 つまで・6 つ渡す時は必ず「ここで止める」を含む (含まない 6 つは `isError`)。
 
 **出す elicitation** (2025-11-25 の版の `elicitation/create` の params):
 ```json
@@ -264,8 +289,12 @@
 | `decline` | `{"answer": null, "declined": true}` + 「人はどれも選びませんでした。別の案を出すか、文で訊いてください」 | false |
 | `cancel` | `{"answer": null, "cancelled": true}` + 「人はこの問い合わせを閉じました。作業を止めて次の指示を待ってください」 | false |
 | client が elicitation を宣言していない | 「この環境では MCP の問いが出せません。AskUserQuestion か文で訊いてください」 | true |
+| 応答が期限までに来ない (11/4 の実装) | 「回答の待ち時間を過ぎました。作業を止めて次の指示を待ってください」+ 出した問いに `notifications/cancelled` を送る | true |
+| client が `tools/call` を取り消した (`notifications/cancelled`・11/4 の実装) | 待ちを解き、`cancel` と同じ戻り (出した問いにも取り消しを送る) | false |
+| 応答の形が合わない (`choice` が出した選択肢に無い・`other_text` が 200 字を超える など) | 理由の 1 文 (英語) | true |
 
-- `cancel` の戻りの「止めて待ってください」は Claude への**指示で、止まる保証ではない** (§5.4)。
+- `cancel` の戻りの「止めて待ってください」は Claude への**指示で、止まる保証ではない** (§5.4)。時間切れの戻りも同じ (止めて待つ指示・同じ問いを繰り返させない = 同梱の skill の読み方の表)。
+- **待つ秒** (11/4 の実装) = 板の server の `Limits` の hook の自前の期限と同じ数 (555 秒・§3.4) を読む (数は 1 か所)。板が無く端末の form で答える時も、同じ 555 秒で諦める。遅れて来た応答は捨てる。
 
 **板が無い環境での退化**: 板が居ない・期限 = Elicitation の hook が無出力 → 端末に Claude Code の既定の form (同じ `oneOf` の選択肢) が出る (Esc = cancel)。hooks を入れていない人が使っても同じ form が出る。elicitation を話さない client では上の表の最後の行。
 
@@ -276,8 +305,9 @@
 4. 2026-07-28 の版 (`InputRequiredResult` に入れて返し、client が `inputResponses` を付けて呼び直す = MRTR・裏取り §2.3【raw】) は作らない。2025-11-25 が通らなかった時も**MRTR へ自動で全面変更せず、ask_board を外して範囲を縮める** (§10.2)。
 
 **同梱の skill** `skills/board/SKILL.md` (作法・v1 の判断): ①答えが 2〜6 個の選択肢に絞れる問いは `ask_board` で出す ②作業の区切り (commit の後・試験の後) で「次の一手」を 3 つ前後 ③選択肢は 40 字以内・互いに違う・必ず「ここで止める / 待つ」を 1 つ ④答えを推測で進めない (cancel なら止まる) ⑤Claude 自身の確かめ (2〜4 択) は `AskUserQuestion` でもよい・subagent の中からは `ask_board` (AskUserQuestion が無い) ⑥自由記述が要りそうな問いは、ありそうな答えを先に選択肢に入れてから `allow_free_text` (候補の釦を増やす = 端末へ戻る回を減らす)。CLAUDE.md へ誘導する 1 行の例 =「迷う所は ask_board か AskUserQuestion で 2〜6 択にして訊く」。
+- 11/4 の実装 (日本語 + 英語の要約): ③は「無ければ server が「ここで止める」を足す = 6 つの枠の 1 つを空けておく (自分の選択肢は 5 つまで)」。戻りの読み方の表を足した = `index` (n 番目を選んだ → その文のとおりに進む)・`free_text` (文を指示として読む)・`declined` (別の案か文で訊く)・`cancelled` (止めて待つ)・**時間切れの `isError` = 止めて次の指示を待つ (同じ問いを繰り返さない)**・それ以外の `isError` = 引数を直すか、AskUserQuestion か文で訊く。時間切れを「引数を直す」の行に入れない (外部のレビューの所見)。
 
-**要る版**: Claude Code **v2.1.287 以降** (利用者が設定した stdio の MCP server に elicitation を宣言する版・裏取り §2.4【raw】)。v2.1.314 で確かめる。
+**要る版**: Claude Code **v2.1.287 以降** (利用者が設定した stdio の MCP server に elicitation を宣言する版・裏取り §2.4【raw】)。v2.1.314 で確かめる → v2.1.318 で確かめた (§10.3 の 3)。
 
 **別の公式の口 (提出版の外)**: `Stop` の hook が `"decision": "block"` + `reason` を返すと、Claude は止まらず `reason` を指示として続ける (連続 8 回の上限・裏取り §1.8【raw】) = 「Claude が止まった時に板で次の一手を選ぶ」をエージェントの協力なしで作れる。ただ応答のたびに待ちが入り、キーで使う人の端末を塞ぐ (§5.6)。
 
