@@ -14,7 +14,7 @@ import pytest
 import server as S
 from conftest import FAST
 
-PERM = {"head": "Bash", "text": "list", "blocks": [{"label": "command", "text": "ls", "mono": True}]}
+PERM = {"head": "Bash", "text": "一覧を出す", "blocks": [{"label": "command", "text": "echo 日本語 && ls", "mono": True}]}
 
 
 def post_ask(srv, kind="permission", payload=None):
@@ -80,6 +80,7 @@ def test_page_flow_answer_undo_answer_and_hook_gets_it(live):
     cid = post_ask(srv)["id"]
     card = srv.wait_card()
     assert card["id"] == cid and card["state"] == "shown" and card["payload"]["head"] == "Bash"
+    assert card["payload"]["blocks"][0]["text"] == "echo 日本語 && ls" and card["payload"]["text"] == "一覧を出す"
     st, body, _, _ = srv.request("POST", "/answer", {"id": cid, "seq": card["view_seq"],
                                                      "choice": {"type": "allow_once"}, "by": "dwell",
                                                      "presses": 1})

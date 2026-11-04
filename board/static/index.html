@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>BLEMMA</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/board.css">
+</head>
+<body>
+<div id="band" class="band" role="status" aria-live="polite" hidden></div>
+<div class="app">
+  <header class="top">
+    <div class="top-left">
+      <span id="kind" class="kind"></span>
+      <span id="from" class="from"></span>
+      <span id="remain" class="remain"></span>
+      <span id="queue" class="queue"></span>
+    </div>
+    <div class="top-right">
+      <span id="stats" class="stats"></span>
+      <button id="stats-reset" class="mini" type="button" data-key="reset"></button>
+      <button id="phone-btn" class="mini" type="button" data-key="phone"></button>
+      <button id="gear-btn" class="mini" type="button" data-key="gear"></button>
+    </div>
+  </header>
+  <div id="status" class="status" role="status" aria-live="polite"></div>
+  <main id="card" class="card">
+    <h1 id="head" class="head"></h1>
+    <p id="text" class="text"></p>
+    <div id="blocks" class="blocks"></div>
+    <h2 id="question" class="question"></h2>
+    <ul id="summary" class="summary"></ul>
+  </main>
+  <div id="opts" class="opts"></div>
+  <footer class="bottom">
+    <div id="fixed-zone" class="fixed-zone"></div>
+    <div id="term-zone" class="term-zone"></div>
+  </footer>
+</div>
+<div id="undo-zone" class="undo-zone" role="alert" hidden>
+  <p id="undo-label" class="undo-label"></p>
+  <button id="undo-btn" class="btn undo" type="button" data-key="undo" data-dwell="1"><span class="fill"></span><span class="label" id="undo-text"></span></button>
+</div>
+<div id="overlay" class="overlay" hidden>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="panel-title">
+    <h2 id="panel-title" class="panel-title"></h2>
+    <div id="panel-body" class="panel-body"></div>
+    <button id="panel-close" class="mini close" type="button" data-key="close"></button>
+  </div>
+</div>
+<script src="/static/board_core.js"></script>
+<script src="/static/board.js"></script>
+</body>
+</html>

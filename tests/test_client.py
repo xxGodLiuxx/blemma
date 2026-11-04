@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 import _client as C
+import server as S
 from conftest import FAST
 
 HOOK_IN = {"session_id": "abcdef0123", "cwd": "/home/u/demo-repo", "hook_event_name": "PermissionRequest"}
@@ -285,3 +286,8 @@ def test_check_permission_reasons():
     assert C._check_choice("permission", PERM, {"type": "deny", "reason": 2}) is not None
     assert C._check_choice("permission", {"head": "x"}, {"type": "allow_always", "suggestion": 0}) is None
     assert C._check_choice("permission", PERM, {"type": "terminal"}) is None
+
+
+def test_ask_giveup_matches_server_limits():
+    """client だけが写して持つ数は 1 つ = server の Limits と同じ値 (数は 1 か所)。"""
+    assert C.ASK_GIVEUP_SEC == S.Limits().ask_giveup

@@ -1,0 +1,234 @@
+/* BLEMMA の板 = 無地・高コントラスト (7:1 を狙う)・釦 96px 以上・間 24px・端から 48px・字 28px 以上 (§4.1)。
+ * 外の font を読まない = 機械に入っている字だけ。 */
+:root {
+  --bg: #ffffff;
+  --fg: #000000;
+  --muted: #333333;
+  --line: #000000;
+  --btn-bg: #ffffff;
+  --aux-bg: #f0f0f0;
+  --fill-color: #ffd400;
+  --mark-bg: #000000;
+  --mark-fg: #ffffff;
+  --scan-bg: #000000;
+  --scan-fg: #ffffff;
+  --focus: #0047b3;
+  --low-bg: #8b0000;
+  --low-fg: #ffffff;
+  --band-bg: #000000;
+  --band-fg: #ffffff;
+  --glow: #0047b3;
+  --pad: 48px;
+  --gap: 24px;
+  --btn-min: 96px;
+  font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", Meiryo,
+    "Noto Sans CJK JP", "Noto Sans JP", sans-serif;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --fg: #ffffff;
+    --muted: #d6d6d6;
+    --line: #ffffff;
+    --btn-bg: #000000;
+    --aux-bg: #1a1a1a;
+    --fill-color: #5c4a00;
+    --mark-bg: #ffffff;
+    --mark-fg: #000000;
+    --scan-bg: #ffffff;
+    --scan-fg: #000000;
+    --focus: #ffd400;
+    --low-bg: #ffb3b3;
+    --low-fg: #000000;
+    --band-bg: #ffffff;
+    --band-fg: #000000;
+    --glow: #ffd400;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
+body { font-size: 28px; line-height: 1.4; }
+body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  height: 100vh;
+  padding: var(--pad);
+  gap: 16px;
+}
+
+.top { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--gap); flex-wrap: wrap; }
+.top-left, .top-right { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.kind { font-weight: 700; }
+.from, .queue { color: var(--muted); }
+.remain { font-variant-numeric: tabular-nums; padding: 0 8px; }
+.remain.low { background: var(--low-bg); color: var(--low-fg); }
+.stats { font-size: 20px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.status { min-height: 40px; font-size: 24px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.card { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.head { font-size: 36px; margin: 0 0 8px; overflow-wrap: anywhere; }
+.text { margin: 0 0 12px; overflow-wrap: anywhere; }
+.question { font-size: 32px; margin: 12px 0; overflow-wrap: anywhere; }
+.blocks section { margin: 0 0 12px; }
+.blocks .label { font-size: 20px; color: var(--muted); }
+.blocks pre, .blocks .plain {
+  margin: 4px 0 0;
+  font-size: 24px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 32vh;
+  overflow: auto;
+  border: 2px solid var(--line);
+  padding: 12px;
+}
+.blocks pre { font-family: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace; }
+.summary { margin: 0; padding-left: 1.2em; }
+.summary:empty, .question:empty, .text:empty, .head:empty { display: none; }
+
+.opts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(280px, calc((100% - 2 * var(--gap)) / 3)), 1fr));
+  gap: var(--gap);
+}
+.bottom { display: flex; justify-content: space-between; gap: var(--gap); margin-top: calc(var(--gap) - 16px); }
+.fixed-zone .btn, .term-zone .btn { min-width: 320px; }
+
+.btn {
+  position: relative;
+  overflow: hidden;
+  min-height: var(--btn-min);
+  min-width: var(--btn-min);
+  padding: 16px 24px;
+  font: inherit;
+  font-size: 28px;
+  font-weight: 700;
+  text-align: left;
+  color: var(--fg);
+  background: var(--btn-bg);
+  border: 4px solid var(--line);
+  border-radius: 12px;
+  cursor: pointer;
+  touch-action: manipulation;
+  --p: 0;
+}
+.btn .fill {
+  position: absolute;
+  inset: 0;
+  background: var(--fill-color);
+  transform-origin: left center;
+  transform: scaleX(var(--p));
+  pointer-events: none;
+}
+.btn > :not(.fill) { position: relative; }
+.btn .label, .btn .desc, .btn .sub { display: block; overflow-wrap: anywhere; }
+.btn .desc, .btn .sub { font-size: 22px; font-weight: 400; margin-top: 4px; }
+.btn .num {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  font-size: 18px;
+  font-weight: 400;
+}
+.btn .def { display: inline-block; font-size: 18px; border: 2px solid currentColor; padding: 0 6px; margin-top: 6px; }
+.btn.aux, .btn.term { background: var(--aux-bg); }
+.btn.fixed { border-style: double; border-width: 8px; }
+.btn[aria-pressed="true"] { background: var(--mark-bg); color: var(--mark-fg); }
+.btn[aria-pressed="true"] .label::before { content: "✓ "; }
+.btn:disabled { cursor: default; border-style: dashed; }
+.btn:focus-visible, .mini:focus-visible { outline: 6px solid var(--focus); outline-offset: 4px; }
+.btn.scan { background: var(--scan-bg); color: var(--scan-fg); outline: 6px dashed var(--focus); outline-offset: 4px; }
+
+.mini {
+  font: inherit;
+  font-size: 20px;
+  min-height: 44px;
+  padding: 4px 12px;
+  color: var(--fg);
+  background: var(--btn-bg);
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.undo-zone {
+  position: fixed;
+  top: calc(var(--pad) + 64px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(720px, calc(100vw - 2 * var(--pad)));
+  padding: 24px;
+  background: var(--bg);
+  border: 4px solid var(--line);
+  border-radius: 12px;
+  text-align: center;
+  z-index: 10;
+}
+.undo-label { margin: 0 0 16px; font-weight: 700; overflow-wrap: anywhere; }
+.btn.undo { width: 100%; text-align: center; min-height: 120px; font-size: 36px; }
+
+.band {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 12px var(--pad);
+  background: var(--band-bg);
+  color: var(--band-fg);
+  font-size: 24px;
+  font-weight: 700;
+  z-index: 20;
+}
+.card.blink { animation: blink 1s step-end 3; }
+@keyframes blink { 50% { opacity: 0.35; } }
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 30;
+  overflow: auto;
+  padding: var(--pad);
+}
+.panel { max-width: 1100px; margin: 0 auto; }
+.panel-title { font-size: 32px; margin: 0 0 16px; }
+.panel-body .url {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  font-size: 32px;
+  overflow-wrap: anywhere;
+  border: 4px solid var(--line);
+  padding: 16px;
+  margin: 0 0 16px;
+  user-select: all;
+}
+.panel-body label { display: flex; justify-content: space-between; gap: 16px; margin: 0 0 16px; }
+.panel-body select { font: inherit; font-size: 24px; min-height: 48px; color: var(--fg); background: var(--btn-bg); border: 2px solid var(--line); }
+.close { margin-top: 16px; }
+
+[hidden] { display: none !important; }
+
+/* 携帯 = 縦 1 列・触れて押す (§4.2・§4.4) */
+@media (max-width: 720px) {
+  :root { --pad: 16px; --gap: 16px; }
+  .app { height: auto; }
+  .card { overflow: visible; }
+  .opts { grid-template-columns: 1fr; }
+  .bottom { flex-direction: column; }
+  .fixed-zone .btn, .term-zone .btn { width: 100%; min-width: 0; }
+  .top { font-size: 22px; }
+  .top-left { gap: 4px 12px; }
+  .top-right .stats, #stats-reset { display: none; }
+  .bottom { margin-top: 0; }
+  .undo-zone { top: 16px; }
+}
+
+/* 動きを止める = 点滅なし (滞留の満ちは頁の側で段にする) */
+@media (prefers-reduced-motion: reduce) {
+  .card.blink { animation: none; }
+  * { transition: none !important; scroll-behavior: auto !important; }
+}
