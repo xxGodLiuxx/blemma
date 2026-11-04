@@ -495,13 +495,21 @@
     return o;
   }
 
+  /* 押しの数の和 (入力ごと)。返りが 200 でなかった要求の分を、まだ送っていない数へ戻す時に使う */
+  function addPresses(a, b) {
+    var o = zeroPresses();
+    INPUTS.forEach(function (k) { o[k] = ((a && a[k]) || 0) + ((b && b[k]) || 0); });
+    return o;
+  }
+
   var api = {
     I18N: I18N, INPUTS: INPUTS, FIXED: FIXED, fmt: fmt, tx: tx, pickLang: pickLang,
     parseDwell: parseDwell, parseScan: parseScan, mmss: mmss, Dwell: Dwell, Scan: Scan,
     reasonsOf: reasonsOf, visibleSuggestions: visibleSuggestions, suggestionLabel: suggestionLabel,
     steps: steps, needConfirm: needConfirm, newUi: newUi, uiAfterUndo: uiAfterUndo,
     buildScreen: buildScreen, pressKey: pressKey, choiceLabel: choiceLabel, viewKey: viewKey,
-    statsText: statsText, endText: endText, lightText: lightText, zeroPresses: zeroPresses
+    statsText: statsText, endText: endText, lightText: lightText, zeroPresses: zeroPresses,
+    addPresses: addPresses
   };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.BlemmaCore = api;

@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+
+import server as board_server
 
 NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(NODE is None, reason="node が無い (頁の JS の試験は node で走らせる)")
@@ -137,3 +140,84 @@ console.log(JSON.stringify({ before: before.fired, stay: stay.fired, stayLast: s
     assert out["before"] == [] and out["stay"] == []
     assert out["stayLast"] == {"target": None, "progress": 0, "fire": False}
     assert out["again"] and out["again"][0] >= 3048 + 1000
+
+
+# ---- 計 (押しの数) = 要求ごとに切り離して送る (§4.5) ----
+
+PAGE_SETUP = r"""
+const card = __CARD__;
+const sent = [];
+function reply(status, data) { return { status: status, json: function () { return Promise.resolve(data); } }; }
+function show(t) {                                   /* render() の代わりに、札と釦を頁の状態に置く */
+  t.S.card = card;
+  t.S.ui = core.newUi(card.id);
+  t.S.key = core.viewKey(card, t.S.ui, "ja");
+  t.S.btns = { allow_once: { disabled: false } };
+  t.S.dwell = new core.Dwell(1000, 150);
+  t.S.token = "x";
+}
+"""
+
+
+def _board(clock):
+    lim = replace(board_server.Limits(), wait_hold=0.0, pending_hold=0.0, viewer=None)
+    board = board_server.Board(lim, clock=clock)
+    assert board.ask("permission", {"cwd": "repo"}, {"head": "Bash"})[0] == 200
+    return board, board.pending(-1)["card"]
+
+
+def _sum(body) -> int:
+    return sum(body["presses"].values())
+
+
+def test_undo_before_answer_reply_sends_each_press_once(tmp_path, clock):
+    """外のレビューの反例: /answer の返りより先に取り消す = 押しは 2 回。送る数も 1 + 1 で、server の計は 2。"""
+    board, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + r"""
+let releaseAnswer = null;
+const gate = new Promise(function (r) { releaseAnswer = r; });
+const t = loadPage(function (path, opt) {
+  sent.push({ path: path, body: JSON.parse(opt.body) });
+  if (path === "/answer") return gate.then(function () { return reply(200, { undo_ms: 3000, undo_remaining: 3 }); });
+  return Promise.resolve(reply(200, { state: "shown" }));
+});
+show(t);
+t.press("allow_once", "dwell");                      /* 1 押し = /answer (返りはまだ来ない) */
+t.S.card = Object.assign({}, card, { state: "deciding" });
+t.S.undoAt = performance.now() + 3000;               /* 写しは deciding = 猶予のうち */
+t.press("undo", "switch");                           /* 1 押し = /undo (/answer の返りより先) */
+setTimeout(function () {
+  releaseAnswer();
+  setTimeout(function () { console.log(JSON.stringify({ sent: sent, delta: t.S.delta })); }, 20);
+}, 20);
+""").replace("__CARD__", json.dumps(card)))
+    answer, undo = out["sent"]
+    assert (answer["path"], undo["path"]) == ("/answer", "/undo")
+    assert (_sum(answer["body"]), _sum(undo["body"])) == (1, 1)
+    assert sum(out["delta"].values()) == 0
+    a, u = answer["body"], undo["body"]                # 頁が送った物をそのまま server へ
+    assert board.answer(a["id"], a["seq"], a["choice"], a["by"], a["presses"])[0] == 200
+    assert board.undo(u["id"], u["by"], u["presses"]) == (200, {"state": "shown"})
+    stats = board.pending(-1)["stats"]
+    assert stats["total"] == 2 and (stats["presses"]["dwell"], stats["presses"]["switch"]) == (1, 1)
+
+
+def test_refused_answer_gives_its_presses_to_the_next_send(tmp_path, clock):
+    """返りが 200 でない (409 = server は数えていない) 押しは、同じ札の次の送りに乗せる (元の動きのまま)。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + r"""
+const codes = [409, 200];
+const t = loadPage(function (path, opt) {
+  sent.push({ path: path, body: JSON.parse(opt.body) });
+  const st = codes.shift();
+  return Promise.resolve(reply(st, st === 200 ? { undo_ms: 3000, undo_remaining: 3 } : { error: "stale" }));
+});
+show(t);
+t.press("allow_once", "dwell");
+setTimeout(function () {
+  t.press("allow_once", "dwell");
+  setTimeout(function () { console.log(JSON.stringify({ sent: sent, delta: t.S.delta })); }, 20);
+}, 20);
+""").replace("__CARD__", json.dumps(card)))
+    assert [_sum(s["body"]) for s in out["sent"]] == [1, 2]
+    assert sum(out["delta"].values()) == 0

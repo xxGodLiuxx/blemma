@@ -409,24 +409,42 @@
     updateSide(performance.now());
   }
 
+  /* 押しの数は要求ごとに切り離す (§4.5) = 送る分を取り出し、まだ送っていない数は 0 から数える。
+   * 返りが 200 ならその分は server が数えた。200 でない・届かない時は、同じ札の間だけ未送の数へ戻す
+   * (/answer の返りより先に取り消しても、同じ押しを 2 回送らない)。 */
+  function takePresses() {
+    var sent = S.delta;
+    S.delta = C.zeroPresses();
+    return sent;
+  }
+
+  function giveBack(cardId, sent) {
+    if (S.card && S.card.id === cardId) S.delta = C.addPresses(S.delta, sent);
+  }
+
   function sendAnswer(choice, by) {
     var card = S.card;
     S.answering = true;
     var sentKey = S.key;
-    api("POST", "/answer", { id: card.id, seq: card.view_seq, choice: choice, by: by, presses: S.delta })
+    var sent = takePresses();
+    api("POST", "/answer", { id: card.id, seq: card.view_seq, choice: choice, by: by, presses: sent })
       .then(function (r) {
         if (r.status === 200) {
-          S.delta = C.zeroPresses();
           S.sentKey = sentKey;
-        } else if (r.status === 401) {
+          return;
+        }
+        giveBack(card.id, sent);
+        if (r.status === 401) {
           S.problem = L().bad_token;
         } else {
           showNotice(L().stale);
           kick();
         }
+      }, function () {
+        giveBack(card.id, sent);
+        S.offline = true;
       })
-      .catch(function () { S.offline = true; })
-      .then(function () { S.answering = false; });
+      .then(function () { S.answering = false; }, function () { S.answering = false; });
   }
 
   function doUndo(by) {
@@ -434,13 +452,17 @@
     if (!card || S.undoing) return;
     S.undoing = true;
     S.delta[by] = (S.delta[by] || 0) + 1;
-    api("POST", "/undo", { id: card.id, by: by, presses: S.delta })
+    var sent = takePresses();
+    api("POST", "/undo", { id: card.id, by: by, presses: sent })
       .then(function (r) {
-        if (r.status === 200) S.delta = C.zeroPresses();
-        else kick();
+        if (r.status === 200) return;
+        giveBack(card.id, sent);
+        kick();
+      }, function () {
+        giveBack(card.id, sent);
+        S.offline = true;
       })
-      .catch(function () { S.offline = true; })
-      .then(function () { S.undoing = false; });
+      .then(function () { S.undoing = false; }, function () { S.undoing = false; });
   }
 
   /* ---- 入力 ---- */
