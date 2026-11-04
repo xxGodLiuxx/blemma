@@ -665,7 +665,7 @@ v1.2 = 締切が 11/8 20:00 (参加者ガイド・10/31) なので v1.1 の 8 �
 | 4 退化 | 成立 (対話) | 閉じた port への POST・run.json なし・期限 20 秒の無出力で、3 つの口とも端末のいつもの dialog・質問・form に戻り、端末の答えが通った。Windows では閉じた 127.0.0.1 の port への接続がすぐには断られず、hook の諦め (2 秒) まで掛かった (run.json が無い時は即時)。`-p` の無出力は拒否 (権限)・cancel (MCP) になる = 退化は対話でだけ確かめられる |
 | 5 起動 | 成立 | `--setting-sources project` (か空の `""`) + `--settings <file>` + `--strict-mcp-config --mcp-config <file>` で、走った hook は BLEMMA の分だけ・MCP は `blemma` だけ (debug の log)。作り手の個人の plugin は入らず (入るのは Claude Code 同梱の plugin だけ)、対話の端末の帯も Claude Code 本体の表示だけだった。`--settings` だけ (user の設定も読む既定) は走らせていない = 公式 doc の "Hook entries merge across settings levels rather than replacing each other" で混ざる。`CLAUDE_CONFIG_DIR` は名を公式 doc で確かめた (その dir での login が要るので走らせていない) |
 
-**§12.2 の 7 件**: 1 成立 (4 つの口とも UTF-8) / 2 上の表の 1〜3 (権限 = dialog が同時に出る・`statusMessage` は画面に出ない / 質問と MCP = dialog も form も出ず、`statusMessage` が spinner の行に出る) / 3 成立 (", " で繋いだ文字列も配列も通る。Claude に見えるのはどちらも ", " で繋いだ文字列 = label にカンマがあると区切りが曖昧) / 4 成立 / 5 要る / 6 成立 (改行区切り・`mcpServers` の `command` + `args` + `env` を `--mcp-config` で渡した) / 7 成立。
+**§12.2 の 7 件**: 1 成立 (4 つの口とも UTF-8) / 2 上の表の 1〜3 (権限 = dialog が同時に出る・`statusMessage` は画面に出ない (80×24 の端末で) / 質問と MCP = dialog も form も出ず、`statusMessage` が spinner の行に出る) / 3 成立 (", " で繋いだ文字列も配列も通る。Claude に見えるのはどちらも ", " で繋いだ文字列 = label にカンマがあると区切りが曖昧) / 4 成立 / 5 要る / 6 成立 (改行区切り・`mcpServers` の `command` + `args` + `env` を `--mcp-config` で渡した) / 7 成立。
 
 **§12.3 の 5 件**:
 1. 端末の先着は**答えの種で分かれる** = 権限の dialog で許可の側 (Yes) を選ぶと hook は止められず最後まで走る (遅れた答えは効かない = (b))。No (turn を止める) では hook が `cancelled` で殺される (= (a))。質問と MCP の口は待つ間に端末の dialog が無く、端末でできるのは Esc (中断) だけ = 殺される (a・質問の口で測った・MCP の口も同じ見込み)。→ §3.7 の (a) と (b) を両方作る。
@@ -680,7 +680,7 @@ v1.2 = 締切が 11/8 20:00 (参加者ガイド・10/31) なので v1.1 の 8 �
 1. **v2.1.318 の対話の既定の mode は auto** (起動の画面に "Auto mode is now Claude Code's default permission mode.")。auto のままだと Edit は PermissionRequest を呼ばずに通った = 板の権限の札が出ない。→ 雛形・README・デモの起動の行に `--permission-mode default` を足す (端末の帯は「manual mode on」)。
 2. 「次から訊かない」の `addRules` (`destination: localSettings`) は、起こし方の設定の源に `local` が無いと、その回に効かない (file には書かれる)。→ 隔離して起こす形は `--setting-sources project,local`。
 3. project の `.claude/settings.json` の `permissions.allow` (`mcp__blemma__ask_board`) は、信頼の確認を通るまで無視される (`-p` の警告・対話の信頼の確認に "This folder pre-approves 1 tool permission")。`--settings` で渡した `permissions.allow` は信頼の前でも効いた。
-4. 待つ間の端末: 権限の口では `statusMessage` は画面に出ない (dialog が前に出る)・質問と MCP の口では spinner の行に出る。端末の form で `ask_board` に答えるのは、この試しの操作で 5 打鍵 (→ ↓ Space ↓ Enter)。
+4. 待つ間の端末: 権限の口では `statusMessage` は画面に出ない (dialog が前に出る・80×24 の端末で)・質問と MCP の口では spinner の行に出る。端末の form で `ask_board` に答えるのは、この試しの操作で 5 打鍵 (→ ↓ Space ↓ Enter)。
 5. stdin の欄: `effort` は object (`{"level": …}`)・`scratchpad_dir` は対話でだけ来る・Elicitation には subagent の中からでも `agent_id`・`agent_type` が来ない (札の「出どころ」に `agent_type` を出せるのは権限の口だけ)。
 
 ---
