@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.log
+*.token
+.env
+board/state/
+.claude/
+_work/
+*.bak
