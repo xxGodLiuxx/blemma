@@ -11,7 +11,7 @@ import pytest
 import server as S
 
 # 設計の数そのまま + 抱える秒だけ 0 (偽の時計では待てないので)
-CORE = replace(S.Limits(), wait_hold=0.0, pending_hold=0.0)
+CORE = replace(S.Limits(), wait_hold=0.0, pending_hold=0.0, viewer=None)
 
 PERM = {"head": "Bash", "text": "list files", "blocks": [{"label": "command", "text": "ls -la", "mono": True}]}
 
@@ -50,7 +50,7 @@ def test_defaults_match_design_table():
     assert (lim.undo_ms, lim.undo_max_ms) == (3000, 5000)
     assert lim.hard_deadline == 555
     assert (lim.ask_giveup, lim.wait_giveup, lim.wait_hold, lim.pending_hold) == (2, 20, 15, 25)
-    assert (lim.disconnect, lim.queue_max, lim.light) == (5, 20, 10)
+    assert (lim.disconnect, lim.queue_max, lim.light, lim.viewer) == (5, 20, 10, 30)
     # 不等式 = --wait ≤ 上限 < 上限 + 15 < timeout
     assert lim.wait <= lim.create_cap < lim.create_cap + 15 <= lim.hard_deadline < S.HOOK_TIMEOUT_SEC
     S.check_limits(lim)
@@ -408,3 +408,51 @@ def test_answer_still_ok_after_other_ask_and_notify(clock):
     b.notify({"type": "idle_prompt", "message": "m"})
     assert b.seq > s0 and b.pending(-1)["card"]["view_seq"] == seq
     assert b.answer(a, seq, {"type": "allow_once"}, "dwell", 1)[0] == 200
+
+
+# ---- 見る人の判定 (頁を閉じている時は札を受けない = 端末が最長 5 分止まって見えない) ----
+
+def test_ask_ok_within_startup_grace(clock):
+    b = new_board(clock, viewer=30.0)
+    clock.advance(29.9)                               # 起動も「見た」と数える
+    assert b.ask("permission", {}, dict(PERM))[0] == 200
+
+
+def test_ask_refused_after_viewer_seconds_then_ok_once_a_page_looks(clock):
+    b = new_board(clock, viewer=30.0)
+    clock.advance(30.1)
+    assert b.ask("permission", {}, dict(PERM)) == (503, {"error": "no_viewer"})
+    b.pending(-1)                                     # 頁が 1 回見た (抱える秒 0 = すぐ返る)
+    assert b.ask("permission", {}, dict(PERM))[0] == 200
+
+
+def test_viewer_gone_expires_queued_but_deciding_completes(clock):
+    b = new_board(clock, viewer=30.0)
+    a = ask(b)
+    c = ask(b)
+    for _ in range(7):                                # 28 秒 (hook は居る・頁は見ていない)
+        clock.advance(4)
+        keepalive(b, a, c)
+    assert b.answer(a, card_of(b, a).view_seq, {"type": "allow_once"}, "dwell", 1)[0] == 200
+    clock.advance(2.5)                                # 30.5 秒 = 見る人なし
+    keepalive(b, a, c)
+    assert card_of(b, c).state == "expired"           # 待ちの札は切れる
+    assert card_of(b, c).first_shown is None
+    assert card_of(b, a).state == "deciding"          # 決めた札は猶予を完走する
+    clock.advance(0.6)
+    _, body, card = b.wait(a)
+    assert body == {"state": "answered", "answer": {"type": "allow_once"}}
+    b.delivered(card, True)
+    assert card_of(b, a).state == "answered"
+
+
+def test_viewer_gone_expires_the_shown_card(clock):
+    b = new_board(clock, viewer=30.0)
+    a = ask(b)
+    for _ in range(7):
+        clock.advance(4)
+        keepalive(b, a)
+    assert card_of(b, a).state == "shown"
+    clock.advance(3)                                  # 31 秒
+    keepalive(b, a)
+    assert card_of(b, a).state == "expired"

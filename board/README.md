@@ -19,6 +19,8 @@ python board/server.py
 
 頁が「token がありません」と出たら、server の端末に出た URL (`#t=` つき) を開いてください。
 
+頁がどこにも開かれていない時 (最後に見てから 30 秒・起動の時は「見た」と数える) は、板は新しい札を受けません。hook は判断なしで終わり、端末のいつもの確認が出ます (頁を閉じたまま端末が止まって見えないように)。開いていた札も切れます (決めた札は猶予を終えて渡します)。
+
 ### 頁の URL の引数
 
 `http://127.0.0.1:8765/?dwell=1.2&scan=1.5&key=Space&lang=ja#t=<token>`
@@ -63,7 +65,7 @@ python board/server.py
 
 ## In short (EN)
 
-`python board/server.py` starts the board on 127.0.0.1 only (Python 3.10+, standard library only), writes a per-launch token to `board/state/run.json`, and opens the page in your default browser. Ctrl+C stops it; hooks then return no decision and Claude Code shows its normal prompt. If the page says there is no token, open the URL (with `#t=`) printed in the server's terminal.
+`python board/server.py` starts the board on 127.0.0.1 only (Python 3.10+, standard library only), writes a per-launch token to `board/state/run.json`, and opens the page in your default browser. Ctrl+C stops it; hooks then return no decision and Claude Code shows its normal prompt. If the page says there is no token, open the URL (with `#t=`) printed in the server's terminal. If no page has been open for 30 s (the server start counts as a view), the board refuses new cards and hooks fall back to the terminal's normal prompt; open cards expire, and a card already decided still finishes its grace period.
 
 Page URL: `http://127.0.0.1:8765/?dwell=1.2&scan=1.5&key=Space&lang=en#t=<token>` — `dwell` = seconds to press by resting the pointer/gaze on a button (`0` = click only), `scan` = one-key switch scanning interval (`?scan` alone = 1.5 s), `key` = the switch key, `lang` = `ja`/`en`, `sound=on` = a short tone on Claude Code's notifications. Undo during the grace period: gaze/click/touch the top-center Undo button, Backspace/Esc on a keyboard, or release the switch and press it again. Phones reach 127.0.0.1 through your own forwarding (e.g. `adb reverse tcp:8765 tcp:8765`); the card text and the token travel to wherever you forward.
 

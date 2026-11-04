@@ -64,6 +64,8 @@ class Limits:
     disconnect: float = 5.0                      # 最後の /wait が返ってから、これで接続の終了
     queue_max: int = 20                          # 生きている札の上限 (超えたら /ask は 503)
     light: float = 10.0                          # Notification の帯を出す秒
+    viewer: Optional[float] = 30.0               # 見る人の判定 = 開いている /pending が無く、最後の返りから
+                                                 # この秒を過ぎたら見る人なし (None = 判定しない)
     tick: float = 0.1                            # 状態を進める刻み
     keep_done: int = 200                         # 終わった札の控え (本文なし) を持つ数
 
@@ -91,6 +93,8 @@ def check_limits(lim: Limits) -> None:
         raise ValueError("hook の自前の期限は 作成からの上限 + 猶予の上限 より後")
     if lim.hard_deadline >= HOOK_TIMEOUT_SEC:
         raise ValueError("hook の自前の期限は settings の hook の timeout より前")
+    if lim.viewer is not None and not lim.viewer > 0:
+        raise ValueError("見る人の判定の秒は 0 より大きく")
 
 
 KINDS = ("permission", "question", "elicitation")
@@ -225,6 +229,8 @@ class Board:
         self.light: Optional[dict] = None
         self.light_until = 0.0
         self.closed = False
+        self.viewers_open = 0                 # 開いている GET /pending の数 (見る人)
+        self.viewer_seen = clock()            # 最後に見た時 = 起動も「見た」と数える
         self._logq: "collections.deque[Tuple[str, dict]]" = collections.deque()
         self._log_lock = threading.Lock()
         self._reset_stats_locked(clock())
@@ -248,6 +254,12 @@ class Board:
 
     def _head(self) -> Optional[Card]:
         return self.live[0] if self.live else None
+
+    def _viewer_present(self, now: float) -> bool:
+        """見る人が居るか = /pending が開いている・最後の返りから viewer 秒のうち (どの見え方も同じに数える)。"""
+        if self.lim.viewer is None or self.viewers_open > 0:
+            return True
+        return now - self.viewer_seen <= self.lim.viewer
 
     def _show(self, c: Card, now: float) -> None:
         c.state = "shown"
@@ -324,6 +336,11 @@ class Board:
             if now - c.last_wait_end > self.lim.disconnect:
                 self._finish(c, "disconnected", now)
                 changed = True
+        if not self._viewer_present(now):
+            for c in list(self.live):         # 見る人が居ない = 待ちと表示の札は切る・決めた札 (deciding) は完走
+                if c.state in ("queued", "shown"):
+                    self._finish(c, "expired", now)
+                    changed = True
         head = self._head()
         if head is not None and head.state == "shown" and head.deadline is not None \
                 and now >= head.deadline:
@@ -334,7 +351,7 @@ class Board:
                 self._finish(c, "expired", now)            # 表示の直後の期限切れを作らない
                 changed = True
         head = self._head()
-        if head is not None and head.state == "queued":
+        if head is not None and head.state == "queued" and self._viewer_present(now):
             self._show(head, now)
         if head is not None and head.state == "deciding" and not head.ready \
                 and head.undo_until is not None and now >= head.undo_until:
@@ -370,6 +387,8 @@ class Board:
         with self.cond:
             now = self.clock()
             self._advance(now)
+            if not self._viewer_present(now):
+                return 503, {"error": "no_viewer"}           # 頁を閉じている = hook は判断なしで端末へ
             if len(self.live) >= self.lim.queue_max:
                 return 503, {"error": "queue_full"}
             c = Card(secrets.token_hex(8), kind, _clean_from(frm), payload, now)
@@ -559,13 +578,19 @@ class Board:
     def pending(self, seen: Any) -> dict:
         """頁の long-poll。seq が seen と違えばすぐ、同じなら変わるまで (最長 pending_hold) 待つ。"""
         with self.cond:
-            until = self.clock() + self.lim.pending_hold
-            while True:
-                now = self.clock()
-                self._advance(now)
-                if seen != self.seq or now >= until or self.closed:
-                    return self._snapshot(now)
-                self.cond.wait(max(0.0, min(1.0, until - now)))
+            self.viewers_open += 1
+            self.viewer_seen = self.clock()
+            try:
+                until = self.clock() + self.lim.pending_hold
+                while True:
+                    now = self.clock()
+                    self._advance(now)
+                    if seen != self.seq or now >= until or self.closed:
+                        return self._snapshot(now)
+                    self.cond.wait(max(0.0, min(1.0, until - now)))
+            finally:
+                self.viewers_open -= 1
+                self.viewer_seen = self.clock()
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +630,11 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def log_request(self, code: Any = "-", size: Any = "-") -> None:
-        _debug(f"{self.command} {urlsplit(self.path).path} {code}")
+        if DEBUG:                         # 壊れた要求の行では path がまだ無い = getattr で読む
+            _debug(f"{getattr(self, 'command', None)} {urlsplit(getattr(self, 'path', '') or '').path} {code}")
+
+    def version_string(self) -> str:
+        return self.server_version
 
     # ---- 返す ----
     def _send(self, code: int, body: bytes, ctype: Optional[str], extra: Optional[dict] = None) -> bool:
@@ -617,6 +646,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Connection", "close")
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
             self.end_headers()

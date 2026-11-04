@@ -65,10 +65,10 @@
       S.retry = 0;
       S.offline = false;
       apply(r.data);
-      setTimeout(poll, 0);
+      poll();                         /* 直に呼ぶ = 隠れた頁で timer が間引かれても見る人の数が途切れない */
     }).catch(function () {
       clearTimeout(timer);
-      if (S.kicked) { S.kicked = false; setTimeout(poll, 0); return; }
+      if (S.kicked) { S.kicked = false; poll(); return; }
       S.offline = true;
       S.retry = S.retry ? Math.min(5000, S.retry * 2) : 1000;
       setTimeout(poll, S.retry);

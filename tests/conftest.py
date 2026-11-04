@@ -37,6 +37,7 @@ FAST = board_server.Limits(
     wait=2.0, perm_wait=2.0, create_cap=4.0, min_show=0.5, undo_ms=200, undo_max_ms=500,
     hard_margin=1.0, ask_giveup=2.0, wait_giveup=2.0, wait_hold=0.3, pending_hold=0.5,
     disconnect=0.4, queue_max=20, light=0.5, tick=0.02,
+    viewer=None,                       # 見る人の判定は専用の試験だけで使う
 )
 
 

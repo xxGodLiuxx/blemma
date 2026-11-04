@@ -218,3 +218,33 @@ def test_notify_text_and_session_are_not_kept(live, monkeypatch, capsys):
     assert '"end": "disconnected"' in text and secret not in text
     err = capsys.readouterr().err
     assert "POST /notify 204" in err and secret not in err
+
+
+def test_open_long_poll_counts_as_a_viewer(live):
+    """開いている GET /pending が在る間は札を受け、閉じて秒を過ぎたら 503 (no_viewer)。"""
+    srv = live(replace(FAST, viewer=0.5, pending_hold=2.0))
+    seq = srv.pending()["seq"]
+    th = threading.Thread(target=lambda: srv.pending(seq))     # 変化が無ければ 2 秒抱える
+    th.start()
+    time.sleep(1.0)                                   # 最後の返りから 0.5 秒を過ぎた・long-poll は開いている
+    st, body, _, _ = srv.request("POST", "/ask", {"kind": "permission", "payload": {"head": "x"}})
+    assert st == 200, body
+    th.join(5)                                        # 札が出て long-poll が返った = 見る人が閉じた
+    time.sleep(0.8)
+    st, body, _, _ = srv.request("POST", "/ask", {"kind": "permission", "payload": {"head": "y"}})
+    assert (st, body) == (503, {"error": "no_viewer"})
+
+
+@pytest.mark.parametrize("debug", [False, True])
+def test_malformed_request_line_gets_400_without_crash(live, monkeypatch, capsys, debug):
+    """壊れた要求の行 (TLS の hello に似た物・port の走査) でも handler が落ちずに 400 を返す。"""
+    monkeypatch.setattr(S, "DEBUG", debug)
+    srv = live()
+    s = socket.create_connection(("127.0.0.1", srv.port))
+    s.sendall(b"\x16\x03\x01\x02\x00 junk HTTP/9\r\n\r\n")
+    data = s.recv(4096)
+    s.close()
+    time.sleep(0.1)
+    assert data.startswith(b"HTTP/1.0 400")
+    assert "Traceback" not in capsys.readouterr().err
+
