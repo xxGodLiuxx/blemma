@@ -1,0 +1,850 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""BLEMMA の板の server (Python 3.10+・標準ライブラリだけ)。設計 = docs/design.md §3。
+
+    python board/server.py [--port 8765] [--wait 300] [--perm-wait SEC] [--undo-ms 3000]
+                           [--allow-host NAME] [--no-browser] [--no-log]
+
+- 127.0.0.1 だけで待ち受ける (LAN・外には bind しない)。起動ごとに token を作り、
+  `board/state/run.json` (`{"port","token","pid","started"}`) に書く。止まる時に消す。
+- hook は `POST /ask` → `GET /wait` (long-poll)、頁は `GET /pending` (long-poll) → `POST /answer`
+  / `POST /undo`。札は 1 件ずつ・期限は表示から数えて作成からの上限で抑える・終わりは 5 つの
+  どれか 1 つに排他で決まる・取り消しの猶予は server が持つ (§3.4〜§3.6)。
+- 板から返すのは choice (種と番号) だけ。公式の JSON は hook が組む (§3.3)。
+- 記録は選択と時刻と数だけ (問いの本文・道具の入力・答えの文字は書かない・§3.8)。
+"""
+
+from __future__ import annotations
+
+import argparse
+import atexit
+import collections
+import hmac
+import json
+import os
+import re
+import secrets
+import select
+import signal
+import socket
+import socketserver
+import sys
+import threading
+import time
+import webbrowser
+from dataclasses import dataclass, replace
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, urlsplit
+
+# ---------------------------------------------------------------------------
+# §3.4 の数 = この 1 か所で決める。settings の hook の timeout を変える時は
+# HOOK_TIMEOUT_SEC だけを直せば、作成からの上限・hook の自前の期限・--wait の上限が揃って動く
+# (不等式 = --wait ≤ 上限 < 上限 + 15 < timeout)。
+# ---------------------------------------------------------------------------
+HOOK_TIMEOUT_SEC = 600          # settings の hook の timeout (examples の雛形と揃える)
+
+
+@dataclass(frozen=True)
+class Limits:
+    wait: float = 300.0                          # 待ち (--wait・表示から)
+    perm_wait: float = 300.0                     # 権限の札の待ち (--perm-wait・既定 = --wait)
+    create_cap: float = HOOK_TIMEOUT_SEC - 60    # 作成からの上限 = 540
+    min_show: float = 30.0                       # 表示の最小の残り (切っていれば表示しない)
+    undo_ms: int = 3000                          # 取り消しの猶予 (--undo-ms・0〜undo_max_ms)
+    undo_max_ms: int = 5000                      # 取り消しの猶予の上限
+    hard_margin: float = 10.0                    # hook の自前の期限 = 上限 + 猶予の上限 + これ
+    ask_giveup: float = 2.0                      # hook が POST /ask を諦める秒 (hooks/_client.py)
+    wait_giveup: float = 20.0                    # hook が 1 回の GET /wait を諦める秒
+    wait_hold: float = 15.0                      # server が /wait を抱える最長
+    pending_hold: float = 25.0                   # server が /pending を抱える最長
+    disconnect: float = 5.0                      # 最後の /wait が返ってから、これで接続の終了
+    queue_max: int = 20                          # 生きている札の上限 (超えたら /ask は 503)
+    light: float = 10.0                          # Notification の帯を出す秒
+    tick: float = 0.1                            # 状態を進める刻み
+    keep_done: int = 200                         # 終わった札の控え (本文なし) を持つ数
+
+    @property
+    def hard_deadline(self) -> float:
+        """hook の自前の期限 (作った時から) = 540 + 5 + 10 = 555 秒。"""
+        return self.create_cap + self.undo_max_ms / 1000.0 + self.hard_margin
+
+
+def check_limits(lim: Limits) -> None:
+    """起動を断る値なら ValueError (§3.4 の決まり)。"""
+    if not 0 < lim.wait <= lim.create_cap:
+        raise ValueError(f"--wait は 0 より大きく {lim.create_cap:g} 秒 (作成からの上限) 以下")
+    if not 0 < lim.perm_wait <= lim.create_cap:
+        raise ValueError(f"--perm-wait は 0 より大きく {lim.create_cap:g} 秒 (作成からの上限) 以下")
+    if not 0 <= lim.undo_ms <= lim.undo_max_ms:
+        raise ValueError(f"--undo-ms は 0〜{lim.undo_max_ms} ms")
+    if lim.create_cap + lim.undo_max_ms / 1000.0 >= lim.hard_deadline:
+        raise ValueError("hook の自前の期限は 作成からの上限 + 猶予の上限 より後")
+    if lim.hard_deadline >= HOOK_TIMEOUT_SEC:
+        raise ValueError("hook の自前の期限は settings の hook の timeout より前")
+
+
+KINDS = ("permission", "question", "elicitation")
+INPUTS = ("dwell", "key", "switch", "touch", "click")   # §4.2 の入力 (by)
+FINAL = ("answered", "released", "expired", "disconnected", "resolved")
+CHOICES = {
+    "permission": ("allow_once", "allow_always", "deny", "stop", "terminal"),
+    "question": ("answer", "skip", "terminal"),
+    "elicitation": ("accept", "decline", "cancel", "terminal"),
+}
+MAX_BODY = 512 * 1024
+STATIC_NAME = re.compile(r"^[A-Za-z0-9_-]+\.(html|css|js|svg|png|ico)$")
+CONTENT_TYPES = {
+    "html": "text/html; charset=utf-8",
+    "css": "text/css; charset=utf-8",
+    "js": "text/javascript; charset=utf-8",
+    "svg": "image/svg+xml",
+    "png": "image/png",
+    "ico": "image/x-icon",
+}
+PAGE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+DEBUG = os.environ.get("BLEMMA_DEBUG") == "1"
+
+
+def _debug(msg: str) -> None:
+    if DEBUG:
+        sys.stderr.write("BLEMMA server: " + msg + "\n")
+        sys.stderr.flush()
+
+
+def _is_index(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 1000
+
+
+def check_choice(kind: str, choice: Any) -> Optional[dict]:
+    """choice の形だけを確かめて整える (番号の範囲は hook が自分の入力と照らす・§3.3)。"""
+    if not isinstance(choice, dict):
+        return None
+    t = choice.get("type")
+    if t not in CHOICES.get(kind, ()):
+        return None
+    if t == "allow_always":
+        return {"type": t, "suggestion": choice.get("suggestion")} \
+            if _is_index(choice.get("suggestion")) else None
+    if t == "deny":
+        return {"type": t, "reason": choice.get("reason")} if _is_index(choice.get("reason")) else None
+    if t in ("answer", "accept"):
+        picks = choice.get("picks")
+        if not isinstance(picks, list) or not 0 < len(picks) <= 32:
+            return None
+        for p in picks:
+            if not isinstance(p, list) or len(p) > 64 or not all(_is_index(i) for i in p):
+                return None
+        return {"type": t, "picks": [list(p) for p in picks]}
+    return {"type": t}
+
+
+def _clean_from(v: Any) -> dict:
+    d = v if isinstance(v, dict) else {}
+
+    def s(key: str) -> Optional[str]:
+        x = d.get(key)
+        return x[:80] if isinstance(x, str) and x else None
+
+    return {"cwd": s("cwd") or "", "session": s("session") or "", "agent": s("agent")}
+
+
+def _presses_of(by: str, presses: Any) -> Dict[str, int]:
+    """頁が送る押した数 = 数 (by に数える) か {入力: 数}。外れた値は 0。"""
+    out = {k: 0 for k in INPUTS}
+    if isinstance(presses, dict):
+        for k, v in presses.items():
+            if k in out and isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 1000:
+                out[k] = v
+    elif isinstance(presses, int) and not isinstance(presses, bool) and 0 <= presses <= 1000:
+        out[by if by in out else "click"] = presses
+    return out
+
+
+class Card:
+    """札 1 枚。状態 = queued / shown / deciding / 終わり 5 つ (§3.5)。"""
+
+    def __init__(self, cid: str, kind: str, frm: dict, payload: dict, now: float) -> None:
+        self.id = cid
+        self.kind = kind
+        self.frm = frm
+        self.payload: Optional[dict] = payload
+        self.created = now
+        self.state = "queued"
+        self.first_shown: Optional[float] = None
+        self.deadline: Optional[float] = None
+        self.view_seq = 0
+        self.choice: Optional[dict] = None
+        self.by: Optional[str] = None
+        self.decided_at: Optional[float] = None
+        self.undo_until: Optional[float] = None
+        self.ready = False          # 猶予が過ぎ、hook の /wait へ渡すのを待っている
+        self.delivering = False     # /wait へ書いている最中
+        self.wait_inflight = 0
+        self.last_wait_end = now
+        self.presses = {k: 0 for k in INPUTS}
+        self.undos = 0
+        self.end: Optional[str] = None
+        self.from_deciding = False
+
+
+class Board:
+    """待ち行列と札の状態の確定。HTTP を知らない (試験は clock を差し替えて直に叩ける)。"""
+
+    def __init__(self, limits: Limits, log_dir: Optional[Path] = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.lim = limits
+        self.clock = clock
+        self.log_dir = log_dir
+        self.cond = threading.Condition(threading.Lock())
+        self.seq = 1
+        self.live: List[Card] = []
+        self.done: "collections.OrderedDict[str, Card]" = collections.OrderedDict()
+        self.last: Optional[dict] = None
+        self.light: Optional[dict] = None
+        self.light_until = 0.0
+        self.closed = False
+        self._reset_stats_locked(clock())
+
+    # ---- 内側 (錠の下で呼ぶ) ----
+    def _bump(self) -> None:
+        self.seq += 1
+        self.cond.notify_all()
+
+    def _reset_stats_locked(self, now: float) -> None:
+        self.stats_presses = {k: 0 for k in INPUTS}
+        self.stats_answers = 0
+        self.stats_since = now
+        self.stats_cards: "collections.deque[dict]" = collections.deque(maxlen=20)
+
+    def _find(self, cid: str) -> Optional[Card]:
+        for c in self.live:
+            if c.id == cid:
+                return c
+        return None
+
+    def _head(self) -> Optional[Card]:
+        return self.live[0] if self.live else None
+
+    def _show(self, c: Card, now: float) -> None:
+        wait = self.lim.perm_wait if c.kind == "permission" else self.lim.wait
+        c.state = "shown"
+        if c.first_shown is None:
+            c.first_shown = now
+        c.deadline = min(now + wait, c.created + self.lim.create_cap)
+        self._bump()
+        c.view_seq = self.seq
+
+    def _finish(self, c: Card, end: str, now: float) -> None:
+        c.from_deciding = c.state == "deciding"
+        c.end = end
+        c.state = end
+        if c in self.live:
+            self.live.remove(c)
+        c.payload = None                      # 本文は札が生きている間だけ (§3.3)
+        self.done[c.id] = c
+        while len(self.done) > self.lim.keep_done:
+            self.done.popitem(last=False)
+        sec = None
+        if end in ("answered", "released"):
+            self.stats_answers += 1
+            if c.decided_at is not None and c.first_shown is not None:
+                sec = round(c.decided_at - c.first_shown, 1)
+                self.stats_cards.append({"kind": c.kind, "end": end, "sec": sec})
+        if c.first_shown is not None:
+            self.last = {"id": c.id, "kind": c.kind, "end": end,
+                         "from_deciding": c.from_deciding, "at": now}
+        self._log(c, sec)
+
+    def _log(self, c: Card, sec: Optional[float]) -> None:
+        """1 札 1 行 = 種・終わり・選択の種・秒・手段・押した数・取り消しの数だけ (§3.8)。"""
+        if self.log_dir is None:
+            return
+        rec = {
+            "t": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "kind": c.kind,
+            "end": c.end,
+            "choice": c.choice.get("type") if (c.choice and c.end in ("answered", "released")) else None,
+            "sec": sec,
+            "by": c.by if c.end in ("answered", "released") else None,
+            "presses": sum(c.presses.values()),
+            "undo": c.undos,
+        }
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            path = self.log_dir / f"log-{datetime.now().strftime('%Y-%m-%d')}.jsonl"
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError as e:
+            _debug(f"記録を書けない: {type(e).__name__}")
+
+    def _advance(self, now: float) -> None:
+        """時間で進む物 (接続の終了・期限・表示・猶予の終わり・帯) を進める。"""
+        changed = False
+        for c in list(self.live):
+            if c.delivering or c.wait_inflight > 0:
+                continue
+            if now - c.last_wait_end > self.lim.disconnect:
+                self._finish(c, "disconnected", now)
+                changed = True
+        head = self._head()
+        if head is not None and head.state == "shown" and head.deadline is not None \
+                and now >= head.deadline:
+            self._finish(head, "expired", now)
+            changed = True
+        for c in list(self.live):
+            if c.state == "queued" and c.created + self.lim.create_cap - now < self.lim.min_show:
+                self._finish(c, "expired", now)            # 表示の直後の期限切れを作らない
+                changed = True
+        head = self._head()
+        if head is not None and head.state == "queued":
+            self._show(head, now)
+        if head is not None and head.state == "deciding" and not head.ready \
+                and head.undo_until is not None and now >= head.undo_until:
+            head.ready = True
+            changed = True
+        if self.light is not None and now >= self.light_until:
+            self.light = None
+            changed = True
+        if changed:
+            self._bump()
+
+    def _final_body(self, c: Card) -> dict:
+        if c.end == "answered":
+            return {"state": "answered", "answer": c.choice}
+        if c.end == "resolved":
+            return {"state": "closed"}
+        return {"state": c.end}
+
+    # ---- 外側 (錠を取る) ----
+    def tick(self) -> None:
+        with self.cond:
+            self._advance(self.clock())
+
+    def close(self) -> None:
+        with self.cond:
+            self.closed = True
+            self.cond.notify_all()
+
+    def ask(self, kind: Any, frm: Any, payload: Any) -> Tuple[int, dict]:
+        if kind not in KINDS or not isinstance(payload, dict):
+            return 400, {"error": "bad_request"}
+        with self.cond:
+            now = self.clock()
+            self._advance(now)
+            if len(self.live) >= self.lim.queue_max:
+                return 503, {"error": "queue_full"}
+            c = Card(secrets.token_hex(8), kind, _clean_from(frm), payload, now)
+            self.live.append(c)
+            self._bump()
+            self._advance(now)
+            hard = self.lim.hard_deadline
+            return 200, {
+                "id": c.id,
+                "hard_deadline": round(time.time() + hard, 3),
+                "hard_deadline_in": hard,
+                "wait_giveup": self.lim.wait_giveup,
+                "wait_hold": self.lim.wait_hold,
+            }
+
+    def wait(self, cid: Any, alive: Callable[[], bool] = lambda: True) -> Tuple[int, dict, Optional[Card]]:
+        """hook の long-poll。答えを渡す時は第 3 の値に札を返す (書けたら delivered を呼ぶ)。"""
+        if not isinstance(cid, str):
+            return 400, {"error": "bad_request"}, None
+        with self.cond:
+            c = self._find(cid)
+            if c is None:
+                d = self.done.get(cid)
+                if d is None:
+                    return 404, {"error": "unknown"}, None
+                return 200, self._final_body(d), None
+            c.wait_inflight += 1
+            try:
+                until = self.clock() + self.lim.wait_hold
+                while True:
+                    now = self.clock()
+                    self._advance(now)
+                    if c.end is not None:
+                        return 200, self._final_body(c), None
+                    if c.state == "deciding" and c.ready and not c.delivering:
+                        c.delivering = True
+                        st = "released" if c.choice and c.choice.get("type") == "terminal" else "answered"
+                        body = {"state": st}
+                        if st == "answered":
+                            body["answer"] = c.choice
+                        return 200, body, c
+                    if now >= until or self.closed:
+                        rem = (c.deadline - now) if c.deadline is not None else None
+                        return 200, {"state": "waiting", "card": c.state, "remaining": rem}, None
+                    if not alive():
+                        return 0, {}, None                 # hook は居ない = 返さない
+                    self.cond.wait(min(0.25, max(0.0, until - now)))
+            finally:
+                c.wait_inflight -= 1
+                c.last_wait_end = self.clock()
+
+    def delivered(self, c: Card, ok: bool) -> None:
+        """答えを /wait へ書き終えた (ok) か、書けなかった。終わりを確定する。"""
+        with self.cond:
+            if c.end is not None:
+                return
+            now = self.clock()
+            if ok:
+                self._finish(c, "released" if c.choice and c.choice.get("type") == "terminal"
+                             else "answered", now)
+            else:
+                self._finish(c, "disconnected", now)
+            self._bump()
+            self._advance(now)                     # 次の札をすぐ出す
+
+    def answer(self, cid: Any, seq: Any, choice: Any, by: Any, presses: Any) -> Tuple[int, dict]:
+        with self.cond:
+            now = self.clock()
+            head = self._head()
+            if head is None or head.id != cid:
+                d = self.done.get(cid) if isinstance(cid, str) else None
+                return 409, ({"error": "ended", "end": d.end} if d else {"error": "not_current"})
+            if head.state == "shown" and head.deadline is not None and now >= head.deadline:
+                self._finish(head, "expired", now)        # 期限と同時 = expired が勝つ (§3.6 の 4)
+                self._bump()
+                self._advance(now)
+                return 409, {"error": "expired"}
+            if head.state != "shown":
+                return 409, {"error": "not_shown", "state": head.state}
+            if isinstance(seq, bool) or not isinstance(seq, int) or seq != head.view_seq:
+                return 409, {"error": "stale"}
+            norm = check_choice(head.kind, choice)
+            if norm is None:
+                return 400, {"error": "bad_choice"}
+            by_s = by if by in INPUTS else "click"
+            p = _presses_of(by_s, presses)
+            self._add_presses(head, p)
+            head.state = "deciding"
+            head.choice = norm
+            head.by = by_s
+            head.decided_at = now
+            head.undo_until = now + self.lim.undo_ms / 1000.0
+            head.ready = self.lim.undo_ms == 0
+            self._bump()
+            return 200, {"undo_ms": self.lim.undo_ms, "undo_remaining": self.lim.undo_ms / 1000.0}
+
+    def undo(self, cid: Any, by: Any, presses: Any) -> Tuple[int, dict]:
+        with self.cond:
+            now = self.clock()
+            head = self._head()
+            if head is None or head.id != cid or head.state != "deciding" or head.delivering \
+                    or head.ready or head.undo_until is None or now >= head.undo_until:
+                return 409, {"error": "not_undoable"}
+            by_s = by if by in INPUTS else "click"
+            self._add_presses(head, _presses_of(by_s, presses))
+            head.undos += 1
+            head.choice = None
+            head.by = None
+            head.decided_at = None
+            head.undo_until = None
+            if head.deadline is not None and now < head.deadline:
+                head.state = "shown"                       # 残りの時間はそのまま (§3.6 の 2)
+                self._bump()
+                head.view_seq = self.seq
+                return 200, {"state": "shown"}
+            head.state = "shown"
+            self._finish(head, "expired", now)
+            self._bump()
+            self._advance(now)
+            return 200, {"state": "expired"}
+
+    def _add_presses(self, c: Card, p: Dict[str, int]) -> None:
+        for k, v in p.items():
+            c.presses[k] += v
+            self.stats_presses[k] += v
+
+    def notify(self, body: Any) -> None:
+        d = body if isinstance(body, dict) else {}
+
+        def s(key: str, n: int) -> str:
+            v = d.get(key)
+            return v[:n] if isinstance(v, str) else ""
+
+        with self.cond:
+            now = self.clock()
+            self.light = {"type": s("type", 60), "title": s("title", 200),
+                          "message": s("message", 500), "from": _clean_from(d.get("from"))}
+            self.light_until = now + self.lim.light
+            self._bump()
+
+    def reset_stats(self) -> None:
+        with self.cond:
+            self._reset_stats_locked(self.clock())
+            self._bump()
+
+    def _snapshot(self, now: float) -> dict:
+        head = self._head()
+        card = None
+        if head is not None and head.state in ("shown", "deciding"):
+            card = {
+                "id": head.id, "kind": head.kind, "from": head.frm, "payload": head.payload,
+                "state": head.state, "view_seq": head.view_seq,
+                "remaining": max(0.0, round(head.deadline - now, 2)) if head.deadline else None,
+                "choice": head.choice if head.state == "deciding" else None,
+                "undo_remaining": (max(0.0, round(head.undo_until - now, 2))
+                                   if head.state == "deciding" and head.undo_until and not head.ready
+                                   else (0.0 if head.state == "deciding" else None)),
+            }
+        last = None
+        if self.last is not None:
+            last = dict(self.last)
+            last["ago"] = round(now - last.pop("at"), 1)
+        light = None
+        if self.light is not None:
+            light = dict(self.light)
+            light["remaining"] = round(max(0.0, self.light_until - now), 1)
+        return {
+            "seq": self.seq,
+            "card": card,
+            "queue": sum(1 for c in self.live if c.state == "queued"),
+            "last": last,
+            "light": light,
+            "stats": {
+                "presses": dict(self.stats_presses),
+                "total": sum(self.stats_presses.values()),
+                "answers": self.stats_answers,
+                "elapsed": round(now - self.stats_since, 1),
+                "cards": list(self.stats_cards),
+            },
+            "undo_ms": self.lim.undo_ms,
+        }
+
+    def pending(self, seen: Any) -> dict:
+        """頁の long-poll。seq が seen と違えばすぐ、同じなら変わるまで (最長 pending_hold) 待つ。"""
+        with self.cond:
+            until = self.clock() + self.lim.pending_hold
+            while True:
+                now = self.clock()
+                self._advance(now)
+                if seen != self.seq or now >= until or self.closed:
+                    return self._snapshot(now)
+                self.cond.wait(max(0.0, min(1.0, until - now)))
+
+
+# ---------------------------------------------------------------------------
+# HTTP
+# ---------------------------------------------------------------------------
+class App:
+    def __init__(self, limits: Limits, token: str, allow_hosts: Optional[List[str]] = None,
+                 log_dir: Optional[Path] = None, static_dir: Optional[Path] = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.board = Board(limits, log_dir=log_dir, clock=clock)
+        self.token = token
+        self.hosts = {"127.0.0.1", "localhost"} | {h.lower() for h in (allow_hosts or []) if h}
+        self.static_dir = static_dir or (Path(__file__).resolve().parent / "static")
+
+
+def _peer_alive(sock: socket.socket) -> bool:
+    """相手が接続を閉じていなければ True (読める + 0 byte = 閉じた)。"""
+    try:
+        r, _, _ = select.select([sock], [], [], 0)
+        if not r:
+            return True
+        return sock.recv(1, socket.MSG_PEEK) != b""
+    except (OSError, ValueError):
+        return False
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "BLEMMA"
+    sys_version = ""
+    protocol_version = "HTTP/1.0"
+
+    @property
+    def app(self) -> App:
+        return self.server.app  # type: ignore[attr-defined]
+
+    def log_message(self, fmt: str, *args: Any) -> None:  # 口の名と状態だけ (§3.3)
+        return
+
+    def log_request(self, code: Any = "-", size: Any = "-") -> None:
+        _debug(f"{self.command} {urlsplit(self.path).path} {code}")
+
+    # ---- 返す ----
+    def _send(self, code: int, body: bytes, ctype: Optional[str], extra: Optional[dict] = None) -> bool:
+        try:
+            self.send_response(code)
+            if ctype:
+                self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+            self.wfile.flush()
+            return True
+        except OSError:
+            return False
+
+    def _json(self, code: int, obj: Any) -> bool:
+        if code == 204:
+            return self._send(204, b"", None)
+        return self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+                          "application/json; charset=utf-8")
+
+    def _read_json(self) -> Tuple[Optional[dict], int]:
+        n = self.headers.get("Content-Length")
+        try:
+            size = int(n) if n is not None else -1
+        except ValueError:
+            size = -1
+        if size < 0:
+            return None, 411
+        if size > MAX_BODY:
+            return None, 413
+        try:
+            raw = self.rfile.read(size)
+            data = json.loads(raw.decode("utf-8")) if raw else None
+        except (OSError, ValueError):
+            return None, 400
+        if not isinstance(data, dict):
+            return None, 400
+        return data, 200
+
+    # ---- 門 ----
+    def _host_ok(self) -> bool:
+        host = self.headers.get("Host")
+        if not host:
+            return False
+        name = host.strip()
+        if name.startswith("["):
+            name = name.split("]", 1)[0] + "]"
+        elif ":" in name:
+            name = name.rsplit(":", 1)[0]
+        return name.lower().rstrip(".") in self.app.hosts
+
+    def _token_ok(self) -> bool:
+        given = self.headers.get("X-Blemma-Token") or ""
+        return hmac.compare_digest(given.encode("utf-8"), self.app.token.encode("utf-8"))
+
+    # ---- 口 ----
+    def do_GET(self) -> None:
+        self._route("GET")
+
+    def do_POST(self) -> None:
+        self._route("POST")
+
+    def _route(self, method: str) -> None:
+        if not self._host_ok():
+            self._json(403, {"error": "host"})
+            return
+        parts = urlsplit(self.path)
+        path = parts.path
+        if method == "GET" and path in ("/", "/index.html"):
+            self._static("index.html")
+            return
+        if method == "GET" and path.startswith("/static/"):
+            self._static(path[len("/static/"):])
+            return
+        data, st = (self._read_json() if method == "POST" else (None, 200))
+        if not self._token_ok():          # 本文を読み切ってから断る (読み残すと Windows は RST を返す)
+            self._json(401, {"error": "token"})
+            return
+        board = self.app.board
+        q = parse_qs(parts.query)
+        if method == "GET" and path == "/wait":
+            cid = (q.get("id") or [None])[0]
+            code, body, card = board.wait(cid, alive=lambda: _peer_alive(self.connection))
+            if code == 0:
+                return
+            ok = self._json(code, body)
+            if card is not None:
+                board.delivered(card, ok)
+            return
+        if method == "GET" and path == "/pending":
+            try:
+                seen = int((q.get("seq") or ["-1"])[0])
+            except ValueError:
+                seen = -1
+            self._json(200, board.pending(seen))
+            return
+        if method != "POST":
+            self._json(404, {"error": "not_found"})
+            return
+        if data is None:
+            self._json(st, {"error": "bad_body"})
+            return
+        if path == "/ask":
+            code, body = board.ask(data.get("kind"), data.get("from"), data.get("payload"))
+            self._json(code, body)
+        elif path == "/answer":
+            code, body = board.answer(data.get("id"), data.get("seq"), data.get("choice"),
+                                      data.get("by"), data.get("presses"))
+            self._json(code, body)
+        elif path == "/undo":
+            code, body = board.undo(data.get("id"), data.get("by"), data.get("presses"))
+            self._json(code, body)
+        elif path == "/notify":
+            board.notify(data)
+            self._json(204, None)
+        elif path == "/stats/reset":
+            board.reset_stats()
+            self._json(204, None)
+        else:
+            # /resolve は提出版では作らない (1 対 1 の照合の鍵が見つかった時だけ・§3.7)
+            self._json(404, {"error": "not_found"})
+
+    def _static(self, name: str) -> None:
+        if not STATIC_NAME.match(name):
+            self._json(404, {"error": "not_found"})
+            return
+        path = self.app.static_dir / name
+        try:
+            body = path.read_bytes()
+        except OSError:
+            self._json(404, {"error": "not_found"})
+            return
+        ext = name.rsplit(".", 1)[1]
+        extra = {"X-Frame-Options": "DENY"}
+        if ext == "html":
+            extra["Content-Security-Policy"] = PAGE_CSP
+        self._send(200, body, CONTENT_TYPES[ext], extra)
+
+
+class BoardHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False      # 抱えた long-poll の終わりを待たずに閉じる
+    # Windows の SO_REUSEADDR は使用中の port にも bind できてしまう = 使わず、排他の旗を立てる
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        socketserver.TCPServer.server_bind(self)      # getfqdn (遅い逆引き) を避ける
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
+
+
+def make_server(app: App, port: int) -> BoardHTTPServer:
+    """127.0.0.1 だけに bind する。使用中なら OSError (黙って別の port に移らない)。"""
+    httpd = BoardHTTPServer(("127.0.0.1", port), Handler)
+    httpd.app = app  # type: ignore[attr-defined]
+    return httpd
+
+
+def start_ticker(board: Board) -> threading.Thread:
+    def loop() -> None:
+        while not board.closed:
+            board.tick()
+            time.sleep(board.lim.tick)
+
+    t = threading.Thread(target=loop, name="blemma-ticker", daemon=True)
+    t.start()
+    return t
+
+
+# ---------------------------------------------------------------------------
+# run.json (在処と token)
+# ---------------------------------------------------------------------------
+def write_run_file(path: Path, info: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(info, f)
+    for _ in range(20):
+        try:
+            os.replace(str(tmp), str(path))
+            break
+        except PermissionError:          # Windows で読み手が開いている間
+            time.sleep(0.05)
+    else:
+        os.replace(str(tmp), str(path))
+    if os.name != "nt":
+        os.chmod(str(path), 0o600)
+
+
+def remove_run_file(path: Path, token: str) -> None:
+    """自分の token の run.json だけを消す (後から起きた別の server の物は消さない)。"""
+    try:
+        info = json.loads(path.read_text(encoding="utf-8"))
+        if info.get("token") == token:
+            path.unlink()
+    except (OSError, ValueError):
+        pass
+
+
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        prog="board/server.py",
+        description="BLEMMA の板 (127.0.0.1 だけ)。起動ごとの token を board/state/run.json に書く。")
+    ap.add_argument("--port", type=int, default=8765, help="待ち受ける port (既定 8765・使用中なら起動を断る)")
+    ap.add_argument("--wait", type=float, default=Limits.wait,
+                    help=f"札の待ち・表示から (既定 {Limits.wait:g} 秒・{Limits.create_cap:g} まで)")
+    ap.add_argument("--perm-wait", type=float, default=None, help="権限の札の待ち (既定 = --wait)")
+    ap.add_argument("--undo-ms", type=int, default=Limits.undo_ms,
+                    help=f"取り消しの猶予 (既定 {Limits.undo_ms} ms・0〜{Limits.undo_max_ms})")
+    ap.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                    help="Host の照合に足す名 (携帯の転送で 127.0.0.1 / localhost 以外の名を使う時・複数可)")
+    ap.add_argument("--no-browser", action="store_true", help="頁を既定のブラウザで開かない")
+    ap.add_argument("--no-log", action="store_true", help="board/state/log-*.jsonl を書かない")
+    return ap.parse_args(argv)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = parse_args(argv)
+    lim = Limits(wait=args.wait,
+                 perm_wait=args.perm_wait if args.perm_wait is not None else args.wait,
+                 undo_ms=args.undo_ms)
+    try:
+        check_limits(lim)
+    except ValueError as e:
+        print(f"BLEMMA: 起動を断りました: {e}", file=sys.stderr)
+        return 2
+    if not 0 < args.port < 65536:
+        print("BLEMMA: --port は 1〜65535", file=sys.stderr)
+        return 2
+    here = Path(__file__).resolve().parent
+    state = here / "state"
+    token = secrets.token_urlsafe(32)
+    app = App(lim, token, allow_hosts=args.allow_host, log_dir=None if args.no_log else state)
+    try:
+        httpd = make_server(app, args.port)
+    except OSError as e:
+        print(f"BLEMMA: 127.0.0.1:{args.port} を開けません (使用中か権限なし): {e}", file=sys.stderr)
+        return 1
+    port = httpd.server_address[1]
+    run = state / "run.json"
+    write_run_file(run, {"port": port, "token": token, "pid": os.getpid(),
+                         "started": datetime.now().astimezone().isoformat(timespec="seconds")})
+    atexit.register(remove_run_file, run, token)
+    if hasattr(signal, "SIGTERM"):
+        def _term(signum: int, frame: Any) -> None:
+            raise KeyboardInterrupt
+        try:
+            signal.signal(signal.SIGTERM, _term)
+        except (OSError, ValueError):
+            pass
+    start_ticker(app.board)
+    url = f"http://127.0.0.1:{port}/#t={token}"
+    print(f"BLEMMA: 板を開きました = {url}", flush=True)
+    print("BLEMMA: 止める = Ctrl+C (止めると hook は判断を返さず、Claude Code のいつもの確認に戻ります)", flush=True)
+    if not args.no_browser:
+        threading.Timer(0.3, webbrowser.open, (url,)).start()
+    try:
+        httpd.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        app.board.close()
+        httpd.server_close()
+        remove_run_file(run, token)
+        print("BLEMMA: 板を止めました")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

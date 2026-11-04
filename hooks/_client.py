@@ -342,6 +342,9 @@ def _ask(hook_input: Any, kind: str, payload: dict, run_file: Any) -> Tuple[str,
     except urllib.error.HTTPError as e:
         debug(f"/ask が {e.code}")
         return ("busy" if e.code == 503 else "refused"), None
+    except ValueError:
+        debug("/ask の返りが壊れている")
+        return "error", None
     except Exception as e:
         debug(f"板へ繋がらない: {type(e).__name__}")
         return "no_board", None
