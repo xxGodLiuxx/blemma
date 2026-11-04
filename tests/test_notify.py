@@ -23,13 +23,13 @@ INPUT = {"hook_event_name": "Notification", "notification_type": "agent_needs_in
          "cwd": "/example/project", "session_id": "abcdef123456", "agent_type": "worker"}
 
 
-def run_hook(run_file, data=INPUT, *, raw=None, extra_env=None):
+def run_hook(run_file, data=INPUT, *, raw=None, extra_env=None, flags=()):
     env = os.environ.copy()
     env.update(BLEMMA_RUN_FILE=str(run_file), BLEMMA_DEBUG="0",
                PYTHONIOENCODING="cp932", PYTHONDONTWRITEBYTECODE="1")
     if extra_env:
         env.update(extra_env)
-    result = subprocess.run([sys.executable, str(SCRIPT)],
+    result = subprocess.run([sys.executable, *flags, str(SCRIPT)],
                             input=raw if raw is not None else json.dumps(data, ensure_ascii=False).encode("utf-8"),
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             cwd=ROOT, env=env, timeout=5)
@@ -107,6 +107,15 @@ def test_real_board_receives_light_without_creating_card(live):
     assert snapshot["card"] is None and snapshot["queue"] == 0
     assert snapshot["light"]["type"] == INPUT["notification_type"]
     assert snapshot["light"]["message"] == INPUT["message"]
+
+
+@pytest.mark.parametrize("raw", [None, b"{broken"])
+def test_isolated_python_exits_zero_and_still_reaches_the_board(fake_server, raw):
+    """python -I (隔離 = script の dir が sys.path に無い) でも無出力・exit 0 (他の 3 本と同じ守り)。
+    正しい入力では板へ届く = import の守りが黙って飲み込んだのではなく、_client を読めている。"""
+    run_file, requests = fake_server()
+    run_hook(run_file, raw=raw, flags=("-I", "-B"))
+    assert len(requests) == (1 if raw is None else 0)
 
 
 def test_absent_server_exits_zero_without_output(tmp_path):
