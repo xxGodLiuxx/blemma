@@ -7,6 +7,7 @@ MCP server が form で人に訊く時 (同梱の `ask_board` を含む)、`requ
 
 - 板で描く欄 (提出版): 単一選択 (`enum`・`oneOf` の [{const, title}]) = 選択肢ごとに釦 / `boolean` = はい・いいえ /
   複数選択 (`type: array` + `items` の `enum` か `anyOf`・数の縛りが板で守れる物だけ) = 印の付く釦 + 「送る」。
+  必須の複数選択は `minItems` が 0 の時だけ印 0 個でも送れる (= 値は `[]`)・`minItems` が無ければ 1 個以上。
 - `ask_board` の「ほかの答え」(const `"other"` + 書く欄 `other_text` = §2.5) = 押すと端末で答える
   (板で文字は書かない)。
 - 板で描けない欄 (文字・数の入力など): 必須なら札ごと端末へ (無出力)・任意なら板では空のまま (content に入れない)。
@@ -97,6 +98,7 @@ def field_of(name: str, spec: Any, required: bool, free: bool) -> Optional[dict]
     title = _text(spec.get("title")) or _text(spec.get("description")) or name
     typ = spec.get("type")
     default = spec.get("default")
+    least: Optional[int] = None                  # 複数選択で送れる最小の印の数 (下の min_picks)
     if typ == "boolean":
         options: List[dict] = [{"label": YES, "value": True}, {"label": NO, "value": False}]
         marks = [0] if default is True else [1] if default is False else []
@@ -114,6 +116,9 @@ def field_of(name: str, spec: Any, required: bool, free: bool) -> Optional[dict]
         dv = default if isinstance(default, list) else []
         marks = [i for i, (v, _) in enumerate(ch) if any(_same(v, d) for d in dv)]
         multi = True
+        # 欄の必須と最小の選択の数は別: 必須でも minItems が 0 なら 0 個 (= [] を値に) で送れる。
+        # minItems が無い必須の欄は 1 個以上 (今までどおり)。任意の欄は 0 個 = 空のまま (content に入れない)
+        least = (0 if lo is not None and lo <= 0 else 1) if required else 0
     elif typ in (None, "string", "number", "integer"):
         ch = choices_of(spec)
         if ch is None:
@@ -127,6 +132,8 @@ def field_of(name: str, spec: Any, required: bool, free: bool) -> Optional[dict]
     if not 1 <= len(options) <= MAX_FIELD_OPTIONS:
         return None
     field = {"name": name, "title": title, "multi": multi, "required": required, "options": options}
+    if least is not None:
+        field["min_picks"] = least
     if marks:
         field["default"] = marks
     return field

@@ -142,6 +142,30 @@ console.log(JSON.stringify({ before: before.fired, stay: stay.fired, stayLast: s
     assert out["again"] and out["again"][0] >= 3048 + 1000
 
 
+def test_required_multi_with_min_picks_0_can_send_no_marks(tmp_path):
+    """必須の複数選択で min_picks 0 (minItems 0) = 印 0 個でも「次へ」→「送る」で [] を送れる。
+    min_picks が無い必須の欄は今までどおり 1 個以上 (「次へ」を押せない)。"""
+    out = node(tmp_path, r"""
+function card(minPicks) {
+  const f = { name: "tags", title: "札", multi: true, required: true,
+              options: [{ label: "a", value: "a" }, { label: "b", value: "b" }] };
+  if (minPicks !== undefined) f.min_picks = minPicks;
+  return { id: "c", kind: "elicitation", state: "shown", view_seq: 1, payload: { head: "srv", text: "t", fields: [f] } };
+}
+function nextOf(c) {
+  return core.buildScreen(c, core.newUi(c.id), "ja").options.filter(function (o) { return o.key === "next"; })[0];
+}
+const zero = card(0), none = card(undefined);
+const step = core.pressKey(zero, core.newUi(zero.id), "next");
+const send = step && step.ui ? core.pressKey(zero, step.ui, "send") : null;
+console.log(JSON.stringify({ zeroNext: nextOf(zero).disabled, noneNext: nextOf(none).disabled,
+                             noneStep: core.pressKey(none, core.newUi(none.id), "next"),
+                             send: send && send.send }));
+""")
+    assert out["zeroNext"] is False and out["send"] == {"type": "accept", "picks": [[]]}
+    assert out["noneNext"] is True and out["noneStep"] is None
+
+
 # ---- 計 (押しの数) = 要求ごとに切り離して送る (§4.5) ----
 
 PAGE_SETUP = r"""

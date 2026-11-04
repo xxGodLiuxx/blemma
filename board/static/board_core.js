@@ -271,6 +271,15 @@
     return card.kind === "question" ? !!(st && st.multiSelect) : !!(st && st.multi);
   }
 
+  /* 1 欄で送れる最小の選択の数 (欄の必須と最小の選択の数は別・§2.3) = 質問は 1・MCP の問いの任意の欄は 0
+   * (空のまま)・必須の複数選択は min_picks (0 か 1・無ければ 1。0 = 印 0 個で「次へ」= 値は [])・必須の単一は 1 */
+  function minPicks(card, st) {
+    if (card.kind === "question") return 1;
+    if (!st || !st.required) return 0;
+    if (isMulti(card, st) && (st.min_picks === 0 || st.min_picks === 1)) return st.min_picks;
+    return 1;
+  }
+
   /* 1 押しで送れない札 = 複数の問い・複数選択 → 最後に確かめの画面と「送る」 */
   function needConfirm(card) {
     var st = steps(card);
@@ -358,8 +367,7 @@
         out.options.push({ key: "skipf", label: L.skip_field, aux: true });
       }
       if (multi) {
-        var need = card.kind === "question" || !!cur.required;
-        out.options.push({ key: "next", label: L.next, aux: true, disabled: need && ui.marks.length === 0 });
+        out.options.push({ key: "next", label: L.next, aux: true, disabled: ui.marks.length < minPicks(card, cur) });
       }
     } else {
       out.question = L.confirm;
@@ -419,7 +427,7 @@
       return advance([i]);
     }
     if (key === "next" && multi) {
-      if (u.marks.length === 0 && (card.kind === "question" || cur.required)) return null;
+      if (u.marks.length < minPicks(card, cur)) return null;
       return advance(u.marks.slice());
     }
     if (key === "skipf" && card.kind === "elicitation" && !cur.required) return advance([]);

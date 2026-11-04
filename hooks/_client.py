@@ -90,6 +90,8 @@ notify) と、要れば `mcp/blemma_mcp.py` が同じ関数を呼ぶ。設計 = 
          {"name": "choice", "title": "次の一手を選んでください",
           "multi": false,                      # true = 複数選択 (array の enum)
           "required": true,                    # false なら頁は「空のまま」の釦を足す
+          "min_picks": 1,                      # multi だけ・必須の欄で送れる最小の印の数 (0 か 1・無ければ 1。
+                                               # 0 = minItems 0 = 印 0 個で送れて値は [])。任意の欄は常に 0
           "default": [0],                      # 任意・印を付けるだけで、押すまで送らない
           "options": [
               {"label": "PR の本文を書く", "value": "1"},
@@ -99,8 +101,8 @@ notify) と、要れば `mcp/blemma_mcp.py` が同じ関数を呼ぶ。設計 = 
 
 返り = `{"type": "accept", "picks": [[i], ...], "values": {"choice": "1", ...}}` (`values` は
 **client が自分の payload の写しから組む** = 板は添字しか返さない・空のままの欄は入れない・
-multi は値の list) / `{"type": "decline"}` (断る) / `{"type": "cancel"}` (固定の位置の釦
-「この問い合わせを閉じる」) / `None`。
+multi は値の list・必須の multi を印 0 個で送った時 (min_picks 0) は `[]`) / `{"type": "decline"}` (断る) /
+`{"type": "cancel"}` (固定の位置の釦「この問い合わせを閉じる」) / `None`。
 
 ### Notification (`hooks/notify.py`)
 
@@ -348,16 +350,29 @@ def _is_index(v: Any, n: int) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and 0 <= v < n
 
 
-def _picks_ok(p: Any, n: int, multi: bool, required: bool) -> bool:
+def _picks_ok(p: Any, n: int, multi: bool, least: int) -> bool:
+    """選んだ番号の列が n 個の選択肢に合うか (範囲の内・重なりなし・単一は 1 個まで・least 個以上)。"""
     if not isinstance(p, list) or not all(_is_index(i, n) for i in p):
         return False
     if len(set(p)) != len(p):
         return False
     if not multi and len(p) > 1:
         return False
-    if required and not p:
-        return False
-    return True
+    return len(p) >= least
+
+
+def _least(field: dict, multi: bool) -> int:
+    """MCP の問いの 1 欄で送れる最小の選択の数。欄の必須と最小の選択の数は別 (§2.3)。
+
+    任意の欄 = 0 (空のまま = content に入れない)・必須の単一選択 = 1・必須の複数選択 = `min_picks` (0 か 1・
+    無ければ 1。0 = minItems 0 の欄 = 空の配列も合法)。
+    """
+    if not field.get("required"):
+        return 0
+    mp = field.get("min_picks")
+    if multi and isinstance(mp, int) and not isinstance(mp, bool) and mp in (0, 1):
+        return mp
+    return 1
 
 
 def _check_choice(kind: str, payload: dict, ans: Any) -> Optional[dict]:
@@ -393,7 +408,7 @@ def _check_choice(kind: str, payload: dict, ans: Any) -> Optional[dict]:
             opts = q.get("options") if isinstance(q, dict) else None
             if not isinstance(opts, list):
                 return None
-            if not _picks_ok(p, len(opts), bool(q.get("multiSelect")), True):
+            if not _picks_ok(p, len(opts), bool(q.get("multiSelect")), 1):
                 return None
         return {"type": t, "picks": [list(p) for p in picks]}
     if kind == "elicitation":
@@ -414,7 +429,7 @@ def _check_choice(kind: str, payload: dict, ans: Any) -> Optional[dict]:
             if not isinstance(opts, list):
                 return None
             multi = bool(f.get("multi"))
-            if not _picks_ok(p, len(opts), multi, bool(f.get("required"))):
+            if not _picks_ok(p, len(opts), multi, _least(f, multi)):
                 return None
             chosen = []
             for i in p:
@@ -424,6 +439,8 @@ def _check_choice(kind: str, payload: dict, ans: Any) -> Optional[dict]:
                 chosen.append(o["value"])
             if chosen:
                 values[f["name"]] = chosen if multi else chosen[0]
+            elif multi and f.get("required"):
+                values[f["name"]] = []             # 必須の複数選択で 0 個が許される (min_picks 0) = 空の配列を値に
         return {"type": t, "picks": [list(p) for p in picks], "values": values}
     return None
 

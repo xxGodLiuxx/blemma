@@ -526,6 +526,24 @@ def test_elicit_optional_fields_left_empty(board):
     assert [f["name"] for f in board.payload["fields"]] == ["choice", "flag"]
 
 
+@pytest.mark.parametrize("min_items,least", [(0, 0), (1, 1), (None, 1)])
+def test_elicit_required_array_is_empty_only_when_min_items_is_0(board, min_items, least):
+    """欄の必須と最小の選択の数は別: 必須でも minItems 0 なら印 0 個で送れて値は [] (合法な空の配列)。
+    minItems 1・無しの必須の欄は 1 個以上 (空の答えは無出力)。"""
+    tags = {"type": "array", "title": "札", "items": {"enum": ["a", "b"]}}
+    if min_items is not None:
+        tags["minItems"] = min_items
+    board.answer({"type": "accept", "picks": [[]]})
+    p = run("elicitation.py", elicit({"type": "object", "required": ["tags"], "properties": {"tags": tags}}),
+            board.run_file)
+    assert board.payload["fields"][0]["min_picks"] == least
+    if least == 0:
+        assert one_json(p)["hookSpecificOutput"] == {"hookEventName": "Elicitation", "action": "accept",
+                                                     "content": {"tags": []}}
+    else:
+        silent(p)
+
+
 def _props(n):
     return {f"f{i}": {"type": "boolean"} for i in range(n)}
 
