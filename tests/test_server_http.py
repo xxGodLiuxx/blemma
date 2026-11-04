@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import socket
 import threading
@@ -112,6 +113,38 @@ def test_page_flow_answer_undo_answer_and_hook_gets_it(live):
 def test_wait_unknown_id_is_404(live):
     srv = live()
     assert srv.request("GET", "/wait?id=nope")[0] == 404
+
+
+def test_unread_answer_reply_retries_press_batches_only_once(live):
+    """実 HTTP: 答えの応答を読まずに接続を捨て、取り消しに同じ束と新しい押しを乗せる。"""
+    srv = live(replace(FAST, disconnect=10.0, undo_ms=3000, undo_max_ms=3000))
+    cid = post_ask(srv)["id"]
+    card = srv.wait_card()
+    first = {"id": "page:1", "presses": {"dwell": 1}}
+    second = {"id": "page:2", "presses": {"switch": 1}}
+    conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=2.0)
+    try:
+        conn.request("POST", "/answer", body=json.dumps({
+            "id": cid, "seq": card["view_seq"], "choice": {"type": "allow_once"}, "by": "dwell",
+            "presses": {"dwell": 1}, "press_batches": [first],
+        }), headers={"X-Blemma-Token": srv.token, "Content-Type": "application/json"})
+        until = time.monotonic() + 2.0
+        while True:
+            snap = srv.pending()
+            if snap["card"]["state"] == "deciding":
+                break
+            assert time.monotonic() < until
+            time.sleep(0.01)
+        assert snap["stats"]["total"] == 1
+    finally:
+        conn.close()  # getresponse/read は呼ばない。server の受理だけを /pending で確かめた。
+    assert srv.request("POST", "/undo", {
+        "id": cid, "by": "switch", "presses": {"dwell": 1, "switch": 1},
+        "press_batches": [first, second, first],  # 同じ要求内の重複も二度数えない。
+    })[0] == 200
+    snap = srv.pending()
+    assert snap["stats"]["total"] == 2
+    assert snap["stats"]["presses"] == {"dwell": 1, "switch": 1, "key": 0, "touch": 0, "click": 0}
 
 
 def test_pending_long_poll_returns_when_seq_changes(live):

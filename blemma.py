@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
+from hooks._client import _Connection as _DeadlineConnection
+
 ROOT = Path(__file__).resolve().parent
 START_TIMEOUT = 10.0
 RUN_MAX_AGE = 24 * 60 * 60       # Discovery records must be less than one day old.
@@ -180,19 +182,23 @@ def read_run(path: Path) -> RunInfo | None:
         return None
 
 
-def board_responds(info: RunInfo, timeout: float = 0.3) -> bool:
+def board_responds(info: RunInfo, timeout: float = 0.3, *, deadline: float | None = None) -> bool:
     # A TCP listener alone is not enough. This authenticated request neither creates
     # a card nor marks a browser as present. HTTPConnection ignores proxy variables.
-    connection = http.client.HTTPConnection("127.0.0.1", info.port, timeout=timeout)
+    attempt_deadline = time.monotonic() + timeout
+    if deadline is not None:
+        attempt_deadline = min(attempt_deadline, deadline)
+    connection = _DeadlineConnection(info.port, attempt_deadline)
     try:
         connection.request("GET", "/wait?id=blemma-launcher-probe",
                            headers={"X-Blemma-Token": info.token})
         response = connection.getresponse()
-        return response.status == 404 and json.loads(response.read(4096)) == {"error": "unknown"}
+        ready = response.status == 404 and json.loads(response.read(4096)) == {"error": "unknown"}
     except (OSError, ValueError, http.client.HTTPException):
         return False
     finally:
         connection.close()
+    return ready and time.monotonic() < attempt_deadline
 
 
 def stop_process(process: subprocess.Popen) -> None:
@@ -241,32 +247,40 @@ def _written_after(path: Path, when: float) -> bool:
         return False
 
 
+def _check_start_deadline(deadline: float) -> None:
+    if time.monotonic() >= deadline:
+        raise LaunchError("板の起動が時間切れです (最長 10 秒) / Board startup timed out (up to 10 seconds)")
+
+
 def ensure_board(root: Path, port: int, timeout: float = START_TIMEOUT) -> BoardSession:
+    deadline = time.monotonic() + timeout
     root = root.resolve()
     run_file = root / "board" / "state" / "run.json"
-    info = read_run(run_file)
-    if info is not None and board_responds(info):
-        return BoardSession(run_file, info)
     session = BoardSession(run_file)
-    deadline = time.monotonic() + timeout
-    launched = time.time() - 1.0  # run.json がこの時刻より後に書かれていれば、自分が起こした板 (pid が転送役で合わない時の照合)
-    session.process = subprocess.Popen(
-        [python_executable(), str(root / "board" / "server.py"), "--no-browser", "--port", str(port)],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        **background_options())
     try:
-        while time.monotonic() < deadline:
+        info = read_run(run_file)
+        if info is not None and board_responds(info, deadline=deadline):
+            session.info = info
+            _check_start_deadline(deadline)
+            return session
+        _check_start_deadline(deadline)
+        launched = time.time() - 1.0  # run.json がこの時刻より後なら、自分が起こした板 (pid が転送役で合わない時)
+        session.process = subprocess.Popen(
+            [python_executable(), str(root / "board" / "server.py"), "--no-browser", "--port", str(port)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            **background_options())
+        while True:
+            _check_start_deadline(deadline)
             if session.process.poll() is not None:
                 raise LaunchError("板を起動できません (ポート・配置を確認) / Board server exited during startup")
             info = read_run(run_file)
-            remaining = deadline - time.monotonic()
             if (info is not None and info.port == port and
                     (info.pid == session.process.pid or _written_after(run_file, launched)) and
-                    remaining > 0 and board_responds(info, min(0.3, remaining))):
+                    board_responds(info, deadline=deadline)):
                 session.info = info
+                _check_start_deadline(deadline)
                 return session
             time.sleep(min(0.05, max(0, deadline - time.monotonic())))
-        raise LaunchError("板の起動が時間切れです (最長 10 秒) / Board startup timed out (up to 10 seconds)")
     except BaseException:
         session.close()
         raise

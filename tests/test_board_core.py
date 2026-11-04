@@ -56,6 +56,58 @@ def test_defaults_match_design_table():
     S.check_limits(lim)
 
 
+def test_press_batches_survive_reset_and_are_scoped_to_each_card(clock):
+    b = new_board(clock)
+    cid = ask(b)
+    batch = {"id": "page:1", "presses": {"dwell": 2}}
+    seq = b.pending(-1)["card"]["view_seq"]
+    assert b.answer(cid, seq, {"type": "allow_once"}, "dwell", 2, [batch, batch])[0] == 200
+    assert b.pending(-1)["stats"]["total"] == 2
+    b.reset_stats()
+    assert b.undo(cid, "key", 2, [batch])[0] == 200
+    assert b.pending(-1)["stats"]["total"] == 0
+    assert card_of(b, cid).presses["dwell"] == 2
+    seq = b.pending(-1)["card"]["view_seq"]
+    assert b.answer(cid, seq, {"type": "allow_once"}, "dwell", 2, [batch])[0] == 200
+    assert b.pending(-1)["stats"]["total"] == 0
+    clock.advance(3.0)
+    _, _, card = b.wait(cid)
+    b.delivered(card, True)
+    other = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    assert b.answer(other, seq, {"type": "allow_once"}, "dwell", 2, [batch])[0] == 200
+    assert b.pending(-1)["stats"]["total"] == 2
+
+
+@pytest.mark.parametrize("invalid", [False, {}, [{"id": [], "presses": {"dwell": 1}}],
+                                   [{"id": "", "presses": {"dwell": 1}}],
+                                   [{"id": "page:2", "presses": 1}]])
+def test_invalid_press_batches_do_not_change_state_or_counts(clock, invalid):
+    b = new_board(clock)
+    cid = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    first = {"id": "page:1", "presses": {"dwell": 1}}
+    batches = [first] + invalid if isinstance(invalid, list) else invalid
+    assert b.answer(cid, seq, {"type": "allow_once"}, "dwell", 1, batches) == (
+        400, {"error": "bad_press_batches"},
+    )
+    assert b.pending(-1)["stats"]["total"] == 0 and head(b).state == "shown"
+    assert b.answer(cid, seq, {"type": "allow_once"}, "dwell", 1, [first])[0] == 200
+    assert b.undo(cid, "switch", 1, batches) == (400, {"error": "bad_press_batches"})
+    assert b.pending(-1)["stats"]["total"] == 1 and head(b).state == "deciding"
+
+
+def test_rejected_press_batch_can_be_counted_by_a_later_request(clock):
+    b = new_board(clock)
+    cid = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    batch = {"id": "page:1", "presses": {"key": 1}}
+    assert b.answer(cid, seq - 1, {"type": "allow_once"}, "key", 1, [batch])[0] == 409
+    assert b.undo(cid, "key", 1, [batch])[0] == 409
+    assert b.answer(cid, seq, {"type": "allow_once"}, "key", 1, [batch])[0] == 200
+    assert b.pending(-1)["stats"]["total"] == 1
+
+
 @pytest.mark.parametrize("kw", [{"undo_ms": 5001}, {"undo_ms": -1}, {"wait": 541}, {"wait": 0},
                                 {"perm_wait": 600}])
 def test_check_limits_refuses(kw):

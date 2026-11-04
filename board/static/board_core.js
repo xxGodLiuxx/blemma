@@ -503,11 +503,36 @@
     return o;
   }
 
-  /* 押しの数の和 (入力ごと)。返りが 200 でなかった要求の分を、まだ送っていない数へ戻す時に使う */
+  /* 押しの数の和 (入力ごと)。 */
   function addPresses(a, b) {
     var o = zeroPresses();
     INPUTS.forEach(function (k) { o[k] = ((a && a[k]) || 0) + ((b && b[k]) || 0); });
     return o;
+  }
+
+  function newPressLedger(source) {
+    return { source: source, next: 1, pending: [] };
+  }
+
+  /* 新しい押しだけに ID を付ける。返された古い束は、ID と数を変えずに次の要求へ乗せる。 */
+  function takePressBatches(ledger, presses) {
+    var batches = ledger.pending.slice(), next = ledger.next;
+    if (INPUTS.some(function (k) { return presses[k] > 0; })) {
+      batches.push({ id: ledger.source + ":" + next++, presses: addPresses(null, presses) });
+    }
+    return { ledger: { source: ledger.source, next: next, pending: [] }, batches: batches };
+  }
+
+  function returnPressBatches(ledger, batches) {
+    var pending = ledger.pending.slice();
+    batches.forEach(function (batch) {
+      if (!pending.some(function (p) { return p.id === batch.id; })) pending.push(batch);
+    });
+    return { source: ledger.source, next: ledger.next, pending: pending };
+  }
+
+  function sumPressBatches(batches) {
+    return batches.reduce(function (sum, batch) { return addPresses(sum, batch.presses); }, zeroPresses());
   }
 
   var api = {
@@ -517,7 +542,8 @@
     steps: steps, needConfirm: needConfirm, newUi: newUi, uiAfterUndo: uiAfterUndo,
     buildScreen: buildScreen, pressKey: pressKey, choiceLabel: choiceLabel, viewKey: viewKey,
     statsText: statsText, endText: endText, lightText: lightText, zeroPresses: zeroPresses,
-    addPresses: addPresses
+    addPresses: addPresses, newPressLedger: newPressLedger, takePressBatches: takePressBatches,
+    returnPressBatches: returnPressBatches, sumPressBatches: sumPressBatches
   };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.BlemmaCore = api;

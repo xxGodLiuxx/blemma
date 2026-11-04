@@ -44,7 +44,7 @@ function loadPage(fetchImpl) {
   const re = /\n  init\(\);(\r?\n)/;
   if (!re.test(src)) throw new Error("board.js の init(); の行が見つからない");
   src = src.replace(re, "\n  window.__t = { S: S, press: press, releaseDwell: releaseDwell };$1");
-  const win = { BlemmaCore: core };
+  const win = { BlemmaCore: core, crypto: require("crypto").webcrypto };
   vm.runInNewContext(src, { window: win, document: {}, performance: performance, fetch: fetchImpl,
                             setTimeout: setTimeout, clearTimeout: clearTimeout, console: console });
   return win.__t;
@@ -220,8 +220,9 @@ setTimeout(function () {
     assert (_sum(answer["body"]), _sum(undo["body"])) == (1, 1)
     assert sum(out["delta"].values()) == 0
     a, u = answer["body"], undo["body"]                # 頁が送った物をそのまま server へ
-    assert board.answer(a["id"], a["seq"], a["choice"], a["by"], a["presses"])[0] == 200
-    assert board.undo(u["id"], u["by"], u["presses"]) == (200, {"state": "shown"})
+    assert a["press_batches"][0]["id"] != u["press_batches"][0]["id"]
+    assert board.answer(a["id"], a["seq"], a["choice"], a["by"], a["presses"], a["press_batches"])[0] == 200
+    assert board.undo(u["id"], u["by"], u["presses"], u["press_batches"]) == (200, {"state": "shown"})
     stats = board.pending(-1)["stats"]
     assert stats["total"] == 2 and (stats["presses"]["dwell"], stats["presses"]["switch"]) == (1, 1)
 
@@ -244,4 +245,60 @@ setTimeout(function () {
 }, 20);
 """).replace("__CARD__", json.dumps(card)))
     assert [_sum(s["body"]) for s in out["sent"]] == [1, 2]
+    assert out["sent"][0]["body"]["press_batches"][0] == out["sent"][1]["body"]["press_batches"][0]
     assert sum(out["delta"].values()) == 0
+
+
+def test_press_batches_keep_ids_across_lost_replies_and_retries(tmp_path):
+    """純粋な計算: 別の要求が先に戻っても、再送する古い束の ID と数は変わらない。"""
+    out = node(tmp_path, r"""
+const first = core.takePressBatches(core.newPressLedger("page"), { dwell: 1 });
+const second = core.takePressBatches(first.ledger, { switch: 1 });
+let returned = core.returnPressBatches(second.ledger, second.batches);
+returned = core.returnPressBatches(returned, first.batches);
+const retry = core.takePressBatches(returned, { key: 1 });
+const again = core.takePressBatches(core.returnPressBatches(retry.ledger, retry.batches), core.zeroPresses());
+console.log(JSON.stringify({ first: first.batches, second: second.batches, retry: retry.batches,
+                             again: again.batches, total: core.sumPressBatches(again.batches),
+                             pending: again.ledger.pending }));
+""")
+    first, second = out["first"][0], out["second"][0]
+    assert out["retry"][:2] == [second, first]
+    assert out["again"] == out["retry"]
+    assert len({b["id"] for b in out["retry"]}) == 3
+    assert out["total"] == {"dwell": 1, "switch": 1, "key": 1, "touch": 0, "click": 0}
+    assert out["pending"] == []
+
+
+def test_lost_answer_reply_retries_same_batch_on_undo(tmp_path, clock):
+    """/answer は受理されたが応答だけ喪失。/undo の再送分は同じ ID = 実操作 2 回は計 2。"""
+    board, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + r"""
+const t = loadPage(function (path, opt) {
+  sent.push({ path: path, body: JSON.parse(opt.body) });
+  if (path === "/answer") return Promise.reject(new Error("reply lost"));
+  return Promise.resolve(reply(200, { state: "shown" }));
+});
+show(t);
+t.press("allow_once", "dwell");
+setTimeout(function () {
+  t.S.card = Object.assign({}, card, { state: "deciding" });
+  t.S.undoAt = performance.now() + 3000;
+  t.press("undo", "switch");
+  setTimeout(function () {
+    console.log(JSON.stringify({ sent: sent, pending: t.S.pressLedger.pending }));
+  }, 20);
+}, 20);
+""").replace("__CARD__", json.dumps(card)))
+    answer, undo = out["sent"]
+    assert (answer["path"], undo["path"]) == ("/answer", "/undo")
+    a, u = answer["body"], undo["body"]
+    assert (_sum(a), _sum(u)) == (1, 2)
+    assert u["press_batches"][0] == a["press_batches"][0]
+    assert len({b["id"] for b in u["press_batches"]}) == 2
+    assert board.answer(a["id"], a["seq"], a["choice"], a["by"], a["presses"], a["press_batches"])[0] == 200
+    assert board.undo(u["id"], u["by"], u["presses"], u["press_batches"])[0] == 200
+    assert board.pending(-1)["stats"]["presses"] == {
+        "dwell": 1, "switch": 1, "key": 0, "touch": 0, "click": 0,
+    }
+    assert board.pending(-1)["stats"]["total"] == 2 and out["pending"] == []

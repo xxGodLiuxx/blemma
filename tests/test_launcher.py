@@ -9,8 +9,10 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -71,6 +73,111 @@ def unused_port():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         return listener.getsockname()[1]
+
+
+@pytest.fixture
+def probe_server():
+    """実 HTTP で、通常の応答か、見出し/本文を細切れにした応答を返す。"""
+    made = []
+
+    def start(slow_part=None):
+        stopped = threading.Event()
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                body = b'{"error": "unknown"}'
+                header = f"HTTP/1.0 404 Not Found\r\nContent-Length: {len(body)}\r\n".encode("ascii")
+                if slow_part == "headers":
+                    first, slow, last = header + b"X-Probe: ", b"x" * 24, b"\r\n\r\n" + body
+                elif slow_part == "body":
+                    first, slow, last = header + b"\r\n", body, b""
+                else:
+                    first, slow, last = header + b"\r\n" + body, b"", b""
+                try:
+                    self.wfile.write(first)
+                    for byte in slow:
+                        if stopped.wait(0.04):
+                            return
+                        self.wfile.write(bytes([byte]))
+                    self.wfile.write(last)
+                except OSError:
+                    pass  # 期限を過ぎた呼び手は途中で接続を閉じる。
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        made.append((httpd, thread, stopped))
+        return L.RunInfo(httpd.server_port, "test-placeholder", os.getpid())
+
+    yield start
+    for httpd, thread, stopped in made:
+        stopped.set()
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(2)
+
+
+@pytest.mark.parametrize("part", ["headers", "body"])
+def test_probe_trickle_cannot_extend_total_deadline(probe_server, part):
+    info = probe_server(part)
+    started = time.monotonic()
+    assert not L.board_responds(info, timeout=0.3)
+    assert time.monotonic() - started < 0.7  # 細切れの応答を受け切れば 0.76 秒以上。
+
+
+def test_probe_normal_response_succeeds(probe_server):
+    assert L.board_responds(probe_server(), timeout=0.3)
+
+
+def test_existing_board_probe_uses_startup_deadline(isolated_repo, probe_server, monkeypatch):
+    info = probe_server("body")
+    path = isolated_repo / "board" / "state" / "run.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"port": info.port, "token": info.token, "pid": info.pid,
+                                "started": datetime.now(timezone.utc).isoformat()}), encoding="utf-8")
+
+    def unexpected_start(*args, **kwargs):
+        pytest.fail("既存の板の照会で期限切れ = 新しい板を起こさない")
+
+    monkeypatch.setattr(L.subprocess, "Popen", unexpected_start)
+    started = time.monotonic()
+    with pytest.raises(L.LaunchError, match="timed out"):
+        L.ensure_board(isolated_repo, unused_port(), timeout=0.3)
+    assert time.monotonic() - started < 0.7
+    assert path.exists()  # 既存の板の記録は呼び手が所有する。
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+def test_startup_checks_deadline_after_success(isolated_repo, sessions, monkeypatch, reuse):
+    """照会の成功後に期限を越えた時も失敗。新しく起こした実プロセスだけを止める。"""
+    existing = L.ensure_board(isolated_repo, unused_port()) if reuse else None
+    original_probe = L.board_responds
+    original_popen = L.subprocess.Popen
+    children = []
+
+    def delayed_probe(info, timeout=0.3, *, deadline=None):
+        ready = original_probe(info, timeout, deadline=deadline)  # 接続・照会は本物。
+        if ready:
+            time.sleep(max(0, deadline - time.monotonic()) + 0.02)
+        return ready
+
+    def record(*args, **kwargs):
+        child = original_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(L, "board_responds", delayed_probe)
+    monkeypatch.setattr(L.subprocess, "Popen", record)
+    with pytest.raises(L.LaunchError, match="timed out"):
+        L.ensure_board(isolated_repo, unused_port(), timeout=1.0)
+    if reuse:
+        assert not children and existing.process.poll() is None
+    else:
+        assert len(children) == 1 and children[0].poll() is not None
+        assert not (isolated_repo / "board" / "state" / "run.json").exists()
 
 
 def test_generated_configs_and_templates(isolated_repo, monkeypatch):

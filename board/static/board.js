@@ -12,6 +12,7 @@
     seq: -1, snap: null, snapAt: 0, card: null, ui: C.newUi(null), key: "", gen: 0,
     btns: {}, optionKeys: [], scanList: [], scanEl: null, fillEl: null,
     delta: C.zeroPresses(), answering: false, undoing: false, sentKey: null,
+    pressLedger: C.newPressLedger(window.crypto.getRandomValues(new Uint32Array(4)).join("-")),
     lastX: -1, lastY: -1, over: null, pointerType: "mouse", lastInput: "",
     held: {}, deadlineAt: null, undoAt: null,
     lightUntil: 0, lightKey: "", lastSeen: "", endText: "", endUntil: 0,
@@ -94,6 +95,7 @@
     } else if (card.id !== S.ui.cardId) {
       S.ui = C.newUi(card.id);
       S.delta = C.zeroPresses();
+      S.pressLedger = C.newPressLedger(S.pressLedger.source);
     } else if (prev && prev.id === card.id && prev.state === "deciding" && card.state === "shown") {
       S.ui = C.uiAfterUndo(card, S.ui);          /* 取り消した = 確かめの画面か頭へ */
     }
@@ -409,31 +411,39 @@
     updateSide(performance.now());
   }
 
-  /* 押しの数は要求ごとに切り離す (§4.5) = 送る分を取り出し、まだ送っていない数は 0 から数える。
-   * 返りが 200 ならその分は server が数えた。200 でない・届かない時は、同じ札の間だけ未送の数へ戻す
-   * (/answer の返りより先に取り消しても、同じ押しを 2 回送らない)。 */
+  /* 新しい押しは要求ごとに切り離す (§4.5)。応答の喪失では受理されたか分からないため、
+   * 再送する束は元の ID と数を保つ。server は同じ札の受理済み ID を二度数えない。 */
   function takePresses() {
     var sent = S.delta;
     S.delta = C.zeroPresses();
     return sent;
   }
 
-  function giveBack(cardId, sent) {
-    if (S.card && S.card.id === cardId) S.delta = C.addPresses(S.delta, sent);
+  function takePressBatches() {
+    var taken = C.takePressBatches(S.pressLedger, takePresses());
+    S.pressLedger = taken.ledger;
+    return taken.batches;
+  }
+
+  function giveBack(cardId, sent, batches) {
+    if (!S.card || S.card.id !== cardId) return;
+    if (batches) S.pressLedger = C.returnPressBatches(S.pressLedger, batches);
+    else S.delta = C.addPresses(S.delta, sent);
   }
 
   function sendAnswer(choice, by) {
     var card = S.card;
     S.answering = true;
     var sentKey = S.key;
-    var sent = takePresses();
-    api("POST", "/answer", { id: card.id, seq: card.view_seq, choice: choice, by: by, presses: sent })
+    var batches = takePressBatches(), sent = C.sumPressBatches(batches);
+    api("POST", "/answer", { id: card.id, seq: card.view_seq, choice: choice, by: by,
+                             presses: sent, press_batches: batches })
       .then(function (r) {
         if (r.status === 200) {
           S.sentKey = sentKey;
           return;
         }
-        giveBack(card.id, sent);
+        giveBack(card.id, sent, batches);
         if (r.status === 401) {
           S.problem = L().bad_token;
         } else {
@@ -441,7 +451,7 @@
           kick();
         }
       }, function () {
-        giveBack(card.id, sent);
+        giveBack(card.id, sent, batches);
         S.offline = true;
       })
       .then(function () { S.answering = false; }, function () { S.answering = false; });
@@ -452,14 +462,14 @@
     if (!card || S.undoing) return;
     S.undoing = true;
     S.delta[by] = (S.delta[by] || 0) + 1;
-    var sent = takePresses();
-    api("POST", "/undo", { id: card.id, by: by, presses: sent })
+    var batches = takePressBatches(), sent = C.sumPressBatches(batches);
+    api("POST", "/undo", { id: card.id, by: by, presses: sent, press_batches: batches })
       .then(function (r) {
         if (r.status === 200) return;
-        giveBack(card.id, sent);
+        giveBack(card.id, sent, batches);
         kick();
       }, function () {
-        giveBack(card.id, sent);
+        giveBack(card.id, sent, batches);
         S.offline = true;
       })
       .then(function () { S.undoing = false; }, function () { S.undoing = false; });

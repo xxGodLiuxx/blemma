@@ -175,6 +175,22 @@ def _presses_of(by: str, presses: Any) -> Dict[str, int]:
     return out
 
 
+def _press_batches_of(by: str, presses: Any, batches: Any) -> Optional[List[tuple]]:
+    """ID 付きの束を先に全件確かめる。古い呼び手の presses だけの形も受ける。"""
+    if batches is None:
+        return [(None, _presses_of(by, presses))]
+    if not isinstance(batches, list):
+        return None
+    out = []
+    for batch in batches:
+        if (not isinstance(batch, dict) or not isinstance(batch.get("id"), str) or
+                not re.fullmatch(r"[A-Za-z0-9:_-]{1,128}", batch["id"]) or
+                not isinstance(batch.get("presses"), dict)):
+            return None
+        out.append((batch["id"], _presses_of(by, batch["presses"])))
+    return out
+
+
 def _flushing(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Board の外側の口 = 錠を離した後に、溜まった記録を file へ書く。"""
     @functools.wraps(fn)
@@ -208,6 +224,7 @@ class Card:
         self.wait_inflight = 0
         self.last_wait_end = now
         self.presses = {k: 0 for k in INPUTS}
+        self.press_batch_ids: set[str] = set()  # 札の間だけ保持し、記録には書かない
         self.undos = 0
         self.end: Optional[str] = None
         self.from_deciding = False
@@ -456,7 +473,8 @@ class Board:
             self._advance(now)                     # 次の札をすぐ出す
 
     @_flushing
-    def answer(self, cid: Any, seq: Any, choice: Any, by: Any, presses: Any) -> Tuple[int, dict]:
+    def answer(self, cid: Any, seq: Any, choice: Any, by: Any, presses: Any,
+               press_batches: Any = None) -> Tuple[int, dict]:
         with self.cond:
             now = self.clock()
             head = self._head()
@@ -476,8 +494,10 @@ class Board:
             if norm is None:
                 return 400, {"error": "bad_choice"}
             by_s = by if by in INPUTS else "click"
-            p = _presses_of(by_s, presses)
-            self._add_presses(head, p)
+            batches = _press_batches_of(by_s, presses, press_batches)
+            if batches is None:
+                return 400, {"error": "bad_press_batches"}
+            self._add_press_batches(head, batches)
             head.state = "deciding"
             head.choice = norm
             head.by = by_s
@@ -488,7 +508,7 @@ class Board:
             return 200, {"undo_ms": self.lim.undo_ms, "undo_remaining": self.lim.undo_ms / 1000.0}
 
     @_flushing
-    def undo(self, cid: Any, by: Any, presses: Any) -> Tuple[int, dict]:
+    def undo(self, cid: Any, by: Any, presses: Any, press_batches: Any = None) -> Tuple[int, dict]:
         with self.cond:
             now = self.clock()
             head = self._head()
@@ -496,7 +516,10 @@ class Board:
                     or head.ready or head.undo_until is None or now >= head.undo_until:
                 return 409, {"error": "not_undoable"}
             by_s = by if by in INPUTS else "click"
-            self._add_presses(head, _presses_of(by_s, presses))
+            batches = _press_batches_of(by_s, presses, press_batches)
+            if batches is None:
+                return 400, {"error": "bad_press_batches"}
+            self._add_press_batches(head, batches)
             head.undos += 1
             head.choice = None
             head.by = None
@@ -512,6 +535,15 @@ class Board:
             self._bump()
             self._advance(now)
             return 200, {"state": "expired"}
+
+    def _add_press_batches(self, c: Card, batches: List[tuple]) -> None:
+        # answer/undo の錠の内側で、受理した束だけを覚える (409/400 は覚えない)。
+        for bid, p in batches:
+            if bid is not None:
+                if bid in c.press_batch_ids:
+                    continue
+                c.press_batch_ids.add(bid)
+            self._add_presses(c, p)
 
     def _add_presses(self, c: Card, p: Dict[str, int]) -> None:
         for k, v in p.items():
@@ -750,10 +782,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json(code, body)
         elif path == "/answer":
             code, body = board.answer(data.get("id"), data.get("seq"), data.get("choice"),
-                                      data.get("by"), data.get("presses"))
+                                      data.get("by"), data.get("presses"), data.get("press_batches"))
             self._json(code, body)
         elif path == "/undo":
-            code, body = board.undo(data.get("id"), data.get("by"), data.get("presses"))
+            code, body = board.undo(data.get("id"), data.get("by"), data.get("presses"),
+                                   data.get("press_batches"))
             self._json(code, body)
         elif path == "/notify":
             board.notify(data)
