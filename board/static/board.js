@@ -219,12 +219,19 @@
     }
   }
 
+  /* 滞留を解く = 時計を止め、pointer の下の釦は一度外へ出て入り直すまで数えない (§4.2 の ①②)。
+   * 世代が進んだ時・頁が隠れた時と見えた時・焦点を失った時 (戻った瞬間に古い滞留で押さない)。 */
+  function releaseDwell() {
+    S.dwell.reset();
+    S.dwell.block(S.over);
+    setFill(null, 0);
+  }
+
   /* 表示の世代を進める = 滞留を止めて選択を解き、pointer の下の釦は入り直すまで数えない・走査は頭から (§4.2) */
   function bumpGen() {
     S.gen += 1;
     S.over = keyAtPointer();
-    S.dwell.reset();
-    S.dwell.block(S.over);
+    releaseDwell();
     S.scan.restart(performance.now());
     if (S.scanEl) { S.scanEl.classList.remove("scan"); S.scanEl = null; }
     if (S.card && S.card.state === "shown" && S.lastInput === "key" && !S.overlay && S.scanMs <= 0) {
@@ -636,7 +643,8 @@
       S.pointerType = e.pointerType || "mouse";
     }, { passive: true, capture: true });
     document.documentElement.addEventListener("pointerleave", function () { S.over = null; });
-    window.addEventListener("blur", function () { S.over = null; S.held = {}; });
+    window.addEventListener("blur", function () { releaseDwell(); S.held = {}; });
+    document.addEventListener("visibilitychange", releaseDwell);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", function (e) { delete S.held[e.code || e.key]; });
     document.addEventListener("click", onClick);

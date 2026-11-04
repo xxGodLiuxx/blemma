@@ -146,6 +146,8 @@
   }
 
   /* 滞留 = 同じ釦の上に ms 留まると押す。外れても grace のうちに戻れば数え続ける。
+   * 外れた長さは戻った時にも見る (grace を超えていれば頭から数え直す)。こま (update の呼び) の間が grace より
+   * 長く空いた時も (頁が隠れた・描画が止まった) その間 留まっていたか分からない = 頭から数え直す (§4.2)。
    * block(key) = その釦は pointer が一度外へ出るまで数えない (押した直後・表示の世代が変わった時)。 */
   function Dwell(ms, graceMs) {
     this.ms = ms;
@@ -157,6 +159,7 @@
     this.start = 0;
     this.outSince = null;
     this.blocked = null;
+    this.last = null;
   };
   Dwell.prototype.block = function (key) {
     this.target = null;
@@ -167,6 +170,12 @@
   Dwell.prototype.update = function (key, now) {
     var none = { target: null, progress: 0, fire: false };
     if (!(this.ms > 0)) return none;
+    var gap = this.last === null ? 0 : now - this.last;
+    this.last = now;
+    if (gap > this.grace) {                   /* こまが途切れた = その間は数えない */
+      this.target = null;
+      this.outSince = null;
+    }
     if (this.blocked !== null) {
       if (key === this.blocked) return none;
       this.blocked = null;
@@ -181,8 +190,8 @@
       }
       return { target: this.target, progress: Math.min(1, (now - this.start) / this.ms), fire: false };
     }
-    if (key !== this.target) {
-      this.target = key;
+    if (key !== this.target || (this.outSince !== null && now - this.outSince > this.grace)) {
+      this.target = key;                      /* 入った・grace より長く外れてから戻った = 頭から数える */
       this.start = now;
       this.outSince = null;
       return { target: key, progress: 0, fire: false };
