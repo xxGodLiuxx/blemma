@@ -459,13 +459,14 @@
     if (S.options.clear === "on" && S.fan && !S.overlay && S.options.scale === 1 && S.fanOutline) {
       var fan = $("fan"), r = fan.getBoundingClientRect(), k = r.width / parseFloat(fan.style.width);
       var side = (window.outerWidth - window.innerWidth) / 2, wide = window.innerWidth / window.innerHeight >= 1.5;
-      var rects = wide ? [[0, 0, r.left - 6, window.innerHeight]] : [];
+      var below = $("fan-scroll").getBoundingClientRect().bottom;       /* 縦向き = 扇の下は和紙 */
+      var rects = wide ? [[0, 0, r.left - 6, window.innerHeight]] : [[0, below, window.innerWidth, window.innerHeight - below]];
       Array.prototype.forEach.call(fan.querySelectorAll(".fan-seal, .fan-aux"), function (e) {
         var b = e.getBoundingClientRect();
         rects.push([b.left - 2, b.top - 2, b.width + 4, b.height + 4]);
       });
       shape = { dpr: window.devicePixelRatio, left: side, top: window.outerHeight - window.innerHeight - side,
-                keep: wide ? 0 : $("fan-scroll").getBoundingClientRect().top, rects: rects,
+                keep: 0, rects: rects,
                 polygon: S.fanOutline.map(function (p) { return [r.left + p[0] * k, r.top + p[1] * k]; }) };
     }
     var sig = JSON.stringify(shape);

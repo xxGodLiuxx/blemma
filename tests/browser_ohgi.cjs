@@ -172,10 +172,10 @@ async function closeCard(id) {
   await until(`!document.querySelector('#more').hidden`);
   assert(await evaluate(`document.querySelector('#blocks .change .plain').textContent.includes('→')`),'The change comes first');
   assert(await evaluate(`document.querySelector('#blocks mark.del') !== null`),'The removed part is marked');
-  const paper=await evaluate(`(() => { const c=document.querySelector('#card').getBoundingClientRect(), f=document.querySelector('#fan').getBoundingClientRect();
-    return {cardBottom:c.bottom,fanTop:f.top,fanBottom:f.bottom,h:innerHeight,sh:document.documentElement.scrollHeight}; })()`);
-  assert(paper.cardBottom<=paper.fanTop,'The washi sits above the fan: '+JSON.stringify(paper));
-  assert(paper.fanBottom<=paper.h && paper.sh<=paper.h,'Nothing is cut off: '+JSON.stringify(paper));
+  const paper=await evaluate(`(() => { const t=document.querySelector('.top').getBoundingClientRect(), c=document.querySelector('#card').getBoundingClientRect(), f=document.querySelector('#fan').getBoundingClientRect();
+    return {paperTop:t.top,cardBottom:c.bottom,fanTop:f.top,fanBottom:f.bottom,h:innerHeight,sh:document.documentElement.scrollHeight}; })()`);
+  assert(paper.fanBottom<=paper.paperTop,'The fan sits above the washi: '+JSON.stringify(paper));
+  assert(paper.cardBottom<=paper.h && paper.fanTop>=0 && paper.sh<=paper.h,'Nothing is cut off: '+JSON.stringify(paper));
   await screenshot('ohgi-washi');
   // Dragging the window bigger makes the fan and the text follow; the fan never leaves the window.
   const small=await evaluate(`[document.querySelector('#fan').getBoundingClientRect().width, parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--font'))]`);
