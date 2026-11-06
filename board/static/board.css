@@ -373,7 +373,6 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
   .small.has-fan .status { grid-column: 1; grid-row: 2; }
   .small.has-fan .card { grid-column: 1; grid-row: 3; }
   .small.has-fan .fan-scroll { grid-column: 2; grid-row: 1 / 4; align-self: end; }
-  .small.has-fan .undo-zone { left: 10px; right: auto; transform: none; top: 8px; width: calc(100vw - var(--fan-w, 580px) - 34px); max-height: none; }
 }
 
 /* 横向きの窓で扇に載らない札 (複数選択・2 問など) = 左に問い・右に 2 列のボタン。巻物を回さず全部が見える */
@@ -403,3 +402,12 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
 }
 @keyframes fan-open { from { --open: 0; } to { --open: 1; } }
 @media (prefers-reduced-motion: reduce) { .fan.open-anim { animation: none; -webkit-mask-image: none; mask-image: none; } }
+
+/* 取り消しは扇の内の帯そのもの (四角の枠を出さない) */
+.small .fan .undo-zone { position: absolute; inset: 0; width: auto; max-height: none; padding: 0; margin: 0; border: 0; border-radius: 0; background: none; transform: none; overflow: visible; z-index: auto; pointer-events: none; }
+.small .fan .undo-label { display: none; }
+.small .fan .btn.undo { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: transparent; pointer-events: auto; }
+.small .fan .btn.undo .label, .small .fan .btn.undo .num { display: none; }
+.small .fan .btn.undo:is(:hover, :focus-visible, .scan) { background: var(--sec-bg2); outline: none; }
+.small .fan .btn.undo .fill { opacity: .5; }
+.fan-script.note { fill: var(--pivot); }

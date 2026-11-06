@@ -248,7 +248,7 @@
   /* 見つめた羽根の全文 = 押せない書の帯に出す。目を移しても消さない (読むために羽根を離れるので)。
    * 入らない長さの時だけ上にも全文。何も見ていない時は選択肢の静かな一覧 */
   function spotlight(b) {
-    if (S.mode !== "small" || !S.fan) return;
+    if (S.mode !== "small" || !S.fan || (S.card && S.card.state === "deciding")) return;
     var on = !!(b && b.dataset && b.dataset.label);
     S.spotKey = on ? b.dataset.key : null;
     S.spotBtn = on ? b : null;
@@ -317,7 +317,9 @@
   }
 
   function renderFan(m) {
-    var fan = $("fan"), clock = $("fan-time");
+    var fan = $("fan"), clock = $("fan-time"), undoZone = $("undo-zone");
+    if (undoZone.parentNode !== $("surface")) $("surface").appendChild(undoZone);
+    $("undo-btn").style.clipPath = "";
     fan.replaceChildren(clock);
     $("fan-scroll").hidden = !S.fan;
     $("spotlight").hidden = !S.fan;
@@ -360,6 +362,9 @@
       if (!b.disabled) S.scanList.push(b);
     });
     S.fanVisual = layout.visual.map(buttonOf).filter(function (b) { return !b.disabled; });
+    /* 取り消しは内の帯そのもの = 押した羽根の上ではなく、見つめて戻せる大きな的 */
+    $("undo-btn").style.clipPath = layout.scriptBand;
+    fan.appendChild(undoZone);
     fan.appendChild(fanBones(layout));
     fan.appendChild(el("span", "fan-seal", "扇"));
     var aux = m.options.filter(function (o) { return o.aux; });
@@ -534,11 +539,24 @@
       setText($("undo-text"), T.undo + " (" + Math.ceil(left) + ")");
       btn.hidden = false;
       btn.disabled = false;
+      if (S.fan) fanNote(T.undo + " (" + Math.ceil(left) + ")", label);
     } else {
       setText($("undo-label"), T.delivering + " " + label);
       btn.hidden = true;
       btn.disabled = true;
+      if (S.fan) fanNote(label, "");
     }
+  }
+
+  /* 猶予のうちの書の帯 = 上の行に取り消す (残りの秒)・下の行に決めた答え */
+  function fanNote(first, second) {
+    [first, second].forEach(function (text, i) {
+      var t = $("fan-script-" + i);
+      if (!t) return;
+      t.style.fontSize = (i ? 20 : 28) + "px";
+      t.classList.add("note");
+      setText(t.firstChild, text);
+    });
   }
 
   function undoOpen() {

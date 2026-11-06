@@ -396,6 +396,7 @@
     return { width: width, height: height, cx: cx, cy: cy, inner: inner, press: press, outer: outer, middle: middle,
              depth: depth, step: step, first: first, spread: spread, parts: parts, visual: visual, ribs: ribs, folds: folds,
              paper: band2(inner, outer, first, first + spread),
+             scriptBand: band2(inner, press, first, first + spread),
              edges: [ring(outer, first, first + spread), ring(inner, first, first + spread)],
              seam: ring(press, first, first + spread),
              arcs: radii.map(function (q) { return ring(q, -78, 78); }),

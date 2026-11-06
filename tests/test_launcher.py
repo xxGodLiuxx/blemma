@@ -489,12 +489,13 @@ def test_small_window_uses_token_fragment_and_bottom_right(monkeypatch):
     monkeypatch.setattr(L.subprocess, "Popen", lambda command, **kwargs: commands.append(command))
     L.open_board(L.RunInfo(8765, "test-placeholder", 123), "small", (480, 360), None)
     command = commands[0]
-    assert command[0] == "test-browser" and command[2:] == ["--window-size=480,360", "--window-position=1440,680"]
+    assert command[0] == "test-browser" and command[2:4] == ["--window-size=480,360", "--window-position=1440,680"]
+    assert any(arg.startswith("--user-data-dir=") for arg in command)
     url = urlsplit(command[1].removeprefix("--app="))
     assert url.hostname == "127.0.0.1" and url.port == 8765
     assert parse_qs(url.query) == {"mode": ["small"]} and url.fragment == "t=test-placeholder"
     L.open_board(L.RunInfo(8765, "test-placeholder", 123), "small", (600, 400), (-20, 10))
-    assert commands[1][-1] == "--window-position=-20,10"
+    assert "--window-position=-20,10" in commands[1]
 
 
 @pytest.mark.parametrize("mode,browser,area", [

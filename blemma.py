@@ -361,8 +361,10 @@ def open_board(info: RunInfo, mode: str, size: tuple[int, int],
         else:
             browser = None                 # No usable display geometry: normal browser.
     if browser:
+        profile = ROOT / "board" / "state" / "browser"   # 普段の窓の大きさの記憶に左右されない・普段の Chrome を汚さない
         subprocess.Popen([browser, f"--app={url}", f"--window-size={size[0]},{size[1]}",
-                          f"--window-position={position[0]},{position[1]}"],
+                          f"--window-position={position[0]},{position[1]}", f"--user-data-dir={profile}",
+                          "--no-first-run", "--no-default-browser-check"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, **background_options())
     elif not webbrowser.open(url):
