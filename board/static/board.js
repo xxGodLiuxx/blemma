@@ -678,7 +678,8 @@
     }
     if (key === "close") { closeOverlay(); return; }
     if (key === "more") {                                  /* 和紙の続きを 1 画面分送る。最後まで読んだら先頭へ */
-      copyPage();
+      copyPage(1);
+      S.moreNext = performance.now() + 1500;
       S.dwell.reset();
       S.dwell.block(S.over);                               /* 見つめ直すまで次へ送らない */
       setFill(null, 0);
@@ -778,12 +779,15 @@
 
   /* ---- 入力 ---- */
   function onPointer(e) {
+    if (S.drag) { window.moveTo(e.screenX - S.drag.x, e.screenY - S.drag.y); return; }
     if (e.pointerType === "touch") { S.pointerType = "touch"; return; }
     S.pointerType = e.pointerType || "mouse";
     S.lastX = e.clientX;
     S.lastY = e.clientY;
     S.pointerAt = performance.now();
     S.over = dwellKeyOf(e.target);
+    var onMore = !!(e.target && e.target.closest && e.target.closest("#more"));
+    if (onMore !== !!S.overMore) { S.overMore = onMore; S.moreFresh = true; S.moreNext = S.pointerAt + 350; }
     if (S.firstPointer) { S.dwell.block(S.over); S.firstPointer = false; }
     if (S.over) spotlight(S.btns[S.over]);
     if (S.options.trail === "on") {
@@ -841,7 +845,11 @@
     }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.key === "Escape") { e.preventDefault(); press("fixed", "key"); return; }
-    if (e.key === "PageDown" && !$("more").hidden) { e.preventDefault(); copyPage(); return; }
+    if (/^(ArrowDown|ArrowUp|PageDown|PageUp)$/.test(e.key) && !$("more").hidden) {
+      e.preventDefault();
+      copyPage(e.key === "ArrowDown" || e.key === "PageDown" ? 1 : -1);
+      return;
+    }
     if (e.key === "0") { e.preventDefault(); press("terminal", "key"); return; }
     if (S.fan && /^Arrow(Left|Right|Up|Down)$/.test(e.key)) {
       e.preventDefault();
@@ -892,6 +900,7 @@
       }
     }
     if (S.armKey && now - S.armAt > ARM_MS) { disarm(); if (S.spotBtn) spotlight(S.spotBtn); }
+    if (S.overMore) hoverMore(now);
     if (S.scanMs > 0) {
       var card = S.card;
       var target = null;
@@ -966,7 +975,10 @@
     d.addEventListener("pointermove", active(onPointer), { passive: true });
     d.addEventListener("pointerover", active(onPointer), { passive: true });
     d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; }), { passive: true, capture: true });
-    d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.lastX = -1; S.scrollRest = 0; }));
+    d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.overMore = false; S.lastX = -1; S.scrollRest = 0; }));
+    d.addEventListener("pointerdown", active(startDrag));
+    d.addEventListener("pointerup", active(endDrag));
+    d.addEventListener("pointercancel", active(endDrag));
     w.addEventListener("blur", active(releaseDwell));
     w.addEventListener("focus", active(function () { releaseDwell(); S.scan.restart(performance.now()); }));
     d.addEventListener("visibilitychange", active(releaseDwell));
@@ -1048,10 +1060,30 @@
     S.armBtn = null;
   }
 
-  function copyPage() {
-    var c = $("copy"), end = c.scrollHeight - c.clientHeight;
-    c.scrollTop = c.scrollTop >= end - 2 ? 0 : c.scrollTop + Math.max(40, c.clientHeight - 36);
+  function copyPage(dir) {
+    var c = $("copy"), end = c.scrollHeight - c.clientHeight, step = Math.max(40, c.clientHeight - 36);
+    c.scrollTop = dir > 0 && c.scrollTop >= end - 2 ? 0 : c.scrollTop + dir * step;
   }
+
+  /* 「▼ 続き」にポインタを載せている間は 1 画面ずつ送る。最後まで来たら止まり、載せ直すと先頭へ戻る */
+  function hoverMore(now) {
+    if ($("more").hidden || now < S.moreNext) return;
+    var c = $("copy");
+    if (S.moreFresh || c.scrollTop < c.scrollHeight - c.clientHeight - 2) copyPage(1);
+    S.moreFresh = false;
+    S.moreNext = now + 1500;
+  }
+
+  /* 扇の背景をドラッグすると窓が動く。羽根と取り消しは押す所なので動かさない */
+  function startDrag(e) {
+    var t = e.target;
+    if (e.button !== 0 || e.pointerType === "touch" || viewWindow !== window) return;
+    if (!t || !t.closest || !t.closest("#fan-scroll") || t.closest("[data-key]")) return;
+    S.drag = { x: e.screenX - window.screenX, y: e.screenY - window.screenY };
+    t.setPointerCapture(e.pointerId);
+  }
+
+  function endDrag() { S.drag = null; }
 
   /* 和紙の文章が切れている時だけ「▼ 続き」を見せる */
   function updateMore() {

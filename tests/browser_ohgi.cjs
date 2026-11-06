@@ -189,6 +189,24 @@ async function closeCard(id) {
   const top0=await evaluate(`document.querySelector('#copy').scrollTop`);
   await click('#more');
   assert((await evaluate(`document.querySelector('#copy').scrollTop`))>top0,'More pages the text');
+  // Resting the pointer on "more" pages on its own, and the arrow key pages too.
+  await mouse({x:5,y:5}); await evaluate(`document.querySelector('#copy').scrollTop=0`);
+  await mouse(await point('#more'));
+  await until(`document.querySelector('#copy').scrollTop>0`);
+  await mouse({x:5,y:5}); await evaluate(`document.querySelector('#copy').scrollTop=0`);
+  await key('ArrowDown');
+  assert((await evaluate(`document.querySelector('#copy').scrollTop`))>0,'The arrow key pages the text');
+  // Dragging the fan background moves the window and never answers.
+  await evaluate(`window.moveTo=(x,y)=>{window.__moved=[x,y];}`);
+  const hub=await evaluate(`(() => { const r=document.querySelector('#fan').getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height*0.62}; })()`);
+  await mouse(hub); await mouse(hub,'mousePressed');
+  await mouse({x:hub.x+40,y:hub.y+20});
+  await mouse({x:hub.x+40,y:hub.y+20},'mouseReleased');
+  assert(await evaluate(`Array.isArray(window.__moved)`),'Dragging the fan background moves the window');
+  await evaluate(`window.__moved=null`);
+  await mouse({x:hub.x+80,y:hub.y+20});
+  assert.equal(await evaluate(`window.__moved`),null,'The drag ends with the button');
+  assert.equal((await api('/pending')).card.state,'shown','Dragging never answers');
   const blade=await point('#fan [data-key="allow_once"]');
   await mouse(blade); await mouse(blade,'mousePressed'); await mouse(blade,'mouseReleased');
   await sleep(150);
@@ -209,8 +227,12 @@ async function closeCard(id) {
   await click('#gear-btn');
   await evaluate(`(() => {const s=document.querySelector('[name="theme"]');s.value='dark';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
   assert.equal(await evaluate(`JSON.parse(localStorage.getItem('blemma.options')).theme`),'dark');
+  // The washi follows the theme.
+  await open('mode=small&lang=ja&theme=dark');
+  const darkPaper=await evaluate(`getComputedStyle(document.documentElement).getPropertyValue('--paper').trim()`);
   await open('mode=small&lang=ja&theme=light&trail&desc=off');
   assert.equal(await evaluate(`document.documentElement.dataset.theme`),'light');
+  assert.notEqual(await evaluate(`getComputedStyle(document.documentElement).getPropertyValue('--paper').trim()`),darkPaper);
   await mouse({x:100,y:200});
   assert(await evaluate(`!document.querySelector('#trail').hidden && getComputedStyle(document.querySelector('#trail')).pointerEvents==='none'`));
   await screenshot('ohgi-idle');

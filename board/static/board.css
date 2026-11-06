@@ -429,6 +429,8 @@ mark.ins { text-decoration: underline; text-underline-offset: .15em; }
 :root[data-face="mincho"] { --face: "Yu Mincho", "Hiragino Mincho ProN", "Noto Serif CJK JP", serif; }
 :root[data-face="gothic"] { --face: "Yu Gothic UI", "Hiragino Sans", "Noto Sans CJK JP", sans-serif; }
 :root { --paper: #f4ecd8; --ink: #1c1a17; --ink-soft: #5b5344; --paper-line: #b9ab8c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --paper: #141c30; --ink: #eef1f8; --ink-soft: #aab3c8; --paper-line: #3b4763; } }
+:root[data-theme="dark"] { --paper: #141c30; --ink: #eef1f8; --ink-soft: #aab3c8; --paper-line: #3b4763; }
 :root[data-theme="contrast"] { --paper: #000; --ink: #fff; --ink-soft: #fff; --paper-line: #fff; }
 .small.has-fan .top, .small.has-fan .status, .small.has-fan .card {
   --fg: var(--ink); --muted: var(--ink-soft); --line: var(--paper-line); --bg: var(--paper);
@@ -438,7 +440,8 @@ mark.ins { text-decoration: underline; text-underline-offset: .15em; }
 .small.has-fan .blocks pre, .small.has-fan .blocks .plain { display: block; font-size: calc(18px * var(--font, 1)); line-height: 1.5; }
 .small.has-fan .blocks .label { display: block; margin: 4px 0 0; font-size: calc(13px * var(--font, 1)); color: var(--ink-soft); }
 .small.has-fan .blocks .change .plain { font-size: calc(20px * var(--font, 1)); }
-.small.has-fan mark { background: #e8c86a; color: var(--ink); }
+.small.has-fan mark { background: #e8c86a; color: #1c1a17; }
+.small #fan-scroll { cursor: move; }
 :root[data-theme="contrast"] .small.has-fan mark { background: #fff; color: #000; }
 .small .fan > .btn.armed, .small .fan-aux .btn.armed { color: var(--bg); background: var(--rib); }
 .small .fan > .btn, .small .fan-aux .btn { touch-action: manipulation; }

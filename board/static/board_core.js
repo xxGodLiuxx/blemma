@@ -25,7 +25,7 @@
       in_dwell: "視線", in_key: "キー", in_switch: "スイッチ", in_touch: "触る", in_click: "クリック",
       per_card: "札ごとの秒", reset: "計を 0 に",
       phone: "携帯で開く", close: "閉じる",
-      more: "▼ 続き", more_top: "▲ 先頭へ", change: "変更", double_hint: "もう 1 回で決まります",
+      more: "▼ 続き (↓)", more_top: "▲ 先頭へ (↓)", change: "変更", double_hint: "もう 1 回で決まります",
       set_click: "押し方", click_double: "2 回で決まる", click_single: "1 回で決まる",
       phone_help: "携帯は利用者の転送で 127.0.0.1 へ届けます (例: USB の Android = adb reverse tcp:{port} tcp:{port})。" +
         "127.0.0.1 / localhost 以外の名で開く時は、server を --allow-host <名> で起こしてください。" +
@@ -79,7 +79,7 @@
       in_dwell: "gaze", in_key: "key", in_switch: "switch", in_touch: "touch", in_click: "click",
       per_card: "seconds per card", reset: "Reset counts",
       phone: "Open on a phone", close: "Close",
-      more: "▼ More", more_top: "▲ Back to top", change: "Change", double_hint: "Click again to confirm",
+      more: "▼ More (↓)", more_top: "▲ Back to top (↓)", change: "Change", double_hint: "Click again to confirm",
       set_click: "Confirm with", click_double: "Two clicks", click_single: "One click",
       phone_help: "Reach 127.0.0.1 from the phone through your own forwarding (e.g. USB Android: adb reverse tcp:{port} tcp:{port}). " +
         "If you open it under a name other than 127.0.0.1 / localhost, start the server with --allow-host <name>. " +
