@@ -28,6 +28,12 @@ def test_device_shape_uses_real_pixels_and_keeps_the_title_bar():
     assert got["rects"] == [(26, 75, 70, 135)]
 
 
+def test_closed_fan_hides_the_title_bar():
+    got = W.device_shape(W.clean_shape(good_shape(bare=True)), 960)
+    assert got["band"] is None and len(got["polygon"]) == 3
+    assert W.clean_shape(good_shape(bare="yes"))["bare"] is False
+
+
 def test_apply_does_nothing_without_a_request_body(monkeypatch):
     assert W.apply("x") == {"found": False}
     monkeypatch.setattr(W.sys, "platform", "linux")

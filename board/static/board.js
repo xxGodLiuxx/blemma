@@ -255,6 +255,7 @@
     if (focusedKey && S.btns[focusedKey] && !S.btns[focusedKey].disabled) {
       S.btns[focusedKey].focus({ preventScroll: true });
     }
+    fitWindow();
   }
 
   /* 見つめた羽根の全文 = 押せない書の帯に出す。目を移しても消さない (読むために羽根を離れるので)。
@@ -451,27 +452,60 @@
     windowCall({ pin: !S.pinned }).then(function (found) { if (!found) openPip(); });
   }
 
+  function isApp() {
+    return !!window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
+  }
+
+  /* 待機中は閉じた扇の小さな窓にして、札が来たら元の大きさへ開く (app の窓だけ。普通のタブでは大きさは変わらない) */
+  var WIDGET = [178, 280];
+  var CLOSED = [[14, 4], [45, 0], [76, 4], [63, 290], [45, 298], [27, 290]];
+  function fitWindow() {
+    if (S.mode !== "small" || viewWindow !== window || !isApp()) return;
+    var idle = !S.card && !S.overlay;
+    if (idle === S.widget) return;
+    S.widget = idle;
+    var w = window.outerWidth, h = window.outerHeight, s = window.screen, pos = S.options.pos;
+    if (idle) S.fullSize = [w, h];
+    var to = idle ? WIDGET : S.fullSize || [640, 720];
+    var x = window.screenX + w - to[0], y = window.screenY + h - to[1];        /* 右下の角を保つ */
+    if (pos !== "keep") {
+      x = pos.charAt(1) === "r" ? s.availLeft + s.availWidth - to[0] : s.availLeft;
+      y = pos.charAt(0) === "b" ? s.availTop + s.availHeight - to[1] : s.availTop;
+    }
+    window.moveTo(Math.max(s.availLeft, Math.min(x, s.availLeft + s.availWidth - to[0])),
+                  Math.max(s.availTop, Math.min(y, s.availTop + s.availHeight - to[1])));
+    window.resizeTo(to[0], to[1]);
+  }
+
   /* 扇の周りを透かす = 題の帯と和紙は四角のまま、扇の外の角だけを窓から切る */
   function pushShape() {
     if (S.mode !== "small" || viewWindow !== window) return;
     var shape = null;
-    if (S.options.clear === "on" && S.fan && !S.overlay && S.options.scale === 1 && S.fanOutline) {
+    var side = (window.outerWidth - window.innerWidth) / 2, top = window.outerHeight - window.innerHeight - side;
+    if (S.options.clear === "on" && !S.card && !S.overlay && S.options.scale === 1) {
+      var c = $("closed").querySelector("svg").getBoundingClientRect(), z = c.height / 300;   /* 待機中 = 閉じた扇だけ */
+      shape = { dpr: window.devicePixelRatio, left: side, top: top, keep: 0, bare: true, rects: [],
+                polygon: CLOSED.map(function (p) { return [c.left + p[0] * z, c.top + p[1] * z]; }) };
+    } else if (S.options.clear === "on" && S.fan && !S.overlay && S.options.scale === 1 && S.fanOutline) {
       var fan = $("fan"), r = fan.getBoundingClientRect(), k = r.width / parseFloat(fan.style.width);
-      var side = (window.outerWidth - window.innerWidth) / 2, wide = window.innerWidth / window.innerHeight >= 1.5;
+      var wide = window.innerWidth / window.innerHeight >= 1.5;
       var below = $("fan-scroll").getBoundingClientRect().bottom;       /* 縦向き = 扇の下は和紙 */
       var rects = wide ? [[0, 0, r.left - 6, window.innerHeight]] : [[0, below, window.innerWidth, window.innerHeight - below]];
       Array.prototype.forEach.call(fan.querySelectorAll(".fan-aux"), function (e) {
         var b = e.getBoundingClientRect();
         rects.push([b.left - 2, b.top - 2, b.width + 4, b.height + 4]);
       });
-      shape = { dpr: window.devicePixelRatio, left: side, top: window.outerHeight - window.innerHeight - side,
-                keep: 0, rects: rects,
+      shape = { dpr: window.devicePixelRatio, left: side, top: top, keep: 0, rects: rects,
                 polygon: S.fanOutline.map(function (p) { return [r.left + p[0] * k, r.top + p[1] * k]; }) };
     }
     var sig = JSON.stringify(shape);
     if (sig === S.shapeSig) return;
     S.shapeSig = sig;
-    windowCall({ shape: shape });
+    windowCall({ shape: shape }).then(function (found) {
+      /* 開いた直後は窓の名がまだ付いていない = 見つかるまで少し繰り返す */
+      S.shapeTries = found ? 0 : (S.shapeTries || 0) + 1;
+      if (!found && S.shapeTries < 20 && S.shapeSig === sig) S.shapeSig = "";
+    });
   }
 
   /* 窓の位置 = 画面の 4 隅へ動かす (app の窓だけ動く。普通のタブでは何も起きない) */
@@ -547,6 +581,7 @@
     var label = state ? labels[state.state] : (S.lang === "ja" ? "○ 待機中" : "○ ready");
     if (state && state.reason === "disconnected") label = S.lang === "ja" ? "■ 止まった・端末を見てください" : "■ stopped · check the terminal";
     setText(badge, label);
+    setText($("closed-state"), label);
     badge.classList.toggle("stale", !!state && (state.stale || state.state === "working" && state.ago + (now - S.snapAt) / 1000 >= 600));
     badge.dataset.state = state ? state.state : "idle";
     var rem = $("remain");
@@ -562,6 +597,13 @@
     }
     updateMore();
     pushShape();
+    /* 板が止まったら app の窓を閉じる (題の帯が隠れた窓も残らない) */
+    if (S.mode === "small" && viewWindow === window && (S.offline || S.stopped) && isApp()) {
+      if (!S.goneAt) S.goneAt = now;
+      else if (now - S.goneAt > 10000) window.close();
+    } else {
+      S.goneAt = 0;
+    }
     var qn = S.snap ? S.snap.queue : 0;
     setText($("queue"), qn > 0 ? C.fmt(T.queue, { n: qn }) : "");
     if (S.snap && S.snap.stats) {
@@ -1029,6 +1071,7 @@
     $("panel-close").focus({ preventScroll: true });
     S.dwell.reset();
     setFill(null, 0);
+    fitWindow();
   }
 
   function closeOverlay() {
@@ -1036,6 +1079,7 @@
     $("overlay").hidden = true;
     S.dwell.reset();
     S.dwell.block(keyAtPointer());
+    fitWindow();
   }
 
   /* 扇の選択肢 = 1 回目の click は選ぶだけ。同じ羽根をもう 1 回押すと決まる (ダブルクリックもこの形) */
@@ -1078,7 +1122,7 @@
   function startDrag(e) {
     var t = e.target;
     if (e.button !== 0 || e.pointerType === "touch" || viewWindow !== window) return;
-    if (!t || !t.closest || !t.closest("#fan-scroll") || t.closest("[data-key]")) return;
+    if (!t || !t.closest || !t.closest("#fan-scroll, #closed") || t.closest("[data-key]")) return;
     S.drag = { x: e.screenX - window.screenX, y: e.screenY - window.screenY };
     t.setPointerCapture(e.pointerId);
   }

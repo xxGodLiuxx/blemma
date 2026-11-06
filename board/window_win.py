@@ -65,18 +65,18 @@ def clean_shape(shape: Any) -> Optional[dict]:
         boxes.append(box)
     if None in points:
         return None
-    return {"dpr": dpr, "left": left, "top": top, "keep": keep, "polygon": points, "rects": boxes}
+    return {"dpr": dpr, "left": left, "top": top, "keep": keep, "polygon": points, "rects": boxes, "bare": shape.get("bare") is True}
 
 
 def device_shape(shape: dict, width: int) -> dict:
-    """CSS の座標を窓の中の実の画素へ直す。題の帯と扇の上は横いっぱいに残す。"""
+    """CSS の座標を窓の中の実の画素へ直す。題の帯は残す (bare = 閉じた扇の時だけ隠す)。"""
     dpr, left, top = shape["dpr"], shape["left"], shape["top"]
 
     def point(x: float, y: float) -> tuple:
         return round((left + x) * dpr), round((top + y) * dpr)
 
     edge = round(left * dpr)
-    band = (edge, 0, width - edge, round((top + shape["keep"]) * dpr))
+    band = None if shape["bare"] else (edge, 0, width - edge, round((top + shape["keep"]) * dpr))
     rects = []
     for x, y, w, h in shape["rects"]:
         x0, y0 = point(x, y)
@@ -125,10 +125,11 @@ def _apply(data: dict) -> dict:
         d.DwmSetWindowAttribute(wintypes.HWND(hwnd), name, ctypes.byref(number), 4)
 
     def region(shape: dict) -> Any:
-        target = g.CreateRectRgn(*shape["band"])
-        parts = [g.CreateRectRgn(*box) for box in shape["rects"]]
         points = (wintypes.POINT * len(shape["polygon"]))(*[wintypes.POINT(x, y) for x, y in shape["polygon"]])
-        parts.append(g.CreatePolygonRgn(points, len(shape["polygon"]), WINDING))
+        target = g.CreatePolygonRgn(points, len(shape["polygon"]), WINDING)
+        parts = [g.CreateRectRgn(*box) for box in shape["rects"]]
+        if shape["band"]:
+            parts.append(g.CreateRectRgn(*shape["band"]))
         for part in parts:
             g.CombineRgn(target, target, part, RGN_OR)
             g.DeleteObject(part)

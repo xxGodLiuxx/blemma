@@ -82,9 +82,14 @@ async function closeCard(id) {
   ready = true;
   await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
   await open();
+  // Waiting: only the closed fan shows, with the state written on it. A card opens the fan.
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('#closed')).display`),'flex');
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('#fan-scroll')).display`),'none');
+  await until(`document.querySelector('#closed-state').textContent.length > 0`);
   for (const n of [2,3,4,6]) {
     const id=await card(n);
     await until(`document.querySelectorAll('#fan > .btn').length === ${n+2}`);
+    assert.equal(await evaluate(`getComputedStyle(document.querySelector('#closed')).display`),'none');
     const geometry=await evaluate(`Array.from(document.querySelectorAll('#fan > .btn')).map(b=>{const s=getComputedStyle(b),r=b.getBoundingClientRect();
       const k=r.width/b.offsetWidth,x=r.x+parseFloat(s.getPropertyValue('--lx'))*k,y=r.y+parseFloat(s.getPropertyValue('--ly'))*k;
       return {key:b.dataset.key,x,y,hit:document.elementFromPoint(x,y)?.closest('button')?.dataset.key};})`);
@@ -222,6 +227,13 @@ async function closeCard(id) {
   await key('Escape');
   await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan > .btn').disabled`);
   await mouse({x:5,y:5}); await closeCard(edit);
+  // In an app window the waiting fan is a small window, and the next card brings the size back.
+  await evaluate(`window.matchMedia=()=>({matches:true}); window.__sizes=[]; window.resizeTo=(w,h)=>window.__sizes.push([w,h]); window.moveTo=()=>{};`);
+  const again=await card(2);
+  await until(`window.__sizes.length>=1`);
+  await closeCard(again);
+  await until(`window.__sizes.length>=2`);
+  assert.deepEqual((await evaluate(`window.__sizes[window.__sizes.length-1]`)),[178,280],'Waiting shrinks to the closed fan');
   await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
   await open();
   await click('#gear-btn');
