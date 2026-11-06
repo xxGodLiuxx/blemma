@@ -182,6 +182,21 @@ def test_window_answers_and_needs_token(live):
     assert srv.request("POST", "/window", {}, token=None)[0] == 401
 
 
+def test_window_call_names_this_boards_own_port(live, monkeypatch):
+    """窓の操作は、この板の port の窓だけに向ける (別の port で動いている板の窓を取り違えない)。"""
+    seen = []
+
+    def fake(data, port=None):
+        seen.append((data, port))
+        return {"found": False}
+
+    monkeypatch.setattr(S.window_win, "apply", fake)
+    srv = live()
+    reply = srv.request("POST", "/window", {"pin": True})
+    assert reply[:2] == (200, {"found": False})
+    assert seen == [({"pin": True}, srv.port)]
+
+
 def test_stats_reset_needs_token(live):
     srv = live()
     assert srv.request("POST", "/stats/reset", {}, token=None)[0] == 401

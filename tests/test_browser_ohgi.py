@@ -65,7 +65,7 @@ def test_real_browser_fan_inputs_and_fallback(tmp_path):
     browser, node = chromium(), shutil.which("node")
     if not browser or not node:
         pytest.skip("Isolated Chromium and node are needed for real browser checks")
-    support = subprocess.run([node, "-p", "typeof WebSocket"], capture_output=True, text=True, timeout=5)
+    support = subprocess.run([node, "-p", "typeof WebSocket"], capture_output=True, text=True, encoding="utf-8", timeout=5)
     if support.stdout.strip() != "function":
         pytest.skip("The optional browser harness needs node with built-in WebSocket support")
     app = S.App(replace(S.Limits(), pending_hold=.15, wait_hold=.1, disconnect=120, undo_ms=1000,
@@ -80,7 +80,11 @@ def test_real_browser_fan_inputs_and_fallback(tmp_path):
     browser_log = (tmp_path / "chromium.log").open("w", encoding="utf-8")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        process = subprocess.Popen([browser, "--headless=new", "--disable-gpu", "--in-process-gpu", "--no-first-run", "--no-default-browser-check",
+        # From an elevated shell Chrome re-launches itself de-elevated and the process we started exits.
+        # Inside a job object (a memory-capped test runner) that hand-off never yields a browser, and this
+        # test would skip without a word. Keep the process we start as the browser itself.
+        process = subprocess.Popen([browser, "--do-not-de-elevate",
+                                    "--headless=new", "--disable-gpu", "--in-process-gpu", "--no-first-run", "--no-default-browser-check",
                                     "--disable-background-networking", "--disable-extensions",
                                     "--disable-component-update", "--disable-sync", "--remote-debugging-address=127.0.0.1",
                                     f"--remote-debugging-port={port}", f"--user-data-dir={tmp_path / 'chromium'}",

@@ -354,7 +354,7 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 | `POST /answer` | 頁 | `id`・`seq` (= 札の `view_seq`)・`choice` (下)・`by` (dwell / key / switch / touch / click)・`presses` (まだ送っていない押しの数・§4.5)・`press_batches` (束の ID つきの押しの数・任意・同じ ID は二度数えない・§4.5) | `200` + `undo_ms`・`undo_remaining` / `409` + `ended` (終わった札・終わりの種つき)・`not_current`・`expired`・`not_shown`・`stale` / `400` (`bad_choice`) |
 | `POST /undo` | 頁 | `id`・`by`・`presses`・`press_batches` (猶予のうちだけ) | `200` + `state` (shown・期限の後なら expired) / `409` (`not_undoable`) |
 | `POST /stats/reset` | 頁 | 空の object (11/4 の実装) | `204` (計を 0 に・§4.5) |
-| `POST /window` | 頁 | `pin` (真偽値・任意) / `shape` (窓に残す形、または null・任意) | `200` + `found`・対象が見つかれば `pin`。Windows の小窓の固定と透過 (`board/window_win.py`・ctypes)。他の OS・対象なしでは `found: false` (§4.4) |
+| `POST /window` | 頁 | `pin` (真偽値・任意) / `shape` (窓に残す形、または null・任意) | `200` + `found`・対象が見つかれば `ok` (頼んだ操作が窓に当たったか) と `pin` (今の固定の状態)。Windows の小窓の固定と透過 (`board/window_win.py`・ctypes)。触るのは窓の名がこの板の物と一致する 1 枚だけ。他の OS・対象なし・同じ名の窓が 2 枚以上では `found: false` (§4.4) |
 | `POST /resolve` | 観察の hook (`PostToolUse`・`PermissionDenied`・**提出版では登録しない**) | `session`・`event` (post_tool_use / permission_denied)・`key` (要求と 1 対 1 に結べる照合の鍵) | **提出版では作らない** (11/4・§10.3 = 1 対 1 の鍵が無い) = 他の知らない口と同じ `404`。作るなら `200` + `closed` (id か null)・`reason` (none / ambiguous / no_key) |
 | `GET /`・`/static/…` | 頁 | 板の頁 (data を持たない) | token なしで返す (自分の file だけを許す CSP・`X-Frame-Options: DENY`) |
 
@@ -456,7 +456,7 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 - **コピー** = 和紙にポインタを載せた時に釦が現れる (キーでその釦へ移った時も表示)。1 回押すか `C` キーで問いと本文をコピーする。重複する「変更」の行は含めない。
 - 明暗と高コントラストの配色は和紙にも追従する (暗い配色では和紙も夜の色)。`theme=auto` は `prefers-color-scheme` に従い、`prefers-reduced-motion` では点滅と動きを抑える。
 - 字体 (`face`) は **佑字 粛 (Yuji Syuku)・明朝・ゴシック**の 3 種。佑字 粛は `board/static/` に WOFF2 と SIL OFL 1.1 の文を同梱し、板自身から配る (`font/woff2`)。明朝とゴシックは機械の字体を使う。外の字体や CDN は読まない。言葉は日本語と英語 (`navigator.language` で選ぶ・`?lang=` で上書き)。
-- **待機中** = 扇は横向きに閉じて控え、ポインタを載せると状態の字が出る。app の小窓だけは 320×120 に縮み、札が来るか設定を開くと元の大きさに戻る (`fitWindow`)。板との切断や停止を検知して 10 秒続くと app の小窓を閉じる。通常のタブは縮めず、自動では閉じない。
+- **待機中** = 扇は横向きに閉じて控え、ポインタを載せると状態の字が出る。app の小窓だけは 320×120 に縮み、札が来るか設定を開くと元の大きさに戻る (`fitWindow`)。元の大きさは `sessionStorage` にも覚え、待機の大きさのまま読み直した窓を「元の大きさ」と取り違えない。元の大きさを知らないまま札つきで始まった時は、今の窓の大きさのままにする。板との切断や停止を検知して 10 秒続くと app の小窓を閉じる。切断と見るのは、板の見張り (`GET /pending`) が続けて 3 回落ちた時 (最初に落ちた時から 10 秒) と、鍵が違って見張りをやめた時だけで、答えの送信が 1 回届かなかっただけでは閉じない (「つながらない」と出して見張りを取り直す)。通常のタブは縮めず、自動では閉じない。
 - **札を読む間の通知** = 小型表示では札がある間と、札が消えてから 1.5 秒間、通知の帯と縁を出さない。前の札の終了の文も、次の札がある間は出さない (§2.4)。
 
 ### 4.2 入力の 5 通り (選択式の問いなら、どれでも同じ仕事)
@@ -517,9 +517,9 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
   - 端末の打鍵を最小にする公式の道 = screen reader mode (`--ax-screen-reader` など)。"menus you'd normally navigate with the arrow keys, including permission prompts, become numbered lists ... Type the number of the option you want and press Enter." (裏取り §3.5【raw】) = 番号と Enter の 2 打鍵。質問の dialog と form で同じに効くかは確かめていない = README の助言の 1 行に留める。
 
 ### 4.4 小窓を常に手前に・携帯で見る
-- **常に手前** = 利用者が小型表示の「常に手前」をキーかクリックで押す。Windows は `POST /window` → `board/window_win.py` の `ctypes` で今の Chrome / Edge の app の窓を固定する (`SetWindowPos`・位置と大きさを変えず、焦点を奪わない)。「固定を外す」で解除する。Windows 以外や対象の窓が見つからない時は、対応ブラウザの Document Picture-in-Picture で同じ頁の表示と入力を移す。大きさは幅 `min(640, 作業領域の幅−40)`・高さ `min(720, 作業領域の高さ−60)` で画面に収める。「元の窓へ」か窓を閉じる操作で戻す。app モードだけで常に手前になるわけではない。
+- **常に手前** = 利用者が小型表示の「常に手前」をキーかクリックで押す。Windows は `POST /window` → `board/window_win.py` の `ctypes` で今の Chrome / Edge の app の窓を固定する (`SetWindowPos`・位置と大きさを変えず、焦点を奪わない)。「固定を外す」で解除する。**触るのはこの板の窓 1 枚だけ** = 窓の名 (既定の port 8765 は「BLEMMA · 扇 (OhGi)」・ほかの port の板は末尾に「 · port」) と窓の種類が一致する窓を探し、ちょうど 1 枚の時だけ当てる。0 枚か 2 枚以上なら何もしない (別の port で起こした板の窓や、同じ板の 2 枚目の窓を、こちらの形で切らない)。API の戻り値を見て、失敗は `ok: false` で頁へ返す。Windows 以外、対象の窓が見つからない時、固定に失敗した時は、対応ブラウザの Document Picture-in-Picture で同じ頁の表示と入力を移す。大きさは幅 `min(640, 作業領域の幅−40)`・高さ `min(720, 作業領域の高さ−60)` で画面に収める。「元の窓へ」か窓を閉じる操作で戻す。app モードだけで常に手前になるわけではない。
 - **窓の位置** = 設定の `pos` で 4 隅を選ぶ (`keep` はそのまま)。app の窓向けで、通常のタブを移動できるとはしない。待機と札の表示で大きさが替わる時も、選んだ隅に合わせる。
-- **透過** = `clear=on` は既定で切の Windows 専用の設定。小型表示・`scale=1`・設定を閉じている時だけ、`POST /window` の `shape` と `SetWindowRgn` で扇の外の角を窓から切る。和紙は四角のまま残し、待機中は閉じた扇だけを残して題の帯も隠す。全体を半透明にはしない。対象の窓が無い・他の OS では何も変わらない。切に戻す時は `shape: null` で四角の窓へ戻す。
+- **透過** = `clear=on` は既定で切の Windows 専用の設定。小型表示・`scale=1`・設定を閉じている時だけ、`POST /window` の `shape` と `SetWindowRgn` で扇の外の角を窓から切る。和紙は四角のまま残し、待機中は閉じた扇だけを残して題の帯も隠す。全体を半透明にはしない。対象の窓が無い・他の OS では何も変わらない。切に戻す時は `shape: null` で四角の窓へ戻す。同じ名の窓が 2 枚以上ある時と、切る途中で API が失敗した時も、古い形を残さず四角の窓へ戻す (作った region は、Windows に渡せた時だけ Windows の持ち物になり、渡せなかった時は解放する)。頁は当たらなかった形を最大 20 回送り直す。扇の字の大きさ (`--font`) は「設定の倍率 × 窓に合わせた補正」で、書く所は 1 か所 (`setFont`) = 窓の操作の応答では固定のボタンの字だけを直す。
 - **11/4 の転換で、携帯の場面と転送は提出版の外** (デモにも入れない・§1・§9)。残る物 = server の `--allow-host` (Host の照合に名を足す)・頁の縦 1 列の見え方 (小窓でも使う)・頁の「携帯で開く」の釦 (`#t=` つきの URL を大きく出す)。携帯から Claude Code に答えたい人には、README で公式の Remote Control を案内する (BLEMMA の頁を携帯へ届ける仕組みではない = 板の札を携帯で答えられるとは約束しない)。下は利用者が自分で転送する時の線 (変えない)。
 - 板の server は LAN にも外にも開かない。携帯で見る時は利用者が自分の転送で 127.0.0.1 へ届ける = Android の USB なら `adb reverse tcp:8765 tcp:8765` (携帯の `http://127.0.0.1:8765/#t=…` がそのまま通る)・`ssh -L`・自分の VPN の転送 (名が `127.0.0.1` / `localhost` でなければ `--allow-host <名>` で照合に足す)。
 - その時は、利用者が設けた転送の先へ札の本文と token が渡る (BLEMMA の保証の外・§3.8)。機外へ一切出さない使い方では携帯を使わない。
@@ -720,25 +720,25 @@ blemma/
 
 ### 7.3 試験と検収
 - **自動の試験**: hook の入出力の契約 (判断を返す 3 本・Notification・状態の 2 本)・server の状態と期限・token と Host・ask_board の JSON-RPC と任意の説明・頁の入力と設定・扇の形。Claude Code の代わりに stdin / JSON-RPC を送り、頁の代わりに HTTP で answer を打つ試験を含む。実ブラウザの描画は別の試験で通す (下)。
-- **11/6 の実行記録 = 414 passed・0 skipped** (作り手から共有された結果・`python -m pytest tests -q`・全 414 件・試験の Python file 11 本 + `conftest.py`)。実ブラウザの試験も走る。Chromium の描画・node と組み込みの WebSocket が必要で、使えない環境ではその試験を skip する (skip を合格には数えない)。
+- **11/6 の実行記録 = 438 passed・0 skipped** (作り手から共有された結果・`python -m pytest tests -q`・全 438 件・試験の Python file 11 本 + `conftest.py`)。実ブラウザの試験も走る。Chromium の描画・node と組み込みの WebSocket が必要で、使えない環境ではその試験を skip する (skip を合格には数えない)。管理者権限の端末から起こした Chrome は、権限を下げた別の process として自分を起こし直す。メモリ上限つきの job の中ではその起こし直しが実らず、この試験が黙って skip になった (11/6 夜) = 試験の起動に `--do-not-de-elevate` を付けて、起こした process をそのまま browser にする。
 
 | file | 本 | 見る物 |
 |---|---|---|
 | `test_board_core.py` | 52 | 板の server の状態の確定 (§3.4〜§3.6・時計を差し替えて直に・HTTP なし)・閉じた頁の long-poll |
-| `test_server_http.py` | 24 | 板の server の HTTP の口 (token・Host・CORS なし・静的の頁・long-poll・run.json・port の使用中・壊れた要求の行・`/window`) |
+| `test_server_http.py` | 25 | 板の server の HTTP の口 (token・Host・CORS なし・静的の頁・long-poll・run.json・port の使用中・壊れた要求の行・`/window` と、窓の操作へ自分の port を渡す事) |
 | `test_client.py` | 48 | 共通の client (板なし・接続断・時間切れ・壊れた返り・総期限・転送を追わない・答えと payload の照合) |
-| `test_board_js.py` | 28 | 頁の JS を node で走らせる (純粋な計算・DOM の無い vm・滞留・扇・設定・状態の優先・Edit の印・node が無ければ skip) |
-| `test_browser_ohgi.py` | 1 | `browser_ohgi.cjs` で実の DOM・描画・当たり判定・入力・HTTP・一覧・設定・本文送り・2 回押し。窓の移動やクリップボードなどの差し替えは下記 |
+| `test_board_js.py` | 35 | 頁の JS を node で走らせる (純粋な計算・DOM の無い vm・滞留・扇・設定・状態の優先・Edit の印・2 回押しの反例・字の倍率の書き手・板の見張りの数え方・窓の名・node が無ければ skip) |
+| `test_browser_ohgi.py` | 1 | `browser_ohgi.cjs` で実の DOM・描画・当たり判定・入力・HTTP・一覧・設定・本文送り・2 回押し (描き直しをまたぐ反例を含む)・待機の窓の大きさの覚え方・`clear=on` の字の倍率。窓の移動やクリップボードなどの差し替えは下記 |
 | `test_hooks.py` | 108 | hook 3 本 (permission・ask・elicitation) を別 process で・偽の板・stdin は v2.1.318 の実の形 (値はダミー) |
 | `test_notify.py` | 29 | notify と共通の client を別 process で・偽の板と実の板 (`python -I` でも届いて exit 0) |
 | `test_mcp.py` | 63 | MCP server を別 process の UTF-8 の入出力で (JSON-RPC・説明を実の hook と板へ運ぶ往復・取り消し・時間切れ) |
 | `test_launcher.py` | 40 | 起こし方・設定の優先 (板は実の子 process・claude とブラウザは起こさない) |
 | `test_state.py` | 15 | UserPromptSubmit / Stop の無出力・状態だけの送信・総期限・実の板の認証と状態の古さ |
-| `test_window_win.py` | 6 | 窓の形の検証・実画素への換算・待機中の題の帯を除く計算・別 OS と API 失敗時の扱い (Windows の実 API は通さない) |
+| `test_window_win.py` | 22 | 窓の形の検証 (float に収まらない整数を含む)・実画素への換算・待機中の題の帯を除く計算・この板の 1 枚だけに当てる決まり (0 枚・2 枚以上・port つきの窓の名)・API の失敗の返し方と region の解放の順・別 OS と例外の扱い (Windows の実 API は通さない) |
 
 - **headless のブラウザでの確かめ** (自動の試験の外・11/4): 隔離した設定の Chrome / Edge で実の頁を動かす確かめ 23 件 + 13 件 (全部通った)。
 - **実機の検収** (11/6): 出荷の code と実の Claude Code v2.1.318 で 15 経路中 14 が PASS・残る 1 件は複数行の commit の suggestion の形の問題。異常の経路で勝手に続行した例は 0。検収で直した 4 件・扇を実物で見て直した所 = §16。
-- **自動の試験だけでは通らない経路**: `test_board_js.py` は `init()` と通信を差し替え、`test_pip_uses_visible_window_focus_and_retains_held_keys` も代用品の窓でイベントを渡すだけで、実の `requestWindow()` と描画は通らない。`browser_ohgi.cjs` にも PiP を開く操作は無く、ドラッグは `window.moveTo`、コピーは `navigator.clipboard.writeText`、待機の縮小は `window.matchMedia`・`window.resizeTo`・`window.moveTo` を代用品へ差し替える。したがって OS の実窓の移動・縮小・実クリップボードは未検証。`test_window_win.py` は `_apply` を失敗する代用品へ替える試験を含み、実の `SetWindowPos`・`SetWindowRgn` による固定・透過は通さない。`test_pending_returns_at_once_when_the_viewer_closed` は `alive` を偽の切断判定に差し替え、実の接続の切断検知までは通さない。`test_launcher.py` は `monkeypatch` で Claude Code とブラウザの起動を差し替える。414 件の合格だけで、これらの実機の検収まで済んだとはしない (残りは §10.4)。
+- **自動の試験だけでは通らない経路**: `test_board_js.py` は `init()` と通信を差し替え、`test_pip_uses_visible_window_focus_and_retains_held_keys` も代用品の窓でイベントを渡すだけで、実の `requestWindow()` と描画は通らない。`browser_ohgi.cjs` にも PiP を開く操作は無く、ドラッグは `window.moveTo`、コピーは `navigator.clipboard.writeText`、待機の縮小は `window.matchMedia`・`window.resizeTo`・`window.moveTo` を代用品へ差し替える。したがって OS の実窓の移動・縮小・実クリップボードは未検証。`test_window_win.py` は窓と Win32 の呼び出しをすべて代用品へ替え (1 枚だけに当てる決まり・失敗の返し方・region の解放の順を見る)、実の `SetWindowPos`・`SetWindowRgn` による固定・透過は通さない。`test_pending_returns_at_once_when_the_viewer_closed` は `alive` を偽の切断判定に差し替え、実の接続の切断検知までは通さない。`test_launcher.py` は `monkeypatch` で Claude Code とブラウザの起動を差し替える。438 件の合格だけで、これらの実機の検収まで済んだとはしない (残りは §10.4)。
 - **皿ごとの検収** (11/3・11/4) は実の `claude` で、完成版の hook の出力を Claude Code に解釈させる (偽の答えで済ませない)。
 - **完成版の異常の経路の検収項目** (当初 11/5 の予定・11/6 の記録は §16): ①端末先着 (§3.7 の (a) か (b) の通りに閉じる) ②板先着 ③待機中の server 停止 ④2 件同時 (待ち行列と 2 件目の期限) ⑤2 画面からの競合 (大きな頁と小窓で同時に押す) ⑥スイッチの取り消し (1 鍵で猶予のうちに)。§3.5 の表の状態と頁の文に照らす。
 - **初日の確かめの成功を完成版の検収に代用しない** (初日は使い捨ての試し・§10.1)。
@@ -862,7 +862,7 @@ v1.2 = 締切が 11/8 20:00 (参加者ガイド・10/31) なので v1.1 の 8 �
 ### 10.4 測った物と、まだ検収していない物 (11/6 の時点)
 - **初日の確かめで測った物** (§10.3・使い捨ての試しの hook と最小の MCP の種・実の `claude`): 4 つの口の公式の出力の効き (allow・deny + message・deny + interrupt・updatedPermissions・updatedInput・accept / decline / cancel・`hookEventName` の要否)・待つ間の端末の見え方・端末の先着の分かれ方・退化 (対話)・起こし方の旗 (`--setting-sources`・`--strict-mcp-config`・`--permission-mode default`)・stdin の欄。= §12 の 12 件のうち 11 件が決まった ((iii) の 4 は試していない・§12)。
 - **完成版で検収した物** (11/6・§16): 実の Claude Code v2.1.318 との 15 経路 (14 PASS・1 件は複数行の commit の suggestion の形の問題)、板なし・時限・見る頁なし・端末先着などで勝手に続行した例は 0。扇の実物で、焦点が無い窓の滞留・本文の領域・字の重なりを見つけて直した。小型の見え方と Document Picture-in-Picture は実装済み。
-- **合格まで確認できていない物**: 実ブラウザの自動試験は現在の 414 passed・0 skipped に含む (§7.3)。ただし、実の Document Picture-in-Picture の開閉と描画、Windows の実窓の固定・透過・移動・縮小、実クリップボード、板との切断後の app の自動終了、同時の HTTP の競合、mac / Linux の検収結果はこの記録に無い。非表示 / 再表示の滞留の守りも、代用品の窓の試験を実ブラウザの合格には数えない。実装済みと検収済みを分ける。
+- **合格まで確認できていない物**: 実ブラウザの自動試験は現在の 438 passed・0 skipped に含む (§7.3)。ただし、実の Document Picture-in-Picture の開閉と描画、Windows の実窓の固定・透過・移動・縮小、実クリップボード、板との切断後の app の自動終了、同時の HTTP の競合、mac / Linux の検収結果はこの記録に無い。非表示 / 再表示の滞留の守りも、代用品の窓の試験を実ブラウザの合格には数えない。実装済みと検収済みを分ける。
 
 ---
 
@@ -1058,4 +1058,14 @@ v1.2 = 締切が 11/8 20:00 (参加者ガイド・10/31) なので v1.1 の 8 �
 2. 窓は 640×720、扇が上・問いの和紙が下。横長では左に問い・右に扇。大きさの変更で扇・和紙・字が追従し、扇の背景のドラッグで窓が動く。字体は 3 種・文字の大きさは 5 段階・和紙も配色に追従する。右の親骨は「戻」、朱の印は無い (§4.1)。
 3. Edit の短い変更を先頭の「変更」の行と本文の印で示す。長い本文は「▼ 続き」で 1 画面ずつ送り、読む間は動かさない。コピーの釦と C キーを足した。札がある間は通知の帯と縁を出さない (§4.1)。
 4. Windows は今の窓を最前面に固定。他の OS は対応ブラウザの Document Picture-in-Picture を画面内に開く。位置は 4 隅、透過は Windows・`scale=1` の任意設定。待機中は扇が横向きに閉じて控え、app の窓だけ縮む。札が来れば元の大きさへ戻り、板との切断が 10 秒続けば閉じる (§4.4)。
-5. 自動の試験は 414 passed・0 skipped。実ブラウザも走るが、窓の移動・縮小・コピーの試験には代用品がある。実の Windows API や PiP の開閉まで通したとはしない (§7.3)。
+5. 自動の試験は 414 passed・0 skipped (この追記の時点)。実ブラウザも走るが、窓の移動・縮小・コピーの試験には代用品がある。実の Windows API や PiP の開閉まで通したとはしない (§7.3)。
+
+**同日の夜の直し** (外部のレビュー (別の LLM による反証) 2 系統の最終の所見を受けて・BLOCKER は無し):
+
+1. **窓の名指し** (HIGH): 窓の名と種類が同じ窓を全部拾って同じ形で切っていた。別の port で起こした板や、同じ板の 2 枚目の窓を取り違える。窓の名に port の印を足し (既定の 8765 は名だけ)、ちょうど 1 枚の時だけ当てる形にした (§4.4)。
+2. **字の倍率**: 窓の操作の応答が、窓に合わせて大きくした字を設定の倍率だけへ戻していた (1.82 → 1.3)。書き手を 1 か所にした (§4.4)。
+3. **API の失敗と巨大な数**: `SetWindowPos`・`SetWindowRgn` などの戻り値を見て、失敗は頁へ返し、渡せなかった region は解放する。float に収まらない整数は壊れた形として断る (§4.4)。
+4. **窓の大きさ**: 待機の大きさのまま読み直した窓を「元の大きさ」と覚えない。元の大きさを知らないまま札つきで始まった時は、今の窓のままにする (§4.1)。
+5. **窓が勝手に閉じる条件**: 送信が 1 回届かなかっただけで「板が止まった」と見て、動いている板の窓を 10 秒後に閉じうる形だった。板の見張りが続けて 3 回落ちた時だけ閉じる (§4.1)。
+6. **後始末**: 表示の世代が進んだら和紙の自動送りを手放す。釦を離した知らせを取りこぼしても、窓がポインタに貼り付かない (§4.1)。
+7. **試験**: 2 回押しの反例を node と実ブラウザの両方に足した (1 回では決まらない・時間切れ・描き直しの後・別の羽根)。直しを 1 件ずつ外した 15 通りの木で、見張りの試験が落ちる事を確かめた。自動の試験は **438 passed・0 skipped** (§7.3)。

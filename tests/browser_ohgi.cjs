@@ -205,7 +205,7 @@ async function closeCard(id) {
   await evaluate(`window.moveTo=(x,y)=>{window.__moved=[x,y];}`);
   const hub=await evaluate(`(() => { const r=document.querySelector('#fan').getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height*0.62}; })()`);
   await mouse(hub); await mouse(hub,'mousePressed');
-  await mouse({x:hub.x+40,y:hub.y+20});
+  await mouse({x:hub.x+40,y:hub.y+20,buttons:1});   // A real mouse reports the held button while it drags.
   await mouse({x:hub.x+40,y:hub.y+20},'mouseReleased');
   assert(await evaluate(`Array.isArray(window.__moved)`),'Dragging the fan background moves the window');
   await evaluate(`window.__moved=null`);
@@ -230,18 +230,54 @@ async function closeCard(id) {
   await mouse(blade,'mousePressed'); await mouse(blade,'mouseReleased');
   await sleep(150);
   assert.equal((await api('/pending')).card.state,'shown','A lapsed selection does not confirm');
+  // A redraw between the two clicks (a new card, a state change, a setting) clears the selection:
+  // the click that follows only selects again, however soon it comes.
+  const theme=await evaluate(`document.documentElement.dataset.theme`);
+  await evaluate(`document.querySelector('#theme-btn').focus()`);
+  assert.equal(await evaluate(`document.activeElement.id`),'theme-btn');
+  await key('Enter');
+  await until(`document.documentElement.dataset.theme !== ${JSON.stringify(theme)}`);
+  await mouse(blade,'mousePressed'); await mouse(blade,'mouseReleased');
+  await sleep(150);
+  assert.equal((await api('/pending')).card.state,'shown','A redraw clears the selection: one click still only selects');
   await mouse(blade,'mousePressed'); await mouse(blade,'mouseReleased');
   await until(`!document.querySelector('#undo-zone').hidden`);
   await key('Escape');
   await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan > .btn').disabled`);
   await mouse({x:5,y:5}); await closeCard(edit);
-  // In an app window the waiting fan is a small window, and the next card brings the size back.
-  await evaluate(`window.matchMedia=()=>({matches:true}); window.__sizes=[]; window.resizeTo=(w,h)=>window.__sizes.push([w,h]); window.moveTo=()=>{};`);
-  const again=await card(2);
+  // In an app window the waiting fan is a small window, and the next card brings the remembered size back.
+  const stubs=`window.matchMedia=()=>({matches:true}); window.__sizes=[]; window.resizeTo=(w,h)=>window.__sizes.push([w,h]); window.moveTo=()=>{};`;
+  await evaluate(stubs);
+  const outer=await evaluate(`[window.outerWidth, window.outerHeight]`);
+  const first=await card(2);
+  await sleep(200);
+  assert.deepEqual(await evaluate(`window.__sizes`),[],'A card that arrives before any size is known keeps the window as it is');
+  await closeCard(first);
   await until(`window.__sizes.length>=1`);
-  await closeCard(again);
+  assert.deepEqual(await evaluate(`window.__sizes[0]`),[320,120],'Waiting shrinks to the closed fan');
+  const again=await card(2);
   await until(`window.__sizes.length>=2`);
-  assert.deepEqual((await evaluate(`window.__sizes[window.__sizes.length-1]`)),[320,120],'Waiting shrinks to the closed fan');
+  assert.deepEqual(await evaluate(`window.__sizes[1]`),outer,'The next card brings the remembered size back');
+  await closeCard(again);
+  // A reload while the window is the small waiting fan must not take that size for the full one.
+  await open();
+  await evaluate(stubs+`Object.defineProperty(window,'outerWidth',{value:320,configurable:true}); Object.defineProperty(window,'outerHeight',{value:120,configurable:true}); 0`);
+  await click('#gear-btn');                    // The settings need room: the remembered size comes back.
+  await until(`window.__sizes.length>=1`);
+  await key('Escape');                         // Waiting again in the small window, which is never taken for the full size.
+  await until(`window.__sizes.length>=2`);
+  const reloaded=await card(2);
+  await until(`window.__sizes.length>=3`);
+  assert.deepEqual(await evaluate(`window.__sizes`),[outer,[320,120],outer],'After a reload in the waiting size, the settings and the card open at the remembered size');
+  await closeCard(reloaded);
+  // The text size fitted to the window survives the replies of window calls (clear=on asks the board to cut the window).
+  await call('Emulation.setDeviceMetricsOverride',{width:900,height:1000,deviceScaleFactor:1,mobile:false});
+  await open('mode=small&lang=ja&dwell=0&clear=on&font=1.3');
+  const fitted=await card(2);
+  await sleep(500);
+  const font=await evaluate(`parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--font'))`);
+  assert(font>1.35,'A window reply must not reset the fitted text size: '+font);
+  await closeCard(fitted);
   await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
   await open();
   await click('#gear-btn');

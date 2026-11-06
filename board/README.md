@@ -55,8 +55,8 @@ python board/server.py
 - 長い文章は「▼ 続き」で 1 画面ずつ送ります。ポインタを載せて 0.35 秒後に始まり、その後は 1.5 秒ごと。末尾で止まり、載せ直すと先頭へ戻ります。押す操作や ↓ ↑ PageDown PageUp でも送れます。扇の和紙は本文の上にポインタを置いても動きません。「▼ 続き」は `dwell=0` でも使えます。
 - 和紙にポインタを載せるとコピーのボタンが現れ、`C` キーでもコピーできます (キーでボタンに移った時も表示)。問いと本文をコピーし、重複する「変更」の行は含めません。
 - 小型表示では、札がある間と札が消えてから 1.5 秒間、通知の帯と縁を出しません。
-- 「常に手前」は Windows では `POST /window` → `board/window_win.py` の `ctypes` で今のアプリの小窓を固定します。他の OS または対象の窓が見つからない時は、対応ブラウザの Document Picture-in-Picture で画面に収まる大きさの窓を開きます。
-- 待機中の扇は横向きに閉じて控え、ポインタを載せると状態の字が出ます。アプリの小窓だけは 320×120 に縮み、札が来ると元の大きさに戻ります。板との切断を検知して 10 秒続くと、アプリの小窓を閉じます。通常のタブでは大きさを変えず、自動では閉じません。
+- 「常に手前」は Windows では `POST /window` → `board/window_win.py` の `ctypes` で今のアプリの小窓を固定します。触るのは、窓の名がこの板の物と一致する 1 枚だけです (既定の 8765 以外のポートの板は、窓の名にポート番号が付きます。同じ名の窓が 2 枚以上ある時は、どちらも切りません)。他の OS、対象の窓が見つからない時、固定に失敗した時は、対応ブラウザの Document Picture-in-Picture で画面に収まる大きさの窓を開きます。
+- 待機中の扇は横向きに閉じて控え、ポインタを載せると状態の字が出ます。アプリの小窓だけは 320×120 に縮み、札が来ると元の大きさに戻ります (待機の大きさのまま頁を読み直しても、元の大きさは覚えています)。板との切断が 10 秒続くと、アプリの小窓を閉じます。切断と見るのは、板の見張りが続けて 3 回つながらなかった時だけです (送信が 1 回届かなかっただけでは閉じません)。通常のタブでは大きさを変えず、自動では閉じません。
 
 ### 入力
 
@@ -82,7 +82,7 @@ python board/server.py
 頁の純粋な計算 (滞留・走査・ボタンの並び・字) は `board/static/board_core.js` に分けてあり、node で読めます:
 `node -e "const c = require('./board/static/board_core.js'); console.log(c.suggestionLabel({type: 'addRules', rules: [{toolName: 'Bash', ruleContent: 'git commit:*'}], behavior: 'allow', destination: 'localSettings'}, 'ja'))"`
 
-自動の試験 = `python -m pytest tests -q` (試験だけ pytest が要ります)。11/6 の記録は **414 passed・0 skipped**。実ブラウザの試験も走ります (Chromium と WebSocket を使える node が必要)。ただし、実ブラウザの試験でも `window.moveTo`・`window.resizeTo`・クリップボードは代用品に差し替えています。Windows の実窓の固定・透過や Document Picture-in-Picture の開閉まで、この合格数で確認したとはしません。細目は [`docs/design.md` §7.3](../docs/design.md#73-試験と検収)。
+自動の試験 = `python -m pytest tests -q` (試験だけ pytest が要ります)。11/6 の記録は **438 passed・0 skipped**。実ブラウザの試験も走ります (Chromium と WebSocket を使える node が必要)。ただし、実ブラウザの試験でも `window.moveTo`・`window.resizeTo`・クリップボードは代用品に差し替えています。Windows の実窓の固定・透過や Document Picture-in-Picture の開閉まで、この合格数で確認したとはしません。細目は [`docs/design.md` §7.3](../docs/design.md#73-試験と検収)。
 
 ---
 

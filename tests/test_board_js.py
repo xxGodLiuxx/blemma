@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import server as board_server
+import window_win
 
 NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(NODE is None, reason="node が無い (頁の JS の試験は node で走らせる)")
@@ -43,10 +44,11 @@ function loadPage(fetchImpl) {
   let src = fs.readFileSync(%(page)s, "utf8");
   const re = /\n  init\(\);(\r?\n)/;
   if (!re.test(src)) throw new Error("board.js の init(); の行が見つからない");
-  src = src.replace(re, "\n  window.__t = { S: S, press: press, releaseDwell: releaseDwell, bindInputs: bindInputs, inputActive: inputActive, selectWindow: function(w) { viewWindow=w; viewDocument=w.document; } };$1");
+  src = src.replace(re, "\n  window.__t = { S: S, press: press, releaseDwell: releaseDwell, bindInputs: bindInputs, inputActive: inputActive, selectWindow: function(w) { viewWindow=w; viewDocument=w.document; }, onClick: onClick, disarm: disarm, fitFan: fitFan, windowCall: windowCall, poll: poll, goneSince: goneSince, bumpGen: bumpGen, onPointer: onPointer, letGo: letGo };$1");
   const win = { BlemmaCore: core, crypto: require("crypto").webcrypto };
   vm.runInNewContext(src, { window: win, document: {}, performance: performance, fetch: fetchImpl,
-                            setTimeout: setTimeout, clearTimeout: clearTimeout, console: console });
+                            setTimeout: setTimeout, clearTimeout: clearTimeout, console: console,
+                            AbortController: AbortController });
   return win.__t;
 }
 """
@@ -484,3 +486,181 @@ console.log(JSON.stringify(core.buildScreen(card, core.newUi(card), 'ja').blocks
     assert got[0]["label"] == "変更" and got[0]["text"] == "サーバー → サーバ" and got[0]["change"] is True
     assert got[1]["mark"] == [3, 4] and got[1]["markKind"] == "del"
     assert got[2]["mark"] == [3, 3] and got[2]["markKind"] == "ins"
+
+
+# ---- 扇の 2 回押し = 1 回の click では答えが出ない ----
+
+def test_fan_needs_a_second_press_on_the_same_blade(tmp_path):
+    """純粋な判定: 1 回目は選ぶだけ。同じ羽根を 1.5 秒のうちにもう 1 回押した時だけ決まる。"""
+    out = node(tmp_path, r"""
+const ms = 1500, first = core.armStep(null, "opt:0", 1000, ms);
+console.log(JSON.stringify({
+  first: first,
+  second: core.armStep(first.arm, "opt:0", 2500, ms).confirm,     /* ちょうど 1.5 秒 = まだ決まる */
+  late: core.armStep(first.arm, "opt:0", 2501, ms),               /* 過ぎた = 選び直し */
+  other: core.armStep(first.arm, "opt:1", 1200, ms),              /* 別の羽根 = そちらを選ぶだけ */
+  cleared: core.armStep(null, "opt:0", 1200, ms).confirm          /* 選択が解けた後 = 1 回では決まらない */
+}));
+""")
+    assert out["first"] == {"confirm": False, "arm": {"key": "opt:0", "at": 1000}}
+    assert out["second"] is True
+    assert out["late"] == {"confirm": False, "arm": {"key": "opt:0", "at": 2501}}
+    assert out["other"] == {"confirm": False, "arm": {"key": "opt:1", "at": 1200}}
+    assert out["cleared"] is False
+
+
+def test_fan_click_answers_only_on_the_second_press(tmp_path, clock):
+    """頁の配線: 扇の click は 1 回では /answer を送らない。時間切れの後・描き直して選択が解けた後・別の羽根の後も
+    選ぶだけ。同じ羽根を 1.5 秒のうちにもう 1 回押した時にだけ送る。設定で 1 回押しにした時は 1 回で送る。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + r"""
+let now = 1000;                                        /* 頁の時計を試験が進める */
+Object.defineProperty(globalThis, "performance", { value: { now: function () { return now; } },
+                                                   configurable: true, writable: true });
+function page(click) {
+  const t = loadPage(function (path, opt) {
+    sent.push({ path: path, body: JSON.parse(opt.body) });
+    return Promise.resolve(reply(200, { undo_ms: 3000, undo_remaining: 3 }));
+  });
+  show(t);
+  const fan = {};                                      /* 扇の枠と羽根の代用品 */
+  function blade(key) {
+    const b = { dataset: { key: key }, disabled: false, parentNode: fan,
+                classList: { add: function () {}, remove: function () {} },
+                closest: function (sel) { return sel === "[data-key]" ? b : null; } };
+    return b;
+  }
+  t.S.btns = { allow_once: blade("allow_once"), terminal: blade("terminal") };
+  t.S.fan = true;
+  t.S.options = core.parseOptions("click=" + click, {});
+  t.selectWindow({ document: { getElementById: function (id) { return id === "fan" ? fan : null; } } });
+  t.click = function (key, at) { now = at; t.onClick({ detail: 1, target: t.S.btns[key] }); return sent.length; };
+  return t;
+}
+const t = page("double"), counts = [];
+counts.push(t.click("allow_once", 1000));              /* 1 回目 = 選ぶだけ */
+counts.push(t.click("allow_once", 2600));              /* 1.6 秒後 = 時間切れ → 選び直し */
+t.disarm();                                            /* 描き直し (札の交代・状態の変化) は選択を解く */
+counts.push(t.click("allow_once", 2700));              /* 解けた後 = また選ぶだけ */
+counts.push(t.click("terminal", 2800));                /* 別の羽根 = そちらを選ぶだけ */
+counts.push(t.click("allow_once", 2900));              /* 元の羽根へ戻る = 選ぶだけ */
+counts.push(t.click("allow_once", 3000));              /* 同じ羽根をもう 1 回 = 決まる */
+const single = page("single"), before = sent.length;
+const one = single.click("allow_once", 5000) - before; /* 設定で 1 回押し = 1 回で決まる */
+setTimeout(function () {
+  console.log(JSON.stringify({ counts: counts, one: one, paths: sent.map(function (s) { return s.path; }),
+                               by: sent.map(function (s) { return s.body.by; }) }));
+}, 20);
+""").replace("__CARD__", json.dumps(card)))
+    assert out["counts"] == [0, 0, 0, 0, 0, 1]
+    assert out["one"] == 1
+    assert out["paths"] == ["/answer", "/answer"] and out["by"] == ["click", "click"]
+
+
+# ---- 窓: 字の倍率の書き手は 1 か所・窓の名は板の側と同じ決まり ----
+
+def test_window_reply_does_not_reset_the_fitted_text_size(tmp_path):
+    """窓に合わせて大きくした字 (設定の倍率 × 補正) を、窓の操作の応答が設定の倍率だけへ戻さない
+    (外部のレビューの再現 = 倍率 1.3・補正 1.4 で 1.82 → 1.3)。API の失敗は「当たらなかった」と返る。"""
+    out = node(tmp_path, r"""
+const root = { props: {}, clientWidth: 1200, style: { setProperty: function (k, v) { root.props[k] = v; } } };
+const els = { fan: { style: { width: "560px", height: "330px" } }, "fan-scroll": { style: {} }, "pip-btn": {} };
+const replies = [{ found: true, ok: true, pin: true }, { found: true, ok: false, pin: false }, { found: false }];
+const t = loadPage(function () {
+  const data = replies.shift();
+  return Promise.resolve({ status: 200, json: function () { return Promise.resolve(data); } });
+});
+t.S.options = core.parseOptions("font=1.3", {});
+t.S.fan = true;
+t.S.token = "x";
+t.selectWindow({ innerWidth: 1200, innerHeight: 2000,
+                 document: { documentElement: root, getElementById: function (id) { return els[id] || null; } } });
+t.fitFan();
+const before = root.props["--font"], done = [];
+t.windowCall({ pin: true }).then(function (d) { done.push(d); return t.windowCall({ shape: null }); })
+  .then(function (d) { done.push(d); return t.windowCall({}); })
+  .then(function (d) {
+    done.push(d);
+    console.log(JSON.stringify({ before: before, after: root.props["--font"], done: done, pinned: t.S.pinned }));
+  });
+""")
+    assert out["before"] == out["after"] == str(1.3 * 1.4)
+    assert out["done"] == [True, False, False] and out["pinned"] is False
+
+
+def test_window_name_matches_the_board_side(tmp_path):
+    """窓の名の決まりは、頁 (windowTitle) と板 (window_win.title_for) で同じ = 食い違うと板が自分の窓を見つけられない。"""
+    out = node(tmp_path, r"""
+console.log(JSON.stringify([core.windowTitle("small", "8765"), core.windowTitle("small", "9123"),
+                            core.windowTitle("small", ""), core.windowTitle("large", "9123")]));
+""")
+    assert out[:3] == [window_win.title_for(8765), window_win.title_for(9123), window_win.title_for(80)]
+    assert out[3] == "BLEMMA"
+
+
+# ---- 板の見張り = 1 回の通信の失敗で「板が止まった」と見ない (動いている板の窓を閉じない) ----
+
+def test_board_health_needs_failures_in_a_row(tmp_path):
+    out = node(tmp_path, r"""
+const h = new core.Health(3), seen = [];
+h.fail(100); seen.push(h.goneSince());                 /* 1 回落ちただけ */
+h.fail(1100); seen.push(h.goneSince());
+h.ok(); h.fail(5000); h.fail(6000); seen.push(h.goneSince());   /* 途中で 1 回通った = 頭から数え直す */
+h.fail(8000); seen.push(h.goneSince());                /* 続けて 3 回 = 最初に落ちた時刻 */
+h.ok(); seen.push(h.goneSince());
+console.log(JSON.stringify(seen));
+""")
+    assert out == [None, None, None, 5000, None]
+
+
+def test_one_lost_call_does_not_count_as_a_stopped_board(tmp_path):
+    """頁の配線: 板が止まったと見るのは、見張り (/pending) が続けて 3 回落ちた時か、鍵が違って見張りをやめた時だけ。
+    送信が 1 回届かなかっただけでは「つながらない」と出すだけで、窓を閉じる時計は回さない。"""
+    out = node(tmp_path, r"""
+const realSetTimeout = setTimeout;
+globalThis.setTimeout = function (fn, ms) { return realSetTimeout(fn, Math.min(ms, 2)); };     /* 頁の待ちを縮める */
+let pending = 0;
+const t = loadPage(function (path) {
+  if (path.indexOf("/pending") === 0) {
+    pending += 1;
+    return pending <= 3 ? Promise.reject(new Error("down")) : new Promise(function () {});
+  }
+  return Promise.reject(new Error("lost"));
+});
+t.S.token = "x";
+const out = {};
+t.press("reset", "click");                             /* 送信が 1 回届かない */
+realSetTimeout(function () {
+  out.lost = { offline: t.S.offline, gone: t.goneSince(50) };
+  t.poll();                                            /* 見張りが 3 回続けて落ちる (4 回目はつながったまま) */
+  realSetTimeout(function () {
+    out.down = { fails: t.S.health.fails, calls: pending, gone: t.goneSince(60) !== null };
+    t.S.stopped = true;                                /* 鍵が違って見張りをやめた = その時から数える */
+    out.stopped = [t.goneSince(70), t.goneSince(90)];
+    t.S.stopped = false;
+    t.S.health.ok();
+    out.back = t.goneSince(100);
+    console.log(JSON.stringify(out));
+  }, 100);
+}, 20);
+""")
+    assert out["lost"] == {"offline": True, "gone": None}
+    assert out["down"] == {"fails": 3, "calls": 4, "gone": True}
+    assert out["stopped"] == [70, 70] and out["back"] is None
+
+
+def test_a_new_view_or_a_lost_focus_lets_go_of_paging_and_dragging(tmp_path):
+    """動かさないままの pointer で新しい札の和紙を送り続けない。焦点を失ったら窓のドラッグも手放す。"""
+    out = node(tmp_path, r"""
+const t = loadPage(function () { throw new Error("通信しない"); });
+t.S.dwell = new core.Dwell(1000, 150);
+t.S.scan = new core.Scan(0);
+t.S.overMore = true;
+t.bumpGen();                                           /* 表示の世代が進んだ (札の交代・状態の変化) */
+const afterGen = t.S.overMore;
+t.S.overMore = true;
+t.S.drag = { x: 1, y: 1 };
+t.letGo();                                             /* 焦点を失った・頁が隠れた */
+console.log(JSON.stringify({ afterGen: afterGen, afterBlur: t.S.overMore, drag: t.S.drag }));
+""")
+    assert out == {"afterGen": False, "afterBlur": False, "drag": None}

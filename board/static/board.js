@@ -20,7 +20,8 @@
     held: {}, deadlineAt: null, undoAt: null,
     lightUntil: 0, lightKey: "", lastSeen: "", endText: "", endUntil: 0,
     notice: "", noticeUntil: 0, problem: "", offline: false,
-    abort: null, kicked: false, retry: 0, stopped: false, overlay: null, sideAt: 0, ac: null
+    abort: null, kicked: false, retry: 0, stopped: false, overlay: null, sideAt: 0, ac: null,
+    health: new C.Health(3), stoppedAt: null, fontFit: 1
   };
 
   function L() { return C.I18N[S.lang]; }
@@ -77,12 +78,14 @@
       if (r.status !== 200 || !r.data) throw new Error("status " + r.status);
       S.retry = 0;
       S.offline = false;
+      S.health.ok();
       apply(r.data);
       poll();                         /* 直に呼ぶ = 隠れた頁で timer が間引かれても見る人の数が途切れない */
     }).catch(function () {
       clearTimeout(timer);
       if (S.kicked) { S.kicked = false; poll(); return; }
       S.offline = true;
+      S.health.fail(performance.now());
       S.retry = S.retry ? Math.min(5000, S.retry * 2) : 1000;
       setTimeout(poll, S.retry);
     });
@@ -432,24 +435,32 @@
       root.style.setProperty("--fan-w", Math.ceil(w * k) + "px");
       fit = Math.max(0.85, Math.min(1.4, k));
     }
-    root.style.setProperty("--font", String(S.options.font * fit));
+    S.fontFit = fit;
+    setFont();
     pushShape();
   }
 
-  /* 最前面と透過 = Windows の小窓は server が窓に当てる。当たらない時は何も変わらない */
+  /* 字の大きさを書くのはここだけ = 設定の倍率 × 窓に合わせた補正 (補正は fitFan が測る)。
+   * ほかの所が設定の倍率だけで書くと、窓に合わせた字が元の大きさへ戻ってしまう */
+  function setFont() {
+    viewDocument.documentElement.style.setProperty("--font", String(S.options.font * (S.fontFit || 1)));
+  }
+
+  /* 最前面と透過 = Windows の小窓は server が窓に当てる。当たらない時は何も変わらない。
+   * 返り = 頼んだ事が窓に当たったか (窓が見つからない・API が失敗した時は false)。応答で直すのは固定のボタンだけ */
   function windowCall(body) {
     return api("POST", "/window", body).then(function (r) {
       var found = !!(r.status === 200 && r.data && r.data.found);
       S.windowOk = found;
       if (found) S.pinned = !!r.data.pin;
-      setChrome();
-      return found;
+      setPinButton();
+      return found && r.data.ok !== false;
     }, function () { return false; });
   }
 
   function togglePin() {
     if (viewWindow !== window) { viewWindow.close(); return; }
-    windowCall({ pin: !S.pinned }).then(function (found) { if (!found) openPip(); });
+    windowCall({ pin: !S.pinned }).then(function (done) { if (!done) openPip(); });
   }
 
   function isApp() {
@@ -457,16 +468,37 @@
   }
 
   /* 待機中は閉じた扇の小さな窓にして、札が来たら元の大きさへ開く (app の窓だけ。普通のタブでは大きさは変わらない) */
-  var WIDGET = [320, 120];
+  var WIDGET = [320, 120], FULL = [640, 720];
   var CLOSED = [[4, 14], [0, 45], [4, 76], [290, 63], [298, 45], [290, 27]];     /* 閉じた扇は横に寝かせて控える */
+
+  /* 札を出す時の元の大きさ。待機の小さな窓のまま読み直しても失わないよう、この窓の間だけ覚えておく */
+  function rememberFull(size) {
+    S.fullSize = size;
+    try { window.sessionStorage.setItem("blemma.full", size.join(",")); }
+    catch (e) { /* 覚えられない環境でも、この頁の間は S.fullSize で動く */ }
+  }
+
+  function recallFull() {
+    if (S.fullSize) return S.fullSize;
+    try {
+      var m = /^(\d{3,5}),(\d{3,5})$/.exec(window.sessionStorage.getItem("blemma.full") || "");
+      if (m) return [parseInt(m[1], 10), parseInt(m[2], 10)];
+    } catch (e) { /* 同上 */ }
+    return null;
+  }
+
   function fitWindow() {
     if (S.mode !== "small" || viewWindow !== window || !isApp()) return;
     var idle = !S.card && !S.overlay;
     if (idle === S.widget) return;
     S.widget = idle;
     var w = window.outerWidth, h = window.outerHeight, s = window.screen, pos = S.options.pos;
-    if (idle) S.fullSize = [w, h];
-    var to = idle ? WIDGET : S.fullSize || [640, 720];
+    var tiny = w <= WIDGET[0] + 40 && h <= WIDGET[1] + 40;      /* いま待機の大きさ = これを「元の大きさ」と覚えない */
+    if (idle && !tiny) rememberFull([w, h]);
+    /* 元の大きさを知らないまま札つきで始まった時は、今の窓のまま (起動時の大きさを別の値で上書きしない)。
+       待機の大きさの窓に札が来た時だけは、扇が入らないので既定の大きさへ開く */
+    var to = idle ? WIDGET : recallFull() || (tiny ? FULL : null);
+    if (!to) return;
     var x = window.screenX + w - to[0], y = window.screenY + h - to[1];        /* 右下の角を保つ */
     if (pos !== "keep") {
       x = pos.charAt(1) === "r" ? s.availLeft + s.availWidth - to[0] : s.availLeft;
@@ -501,10 +533,10 @@
     var sig = JSON.stringify(shape);
     if (sig === S.shapeSig) return;
     S.shapeSig = sig;
-    windowCall({ shape: shape }).then(function (found) {
-      /* 開いた直後は窓の名がまだ付いていない = 見つかるまで少し繰り返す */
-      S.shapeTries = found ? 0 : (S.shapeTries || 0) + 1;
-      if (!found && S.shapeTries < 20 && S.shapeSig === sig) S.shapeSig = "";
+    windowCall({ shape: shape }).then(function (done) {
+      /* 開いた直後は窓の名がまだ付いていない = 当たるまで少し繰り返す (API が失敗した時も同じ) */
+      S.shapeTries = done ? 0 : (S.shapeTries || 0) + 1;
+      if (!done && S.shapeTries < 20 && S.shapeSig === sig) S.shapeSig = "";
     });
   }
 
@@ -523,11 +555,19 @@
     setFill(null, 0);
   }
 
+  /* 焦点を失った・頁が隠れた = 滞留のほかに、和紙の自動送りと窓のドラッグも手放す */
+  function letGo() {
+    releaseDwell();
+    S.overMore = false;
+    endDrag();
+  }
+
   /* 表示の世代を進める = 滞留を止めて選択を解き、pointer の下の釦は入り直すまで数えない・走査は頭から (§4.2) */
   function bumpGen() {
     S.gen += 1;
     S.over = keyAtPointer();
     if (S.lastX < 0) S.firstPointer = true;
+    S.overMore = false;               /* 「▼ 続き」も同じ = 動かさないままの pointer で、新しい札の和紙を送らない */
     releaseDwell();
     S.scan.restart(performance.now());
     if (S.scanEl) { S.scanEl.classList.remove("scan"); S.scanEl = null; }
@@ -597,13 +637,9 @@
     }
     updateMore();
     pushShape();
-    /* 板が止まったら app の窓を閉じる (題の帯が隠れた窓も残らない) */
-    if (S.mode === "small" && viewWindow === window && (S.offline || S.stopped) && isApp()) {
-      if (!S.goneAt) S.goneAt = now;
-      else if (now - S.goneAt > 10000) window.close();
-    } else {
-      S.goneAt = 0;
-    }
+    /* 板が止まったら app の窓を閉じる (題の帯が隠れた窓も残らない)。止まったと見てから 10 秒 */
+    var gone = goneSince(now);
+    if (S.mode === "small" && viewWindow === window && gone !== null && now - gone > 10000 && isApp()) window.close();
     var qn = S.snap ? S.snap.queue : 0;
     setText($("queue"), qn > 0 ? C.fmt(T.queue, { n: qn }) : "");
     if (S.snap && S.snap.stats) {
@@ -631,6 +667,15 @@
       $("card").classList.remove("blink");
     }
     updateUndo(now);
+  }
+
+  /* 板が止まったと見る時刻 (止まっていなければ null)。1 回の通信の失敗では決めない =
+   * 板の見張り (/pending) が続けて 3 回落ちた時か、鍵が違って見張りをやめた時だけ。
+   * 答えの送信が 1 回こけただけで、動いている板の窓を閉じない */
+  function goneSince(now) {
+    if (!S.stopped) { S.stoppedAt = null; return S.health.goneSince(); }
+    if (S.stoppedAt === null) S.stoppedAt = now;
+    return S.stoppedAt;
   }
 
   /* 取り消す = 押した後の猶予のうちだけ、上の中央に大きく。扇では内の帯そのもの (押した羽根の上には出さない・§4.3) */
@@ -711,7 +756,7 @@
   function press(key, by) {
     if (key === "reset" || key === "phone" || key === "gear" || key === "pip" || key === "theme" || key === "copy") {
       if (by !== "key" && by !== "click") return;          /* 視線では押さない (§4.5) */
-      if (key === "reset") api("POST", "/stats/reset", {}).catch(function () { S.offline = true; });
+      if (key === "reset") api("POST", "/stats/reset", {}).catch(lostCall);
       if (key === "phone") openPhone();
       if (key === "gear") openGear();
       if (key === "pip") togglePin();
@@ -797,9 +842,16 @@
         }
       }, function () {
         giveBack(card.id, sent, batches);
-        S.offline = true;
+        lostCall();
       })
       .then(function () { S.answering = false; }, function () { S.answering = false; });
+  }
+
+  /* 送信が 1 回届かなかった = 「つながらない」と出して、板の見張りをすぐ取り直す。
+   * 板が生きていれば次の見張りで表示は戻る (板が止まったかどうかは見張りの側が続けて落ちた数で決める) */
+  function lostCall() {
+    S.offline = true;
+    kick();
   }
 
   function doUndo(by) {
@@ -815,14 +867,18 @@
         kick();
       }, function () {
         giveBack(card.id, sent, batches);
-        S.offline = true;
+        lostCall();
       })
       .then(function () { S.undoing = false; }, function () { S.undoing = false; });
   }
 
   /* ---- 入力 ---- */
   function onPointer(e) {
-    if (S.drag) { window.moveTo(e.screenX - S.drag.x, e.screenY - S.drag.y); return; }
+    if (S.drag) {
+      /* 釦を離した知らせを取りこぼしても、押していない pointer に窓を貼り付かせない */
+      if (e.buttons & 1) { window.moveTo(e.screenX - S.drag.x, e.screenY - S.drag.y); return; }
+      endDrag();
+    }
     if (e.pointerType === "touch") { S.pointerType = "touch"; return; }
     S.pointerType = e.pointerType || "mouse";
     S.lastX = e.clientX;
@@ -921,7 +977,8 @@
     S.lastInput = how;
     if (S.fan && S.options.click !== "single" && (b.parentNode === $("fan") || b.closest(".fan-aux"))) {
       var at = performance.now();
-      if (S.armKey !== b.dataset.key || at - S.armAt > ARM_MS) { armChoice(b, at); return; }
+      var step = C.armStep(S.armKey ? { key: S.armKey, at: S.armAt } : null, b.dataset.key, at, ARM_MS);
+      if (!step.confirm) { armChoice(b, at); return; }
       disarm();
     }
     press(b.dataset.key, how);
@@ -1023,9 +1080,10 @@
     d.addEventListener("pointerdown", active(startDrag));
     d.addEventListener("pointerup", active(endDrag));
     d.addEventListener("pointercancel", active(endDrag));
-    w.addEventListener("blur", active(releaseDwell));
+    d.addEventListener("lostpointercapture", active(endDrag));
+    w.addEventListener("blur", active(letGo));
     w.addEventListener("focus", active(function () { releaseDwell(); S.scan.restart(performance.now()); }));
-    d.addEventListener("visibilitychange", active(releaseDwell));
+    d.addEventListener("visibilitychange", active(letGo));
     w.addEventListener("resize", active(fitFan));
     d.addEventListener("keydown", active(onKeyDown));
     d.addEventListener("keyup", active(function (e) { delete S.held[e.code || e.key]; }));
@@ -1265,8 +1323,8 @@
     viewDocument.documentElement.dataset.theme = S.options.theme;
     viewDocument.documentElement.dataset.face = S.options.face;
     viewDocument.documentElement.style.zoom = S.options.scale === 1 ? "" : String(S.options.scale);
-    viewDocument.documentElement.style.setProperty("--font", String(S.options.font));
-    viewDocument.title = S.mode === "small" ? "BLEMMA · 扇 (OhGi)" : "BLEMMA";
+    setFont();
+    viewDocument.title = C.windowTitle(S.mode, location.port);
     $("stats-reset").textContent = T.reset;
     $("phone-btn").textContent = T.phone;
     $("gear-btn").textContent = T.settings;
@@ -1277,9 +1335,15 @@
     $("theme-btn").textContent = isDark() ? "☀" : "☾";
     $("theme-btn").setAttribute("aria-label", isDark() ? T.to_light : T.to_dark);
     $("theme-btn").title = isDark() ? T.to_light : T.to_dark;
+    setPinButton();
+    $("trail").hidden = S.options.trail !== "on";
+  }
+
+  /* 固定のボタン = 窓の応答 (windowCall) が来るたびに直すのはここだけ */
+  function setPinButton() {
+    var T = L();
     $("pip-btn").hidden = S.mode !== "small" || !(window.documentPictureInPicture || S.windowOk);
     $("pip-btn").textContent = viewWindow !== window ? T.pip_back : S.pinned ? T.pip_off : T.pip;
-    $("trail").hidden = S.options.trail !== "on";
   }
 
   function init() {

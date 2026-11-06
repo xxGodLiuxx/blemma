@@ -1,7 +1,7 @@
 """扇の窓の最前面と透過 (Windows だけ・標準ライブラリの ctypes)。
 
-頁が開いている Chrome / Edge の app の窓だけを、窓の名で探して触る。
-他の OS・窓が見つからない・API が失敗した時は何もしない = 窓はそのまま (退化)。
+頁が開いている Chrome / Edge の app の窓のうち、この板の 1 枚だけを窓の名で探して触る。
+他の OS・窓が見つからない・同じ名の窓が 2 枚以上ある・API が失敗した時は窓を切らない (退化)。
 """
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import sys
 from typing import Any, Optional
 
 TITLE = "BLEMMA · 扇 (OhGi)"
+DEFAULT_PORT = 8765
 WINDOW_CLASS = "Chrome_WidgetWin_1"
 MAX_RECTS = 8
 MAX_POINTS = 256
@@ -27,10 +28,19 @@ WINDING, RGN_OR = 2, 2
 PER_MONITOR_AWARE_V2 = -4
 
 
+def title_for(port: Any) -> str:
+    """この板の窓の名。既定の port の板は名だけ、ほかの port の板は名に port を足す
+    (頁の BlemmaCore.windowTitle と同じ決まり)。別の port で起こした板の窓を、こちらの形で切らないための印。"""
+    return TITLE if port == DEFAULT_PORT else f"{TITLE} · {port}"
+
+
 def _number(value: Any, low: float, high: float) -> Optional[float]:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):      # JSON の整数は桁に限りが無い = float に収まらない数は壊れた形として断る
+        return None
     return number if math.isfinite(number) and low <= number <= high else None
 
 
@@ -85,90 +95,149 @@ def device_shape(shape: dict, width: int) -> dict:
     return {"band": band, "rects": rects, "polygon": [point(x, y) for x, y in shape["polygon"]]}
 
 
-def _find(u: Any, wintypes: Any, ctypes: Any) -> list:
-    found = []
+class _Win:
+    """窓に触る Win32 の呼び出し。どれも戻り値を見て、成否を bool で返す (試験では偽物に差し替える)。"""
 
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    def visit(hwnd: int, _: int) -> bool:
-        if not u.IsWindowVisible(hwnd):
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        self.c, self.w = ctypes, wintypes
+        u, g, d = ctypes.WinDLL("user32"), ctypes.WinDLL("gdi32"), ctypes.WinDLL("dwmapi")
+        self.u, self.g, self.d = u, g, d
+        u.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        u.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        # 32bit の Python の user32 には GetWindowLongPtrW が無い = 窓に触る前に、在る方を選んでおく
+        self.style = getattr(u, "GetWindowLongPtrW", None) or u.GetWindowLongW
+        self.style.restype = ctypes.c_ssize_t
+        self.style.argtypes = [wintypes.HWND, ctypes.c_int]
+        u.IsWindowVisible.argtypes = [wintypes.HWND]
+        u.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        u.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        u.GetWindowRect.restype = wintypes.BOOL
+        u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        u.SetWindowPos.restype = wintypes.BOOL
+        u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        u.SetWindowRgn.restype = ctypes.c_int
+        u.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]
+        g.CreateRectRgn.restype = wintypes.HRGN
+        g.CreateRectRgn.argtypes = [ctypes.c_int] * 4
+        g.CreatePolygonRgn.restype = wintypes.HRGN
+        g.CreatePolygonRgn.argtypes = [ctypes.POINTER(wintypes.POINT), ctypes.c_int, ctypes.c_int]
+        g.CombineRgn.restype = ctypes.c_int
+        g.CombineRgn.argtypes = [wintypes.HRGN, wintypes.HRGN, wintypes.HRGN, ctypes.c_int]
+        g.DeleteObject.restype = wintypes.BOOL
+        g.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+
+    def enter(self) -> Any:
+        return self.u.SetThreadDpiAwarenessContext(self.c.c_void_p(PER_MONITOR_AWARE_V2))
+
+    def leave(self, previous: Any) -> None:
+        self.u.SetThreadDpiAwarenessContext(previous)
+
+    def find(self, title: str) -> list:
+        """見えている窓のうち、名が title と同じ Chrome / Edge の窓。"""
+        c, w, u, found = self.c, self.w, self.u, []
+
+        @c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+        def visit(hwnd: int, _: int) -> bool:
+            if u.IsWindowVisible(hwnd):
+                name, kind = c.create_unicode_buffer(128), c.create_unicode_buffer(64)
+                u.GetWindowTextW(hwnd, name, 128)
+                u.GetClassNameW(hwnd, kind, 64)
+                if name.value == title and kind.value == WINDOW_CLASS:
+                    found.append(hwnd)
             return True
-        name, kind = ctypes.create_unicode_buffer(128), ctypes.create_unicode_buffer(64)
-        u.GetWindowTextW(hwnd, name, 128)
-        u.GetClassNameW(hwnd, kind, 64)
-        if name.value == TITLE and kind.value == WINDOW_CLASS:
-            found.append(hwnd)
-        return True
 
-    u.EnumWindows(visit, 0)
-    return found
+        u.EnumWindows(visit, 0)
+        return found
+
+    def pin(self, hwnd: int, on: bool) -> bool:
+        return bool(self.u.SetWindowPos(hwnd, self.w.HWND(HWND_TOPMOST if on else HWND_NOTOPMOST), 0, 0, 0, 0,
+                                        SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE))
+
+    def pinned(self, hwnd: int) -> bool:
+        return bool(self.style(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST)
+
+    def width(self, hwnd: int) -> Optional[int]:
+        box = self.w.RECT()
+        return box.right - box.left if self.u.GetWindowRect(hwnd, self.c.byref(box)) else None
+
+    def _attribute(self, hwnd: int, name: int, value: int) -> None:
+        number = self.c.c_int(value)            # 見た目だけの属性 = 失敗しても窓は使える
+        self.d.DwmSetWindowAttribute(self.w.HWND(hwnd), name, self.c.byref(number), 4)
+
+    def cut(self, hwnd: int, shape: dict) -> bool:
+        """窓を形に切る。途中で失敗したら、作った region を解放して False を返す。"""
+        g, w = self.g, self.w
+        count = len(shape["polygon"])
+        points = (w.POINT * count)(*[w.POINT(x, y) for x, y in shape["polygon"]])
+        target = g.CreatePolygonRgn(points, count, WINDING)
+        if not target:
+            return False
+        for box in list(shape["rects"]) + ([shape["band"]] if shape["band"] else []):
+            part = g.CreateRectRgn(*box)
+            joined = bool(part) and g.CombineRgn(target, target, part, RGN_OR) != 0     # 0 = ERROR
+            if part:
+                g.DeleteObject(part)
+            if not joined:
+                g.DeleteObject(target)
+                return False
+        self._attribute(hwnd, DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED)
+        self._attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_NONE)
+        if self.u.SetWindowRgn(hwnd, target, True):
+            return True                         # 成功した時だけ、region は Windows の持ち物になる
+        g.DeleteObject(target)                  # 失敗 = まだこちらの持ち物 → 解放する
+        return False
+
+    def uncut(self, hwnd: int) -> bool:
+        """切る前の四角い窓へ戻す。"""
+        done = bool(self.u.SetWindowRgn(hwnd, None, True))
+        self._attribute(hwnd, DWMWA_NCRENDERING_POLICY, DWMNCRP_USEWINDOWSTYLE)
+        self._attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_AUTO)
+        return done
 
 
-def _apply(data: dict) -> dict:
-    import ctypes
-    from ctypes import wintypes
+def _drive(win: Any, data: dict, title: str) -> dict:
+    """この板の窓 1 枚にだけ当てる。0 枚 = 何もしない。2 枚以上 = どの窓が頼んだ頁か決められないので切らない。"""
+    windows = win.find(title)
+    wants_shape = "shape" in data
+    if len(windows) != 1:
+        if wants_shape:
+            for hwnd in windows:                # 前に切った形が残らないよう、同じ名の窓は四角へ戻す
+                win.uncut(hwnd)
+        return {"found": False}
+    hwnd, ok = windows[0], True
+    pin = data.get("pin")
+    if isinstance(pin, bool):
+        ok = win.pin(hwnd, pin) and ok
+    if wants_shape:
+        shape = clean_shape(data.get("shape"))
+        if shape is None:
+            ok = win.uncut(hwnd) and ok
+        else:
+            width = win.width(hwnd)
+            if width is None or not win.cut(hwnd, device_shape(shape, width)):
+                win.uncut(hwnd)                 # 切れなかった = 古い形を残さず、四角い窓へ
+                ok = False
+    return {"found": True, "ok": ok, "pin": win.pinned(hwnd)}
 
-    u, g, d = ctypes.WinDLL("user32"), ctypes.WinDLL("gdi32"), ctypes.WinDLL("dwmapi")
-    u.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
-    u.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
-    u.GetWindowLongPtrW.restype = ctypes.c_ssize_t
-    u.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
-    u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
-    u.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]
-    g.CreateRectRgn.restype = wintypes.HRGN
-    g.CreatePolygonRgn.restype = wintypes.HRGN
-    g.CreatePolygonRgn.argtypes = [ctypes.POINTER(wintypes.POINT), ctypes.c_int, ctypes.c_int]
-    g.CombineRgn.argtypes = [wintypes.HRGN, wintypes.HRGN, wintypes.HRGN, ctypes.c_int]
-    g.DeleteObject.argtypes = [wintypes.HGDIOBJ]
 
-    def attribute(hwnd: int, name: int, value: int) -> None:
-        number = ctypes.c_int(value)
-        d.DwmSetWindowAttribute(wintypes.HWND(hwnd), name, ctypes.byref(number), 4)
-
-    def region(shape: dict) -> Any:
-        points = (wintypes.POINT * len(shape["polygon"]))(*[wintypes.POINT(x, y) for x, y in shape["polygon"]])
-        target = g.CreatePolygonRgn(points, len(shape["polygon"]), WINDING)
-        parts = [g.CreateRectRgn(*box) for box in shape["rects"]]
-        if shape["band"]:
-            parts.append(g.CreateRectRgn(*shape["band"]))
-        for part in parts:
-            g.CombineRgn(target, target, part, RGN_OR)
-            g.DeleteObject(part)
-        return target                    # 窓に渡した region は Windows が持つ
-
-    previous = u.SetThreadDpiAwarenessContext(ctypes.c_void_p(PER_MONITOR_AWARE_V2))
+def _apply(data: dict, title: str) -> dict:
+    win = _Win()
+    previous = win.enter()
     try:
-        windows = _find(u, wintypes, ctypes)
-        if not windows:
-            return {"found": False}
-        pin = data.get("pin")
-        wants_shape = "shape" in data
-        shape = clean_shape(data.get("shape")) if wants_shape else None
-        for hwnd in windows:
-            if isinstance(pin, bool):
-                u.SetWindowPos(hwnd, wintypes.HWND(HWND_TOPMOST if pin else HWND_NOTOPMOST), 0, 0, 0, 0,
-                               SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
-            if not wants_shape:
-                continue
-            if shape is None:
-                u.SetWindowRgn(hwnd, None, True)
-                attribute(hwnd, DWMWA_NCRENDERING_POLICY, DWMNCRP_USEWINDOWSTYLE)
-                attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_AUTO)
-                continue
-            box = wintypes.RECT()
-            u.GetWindowRect(hwnd, ctypes.byref(box))
-            attribute(hwnd, DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED)
-            attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_NONE)
-            u.SetWindowRgn(hwnd, region(device_shape(shape, box.right - box.left)), True)
-        return {"found": True, "pin": bool(u.GetWindowLongPtrW(windows[0], GWL_EXSTYLE) & WS_EX_TOPMOST)}
+        return _drive(win, data, title)
     finally:
-        u.SetThreadDpiAwarenessContext(previous)
+        win.leave(previous)
 
 
-def apply(data: Any) -> dict:
-    """{"pin": bool?, "shape": 形 | None?} を窓に当てる。当たらない時は {"found": False}。"""
+def apply(data: Any, port: Any = DEFAULT_PORT) -> dict:
+    """{"pin": bool?, "shape": 形 | None?} を、port の板の窓に当てる。当たらない時は {"found": False}。
+    窓は見つかったが API が失敗した時は {"found": True, "ok": False} (頁が送り直すか、別の手段へ切り替える)。"""
     if sys.platform != "win32" or not isinstance(data, dict):
         return {"found": False}
     try:
-        return _apply(data)
-    except (OSError, ValueError, TypeError, AttributeError):
+        return _apply(data, title_for(port))
+    except Exception:                           # 窓の操作は飾り = 何が起きても板は止めない (勝手に答えもしない)
         return {"found": False}

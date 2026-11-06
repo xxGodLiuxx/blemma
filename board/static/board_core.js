@@ -190,6 +190,35 @@
     return out;
   }
 
+  /* 窓の名。小窓は「BLEMMA · 扇 (OhGi)」で、既定でない port の板は名に port を足す
+   * (板の側の window_win.title_for と同じ決まり = 別の port で起こした板の窓を取り違えない)。 */
+  var WINDOW_TITLE = "BLEMMA · 扇 (OhGi)", DEFAULT_PORT = "8765";
+  function windowTitle(mode, port) {
+    if (mode !== "small") return "BLEMMA";
+    port = String(port || "80");
+    return port === DEFAULT_PORT ? WINDOW_TITLE : WINDOW_TITLE + " · " + port;
+  }
+
+  /* 板の見張り (/pending) の調子。1 回の失敗では「板が止まった」と言わない =
+   * 続けて limit 回落ちた時だけ、最初に落ちた時刻を返す (それまでは null)。1 回でも通れば頭に戻る。 */
+  function Health(limit) {
+    this.limit = limit || 3;
+    this.ok();
+  }
+  Health.prototype.ok = function () { this.fails = 0; this.since = null; };
+  Health.prototype.fail = function (now) {
+    if (!this.fails) this.since = now;
+    this.fails += 1;
+  };
+  Health.prototype.goneSince = function () { return this.fails >= this.limit ? this.since : null; };
+
+  /* 扇の 2 回押し。1 回目は選ぶだけ = 同じ羽根を ms のうちにもう 1 回押した時だけ決まる。
+   * arm = 選んである羽根 {key, at} か null (札が替わった・描き直した・時間が切れた時は null に戻っている)。 */
+  function armStep(arm, key, now, ms) {
+    if (arm && arm.key === key && now - arm.at <= ms) return { confirm: true, arm: null };
+    return { confirm: false, arm: { key: key, at: now } };
+  }
+
   function mmss(sec) {
     var s = Math.max(0, Math.floor(sec || 0));
     var m = Math.floor(s / 60);
@@ -763,6 +792,7 @@
     fanEligible: fanEligible, fanLayout: fanLayout, fanMark: fanMark, fanScript: fanScript, scrollDirection: scrollDirection, actionDescription: actionDescription,
     priorityState: priorityState, diffRange: diffRange,
     parseOptions: parseOptions, OPTION_DEFAULTS: OPTION_DEFAULTS,
+    windowTitle: windowTitle, Health: Health, armStep: armStep,
     buildScreen: buildScreen, pressKey: pressKey, choiceLabel: choiceLabel, viewKey: viewKey,
     statsText: statsText, endText: endText, lightText: lightText, zeroPresses: zeroPresses,
     addPresses: addPresses, newPressLedger: newPressLedger, takePressBatches: takePressBatches,

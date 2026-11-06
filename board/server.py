@@ -857,7 +857,9 @@ class Handler(BaseHTTPRequestHandler):
             board.reset_stats()
             self._json(204, None)
         elif path == "/window":
-            self._json(200, window_win.apply(data) if window_win else {"found": False})
+            # 触るのはこの板 (この port) の窓だけ = 別の port の板の窓を取り違えない
+            port = self.connection.getsockname()[1]
+            self._json(200, window_win.apply(data, port) if window_win else {"found": False})
         else:
             # /resolve は提出版では作らない (1 対 1 の照合の鍵が見つかった時だけ・§3.7)
             self._json(404, {"error": "not_found"})
