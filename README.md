@@ -123,7 +123,7 @@ Claude Code を開発の中心に置きました。
 
 ## License
 
-MIT (see LICENSE).
+MIT (see LICENSE). 扇の字体 Yuji Syuku は SIL Open Font License 1.1 で同梱しています (`board/static/YujiSyuku-OFL.txt`)。
 
 ---
 

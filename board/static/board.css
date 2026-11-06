@@ -1,5 +1,8 @@
 /* BLEMMA の板 = 無地・高コントラスト (7:1 を狙う)・釦 96px 以上・間 24px・端から 48px・字 28px 以上 (§4.1)。
  * 外の font を読まない = 機械に入っている字だけ。 */
+/* 扇の字 = Yuji Syuku (SIL OFL 1.1・YujiSyuku-OFL.txt)。repo に同梱し、外へ読みに行かない */
+@font-face { font-family: "Yuji Syuku"; src: url("YujiSyuku-Regular.woff2") format("woff2"); font-display: swap; }
+
 :root {
   --bg: #ffffff;
   --fg: #000000;
@@ -302,11 +305,11 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
 .small .fan > .btn .fill, .small .fan > .btn .desc, .small .fan > .btn .def, .small .fan > .btn .label, .small .fan > .btn .num { display: none; }
 .small .fan > .btn .fan-text {
   position: absolute; left: var(--lx); top: var(--ly); transform: translate(-50%, -50%) rotate(var(--rot));
-  font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif;
+  font-family: "Yuji Syuku", "Yu Mincho", "Hiragino Mincho ProN", serif;
   font-size: calc(30px * var(--font, 1)); font-weight: 500; line-height: 1;
 }
 .spot-list { display: flex; flex-wrap: wrap; gap: 2px 16px; color: var(--muted); font-size: calc(15px * var(--font, 1)); line-height: 1.45; }
-.spot-list b { font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif; color: var(--fg); margin-right: 2px; }
+.spot-list b { font-family: "Yuji Syuku", "Yu Mincho", "Hiragino Mincho ProN", serif; color: var(--fg); margin-right: 2px; }
 .small .fan > .btn .dwell-arc { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .dwell-arc path { fill: none; stroke: var(--arc); stroke-width: 14px; stroke-dasharray: 1; stroke-dashoffset: calc(1 - var(--p)); }
 .fan-bones { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
@@ -316,11 +319,11 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
 .fan-bones .edge { fill: none; stroke: var(--rib); stroke-width: 2px; }
 .fan-bones .seam { fill: none; stroke: var(--rib); stroke-width: 1px; opacity: .3; }
 .fan-bones .pivot { fill: var(--pivot); stroke: var(--rib); stroke-width: 2px; }
-.fan-script { fill: var(--sec-fg); font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif; font-weight: 500; letter-spacing: .04em; }
+.fan-script { fill: var(--sec-fg); font-family: "Yuji Syuku", "Yu Mincho", "Hiragino Mincho ProN", serif; font-weight: 500; letter-spacing: .04em; }
 .fan-seal {
   position: absolute; left: 6px; bottom: 4px; width: 30px; height: 30px; display: grid; place-items: center;
   background: var(--seal); color: #fff; border-radius: 4px; pointer-events: none;
-  font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif; font-weight: 700; font-size: 18px;
+  font-family: "Yuji Syuku", "Yu Mincho", "Hiragino Mincho ProN", serif; font-weight: 700; font-size: 18px;
 }
 .fan-aux { position: absolute; right: 0; bottom: 0; display: flex; gap: 6px; }
 .small .fan-aux .btn { min-width: 96px; min-height: 44px; padding: 4px 12px; font-size: calc(16px * var(--font, 1)); background: transparent; border-width: 1px; border-radius: 6px; }

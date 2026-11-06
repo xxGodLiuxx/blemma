@@ -65,6 +65,7 @@ def test_static_page_needs_no_token_and_has_csp(live, tmp_path):
     static.mkdir()
     (static / "index.html").write_text("<!doctype html><title>t</title>", encoding="utf-8")
     (static / "board.js").write_text("// js", encoding="utf-8")
+    (static / "fan-font.woff2").write_bytes(b"wOF2")
     srv = live(static_dir=static)
     st, _, hdrs, raw = srv.request("GET", "/", token=None)
     assert st == 200 and raw.startswith(b"<!doctype html>")
@@ -72,6 +73,8 @@ def test_static_page_needs_no_token_and_has_csp(live, tmp_path):
     assert "default-src 'self'" in hdrs["content-security-policy"]
     st, _, hdrs, _ = srv.request("GET", "/static/board.js", token=None)
     assert st == 200 and hdrs["content-type"].startswith("text/javascript")
+    st, _, hdrs, _ = srv.request("GET", "/static/fan-font.woff2", token=None)
+    assert st == 200 and hdrs["content-type"] == "font/woff2"
     assert srv.request("GET", "/static/../server.py", token=None)[0] == 404
     assert srv.request("GET", "/static/missing.js", token=None)[0] == 404
 

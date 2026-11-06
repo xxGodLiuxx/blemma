@@ -106,10 +106,11 @@ CHOICES = {
     "elicitation": ("accept", "decline", "cancel", "terminal"),
 }
 MAX_BODY = 512 * 1024
-STATIC_NAME = re.compile(r"^[A-Za-z0-9_-]+\.(html|css|js|svg|png|ico)$")
+STATIC_NAME = re.compile(r"^[A-Za-z0-9_-]+\.(html|css|js|svg|png|ico|woff2)$")
 CONTENT_TYPES = {
     "html": "text/html; charset=utf-8",
     "css": "text/css; charset=utf-8",
+    "woff2": "font/woff2",
     "js": "text/javascript; charset=utf-8",
     "svg": "image/svg+xml",
     "png": "image/png",
