@@ -376,6 +376,32 @@
       list.appendChild(item);
     });
     spotlight(null);
+    fitFan();
+    if (S.fanCard !== S.card.id) {                  /* 新しい札で扇を開く動き (CSS・動きを止める設定では動かない) */
+      S.fanCard = S.card.id;
+      fan.classList.remove("open-anim");
+      void fan.offsetWidth;
+      fan.classList.add("open-anim");
+      fan.addEventListener("animationend", function done() {
+        fan.classList.remove("open-anim");
+        fan.removeEventListener("animationend", done);
+      });
+    }
+  }
+
+  /* 窓が扇より小さい時は、見切れないよう扇を窓に合わせて縮める (大きい窓では 1 倍のまま) */
+  function fitFan() {
+    if (!S.fan) return;
+    var fan = $("fan"), box = $("fan-scroll");
+    var w = parseFloat(fan.style.width), h = parseFloat(fan.style.height);
+    var wide = viewWindow.innerWidth / viewWindow.innerHeight >= 1.5;   /* 横向き = 左に問い・右に扇 */
+    var roomW = viewDocument.documentElement.clientWidth - (wide ? 300 : 20);
+    var roomH = viewWindow.innerHeight - (wide ? 20 : 250);             /* 縦向きは上の札と全文の欄の分を残す */
+    var k = Math.max(0.45, Math.min(1, roomW / w, roomH / h));
+    fan.style.transform = k < 1 ? "scale(" + k.toFixed(4) + ")" : "";
+    box.style.height = Math.ceil(h * k) + "px";
+    box.style.width = wide ? Math.ceil(w * k) + "px" : "";
+    viewDocument.documentElement.style.setProperty("--fan-w", Math.ceil(w * k) + "px");
   }
 
   /* 滞留を解く = 時計を止め、pointer の下の釦は一度外へ出て入り直すまで数えない (§4.2 の ①②)。
@@ -827,6 +853,7 @@
     w.addEventListener("blur", active(releaseDwell));
     w.addEventListener("focus", active(function () { releaseDwell(); S.scan.restart(performance.now()); }));
     d.addEventListener("visibilitychange", active(releaseDwell));
+    w.addEventListener("resize", active(fitFan));
     d.addEventListener("keydown", active(onKeyDown));
     d.addEventListener("keyup", active(function (e) { delete S.held[e.code || e.key]; }));
     d.addEventListener("click", active(onClick));
@@ -837,8 +864,8 @@
     if (viewWindow !== window) { viewWindow.close(); return; }
     if (!window.documentPictureInPicture || S.pipOpening) return;
     S.pipOpening = true;
-    var width = S.fan ? Math.max(420, parseFloat($("fan").style.width) * S.options.scale + 20) : 420;
-    var height = S.fan ? Math.max(640, parseFloat($("fan").style.height) * S.options.scale + 380) : 640;
+    var width = Math.max(940, S.fan ? parseFloat($("fan").style.width) * S.options.scale + 320 : 0);
+    var height = Math.max(400, S.fan ? parseFloat($("fan").style.height) * S.options.scale + 40 : 0);
     window.documentPictureInPicture.requestWindow({ width: width, height: height }).then(function (w) {
       var surface = $("surface");
       w.addEventListener("pagehide", function () {

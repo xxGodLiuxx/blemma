@@ -285,8 +285,9 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
 .small .btn { font-size: calc(20px * var(--font, 1)); }
 .small .btn .desc { font-size: calc(16px * var(--font, 1)); }
 .small.has-fan .opts, .small.has-fan .bottom { display: none; }
-.small .fan-scroll { overflow: auto; flex: none; }
-.fan { position: relative; margin: 0 auto; }
+.small .fan-scroll { overflow: hidden; flex: none; display: flex; justify-content: center; }
+.small .fan-scroll[hidden] { display: none; }
+.fan { position: relative; flex: none; transform-origin: top center; }
 .fan-paper {
   position: absolute; inset: 0; pointer-events: none;
   background: repeating-conic-gradient(from var(--a0) at var(--cx) var(--cy),
@@ -363,3 +364,41 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
 .trail i { position: fixed; width: 18px; height: 18px; border-radius: 50%; background: #e6007e; border: 2px solid #fff; opacity: .6; transform: translate(-50%, -50%); z-index: 100; pointer-events: none; left: -100px; top: -100px; }
 .trail i:nth-child(2) { transition: left 70ms linear, top 70ms linear; opacity: .3; }
 .trail i:nth-child(3) { transition: left 140ms linear, top 140ms linear; opacity: .15; }
+
+/* 横向きの窓 (既定) = 左に問い・右に扇 */
+@media (min-aspect-ratio: 3/2) {
+  .small.has-fan .app { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto minmax(0, 1fr); column-gap: 14px; row-gap: 6px; }
+  .small.has-fan .top { grid-column: 1; grid-row: 1; }
+  .small.has-fan .status { grid-column: 1; grid-row: 2; }
+  .small.has-fan .card { grid-column: 1; grid-row: 3; }
+  .small.has-fan .fan-scroll { grid-column: 2; grid-row: 1 / 4; align-self: end; }
+  .small.has-fan .undo-zone { left: 10px; right: auto; transform: none; top: 8px; width: calc(100vw - var(--fan-w, 580px) - 34px); max-height: none; }
+}
+
+/* 横向きの窓で扇に載らない札 (複数選択・2 問など) = 左に問い・右に 2 列のボタン。巻物を回さず全部が見える */
+@media (min-aspect-ratio: 3/2) {
+  .small:not(.has-fan):not(.idle) .app { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); grid-template-rows: auto auto minmax(0, 1fr) auto; column-gap: 14px; row-gap: 6px; height: 100vh; min-height: 0; }
+  .small:not(.has-fan):not(.idle) .top { grid-column: 1; grid-row: 1; }
+  .small:not(.has-fan):not(.idle) .status { grid-column: 1; grid-row: 2; }
+  .small:not(.has-fan):not(.idle) .card { grid-column: 1; grid-row: 3 / 5; min-height: 0; overflow: hidden; }
+  .small:not(.has-fan):not(.idle) .copy { max-height: 100%; }
+  .small:not(.has-fan):not(.idle) .opts { grid-column: 2; grid-row: 1 / 4; grid-template-columns: 1fr 1fr; align-content: start; gap: 8px; overflow: auto; }
+  .small:not(.has-fan):not(.idle) .bottom { grid-column: 2; grid-row: 4; flex-direction: row; gap: 8px; }
+  .small:not(.has-fan):not(.idle) .bottom > * { flex: 1 1 0; }
+  .small.has-fan .spotlight { height: auto; max-height: 55%; }
+}
+.small .copy, .small .spotlight { scrollbar-width: none; }
+
+/* ボタン類は上の帯に pointer が来た時か、焦点がある時だけ見せる */
+.small .top-right { opacity: 0; transition: opacity .15s; }
+.small .top:hover .top-right, .small .top-right:focus-within { opacity: 1; }
+
+/* 札が来た時に扇が要から開く */
+@property --open { syntax: "<number>"; inherits: false; initial-value: 1; }
+.fan.open-anim {
+  animation: fan-open .45s cubic-bezier(.2, .7, .2, 1);
+  -webkit-mask-image: conic-gradient(from calc(-92deg * var(--open)) at var(--cx) var(--cy), #000 0 calc(184deg * var(--open)), transparent 0);
+  mask-image: conic-gradient(from calc(-92deg * var(--open)) at var(--cx) var(--cy), #000 0 calc(184deg * var(--open)), transparent 0);
+}
+@keyframes fan-open { from { --open: 0; } to { --open: 1; } }
+@media (prefers-reduced-motion: reduce) { .fan.open-anim { animation: none; -webkit-mask-image: none; mask-image: none; } }
