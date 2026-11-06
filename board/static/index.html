@@ -10,10 +10,12 @@
 <link rel="stylesheet" href="/static/board.css">
 </head>
 <body>
+<div id="surface">
 <div id="band" class="band" role="status" aria-live="polite" hidden></div>
 <div class="app">
   <header class="top">
     <div class="top-left">
+      <span id="work-state" class="work-state" role="status" hidden></span>
       <span id="kind" class="kind"></span>
       <span id="from" class="from"></span>
       <span id="remain" class="remain"></span>
@@ -24,17 +26,22 @@
       <button id="stats-reset" class="mini" type="button" data-key="reset"></button>
       <button id="phone-btn" class="mini" type="button" data-key="phone"></button>
       <button id="gear-btn" class="mini" type="button" data-key="gear"></button>
+      <button id="pip-btn" class="mini" type="button" data-key="pip" hidden></button>
     </div>
   </header>
   <div id="status" class="status" role="status" aria-live="polite"></div>
   <main id="card" class="card">
+    <div id="copy" class="copy">
     <h1 id="head" class="head"></h1>
     <p id="text" class="text"></p>
     <div id="blocks" class="blocks"></div>
     <h2 id="question" class="question"></h2>
     <ul id="summary" class="summary"></ul>
+    </div>
+    <div id="spotlight" class="spotlight" hidden><div id="spot-label"></div><div id="spot-desc"></div></div>
   </main>
   <div id="opts" class="opts"></div>
+  <div id="fan-scroll" class="fan-scroll" hidden><div id="fan" class="fan"><span id="fan-time" class="fan-time"></span></div></div>
   <footer class="bottom">
     <div id="fixed-zone" class="fixed-zone"></div>
     <div id="term-zone" class="term-zone"></div>
@@ -50,6 +57,8 @@
     <div id="panel-body" class="panel-body"></div>
     <button id="panel-close" class="mini close" type="button" data-key="close"></button>
   </div>
+</div>
+<div id="trail" class="trail" aria-hidden="true" hidden><i></i><i></i><i></i></div>
 </div>
 <script src="/static/board_core.js"></script>
 <script src="/static/board.js"></script>

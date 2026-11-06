@@ -48,6 +48,11 @@ ASK_BOARD_TOOL = {
                 "default": False,
                 "description": "Also accept an answer in the human's own words",
             },
+            "descriptions": {
+                "type": "array", "items": {"type": "string"},
+                "minItems": 2, "maxItems": 6,
+                "description": "Optional short explanations, in the same order and length as choices",
+            },
         },
         "required": ["title", "choices"],
     },
@@ -228,6 +233,8 @@ class Server:
             choices.append(STOP_CHOICE)
         free = bool(args.get("allow_free_text", False))
         one_of = [{"const": str(i), "title": c} for i, c in enumerate(choices, start=1)]
+        for option, description in zip(one_of, args.get("descriptions", [])):
+            option["description"] = description
         props = {"choice": {"type": "string", "title": title, "oneOf": one_of}}
         if free:
             one_of.append({"const": "other", "title": "ほかの答え (書いて伝える)"})
@@ -327,6 +334,11 @@ def validate_args(args):
         return "leave one of the six choices for 'ここで止める' (or supply at most five choices)"
     if "allow_free_text" in args and not isinstance(args["allow_free_text"], bool):
         return "allow_free_text must be a boolean"
+    if "descriptions" in args:
+        descriptions = args["descriptions"]
+        if (not isinstance(descriptions, list) or len(descriptions) != len(choices)
+                or not all(isinstance(d, str) for d in descriptions)):
+            return "descriptions must be a string list with the same length as choices"
     return None
 
 

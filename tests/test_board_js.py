@@ -43,7 +43,7 @@ function loadPage(fetchImpl) {
   let src = fs.readFileSync(%(page)s, "utf8");
   const re = /\n  init\(\);(\r?\n)/;
   if (!re.test(src)) throw new Error("board.js の init(); の行が見つからない");
-  src = src.replace(re, "\n  window.__t = { S: S, press: press, releaseDwell: releaseDwell };$1");
+  src = src.replace(re, "\n  window.__t = { S: S, press: press, releaseDwell: releaseDwell, bindInputs: bindInputs, inputActive: inputActive, selectWindow: function(w) { viewWindow=w; viewDocument=w.document; } };$1");
   const win = { BlemmaCore: core, crypto: require("crypto").webcrypto };
   vm.runInNewContext(src, { window: win, document: {}, performance: performance, fetch: fetchImpl,
                             setTimeout: setTimeout, clearTimeout: clearTimeout, console: console });
@@ -302,3 +302,94 @@ setTimeout(function () {
         "dwell": 1, "switch": 1, "key": 0, "touch": 0, "click": 0,
     }
     assert board.pending(-1)["stats"]["total"] == 2 and out["pending"] == []
+
+
+@pytest.mark.parametrize("n", range(2, 7))
+def test_fan_geometry_fixed_exits_numbering_and_minimum_width(tmp_path, n):
+    out = node(tmp_path, f"console.log(JSON.stringify(core.fanLayout({n}))); ")
+    parts = out["parts"]
+    assert len(parts) == n + 2
+    assert next(p for p in parts if p["key"] == "fixed")["angle"] == 225
+    assert next(p for p in parts if p["key"] == "terminal")["angle"] == 135
+    numbered = [p for p in parts if p["key"] == "option"]
+    assert [p["index"] for p in numbered] == list(range(n))
+    assert numbered[0]["angle"] <= 56.25
+    assert all(p["width"] >= 90 for p in parts)
+    assert out["depth"] >= 90 and out["size"] >= 340
+    radius = (out["inner"] + out["outer"]) / 2
+    assert all(abs(((p["label"][0] - out["outer"]) ** 2 +
+                    (p["label"][1] - out["outer"]) ** 2) ** .5 - radius) < .001 for p in parts)
+
+
+def test_fan_falls_back_without_losing_complex_actions(tmp_path):
+    out = node(tmp_path, r"""
+function fits(kind, payload, sub, step) {
+  const c = {kind, payload}, u = core.newUi(); u.sub = sub; u.step = step || 0;
+  return core.fanEligible(c, u, core.buildScreen(c, u, 'ja'));
+}
+const q = { options: [{label:'a'}, {label:'b'}] };
+console.log(JSON.stringify([
+  fits('permission', {}), fits('permission', {}, 'deny'),
+  fits('question', {questions:[q]}), fits('question', {questions:[{...q,multiSelect:true}]}),
+  fits('question', {questions:[q,q]}), fits('question', {questions:[q]}, null, 1),
+  fits('question', {questions:[{options:Array(7).fill({label:'x'})}]}),
+  fits('elicitation', {fields:[{...q,required:true}]}),
+  fits('elicitation', {fields:[{...q,multi:true,required:true}]})
+]));
+""")
+    assert out == [True, True, True, False, False, False, False, True, False]
+
+
+def test_status_priority(tmp_path):
+    out = node(tmp_path, r"""
+const states = ['working', 'done', 'waiting on you'].map(state => ({state}));
+console.log(JSON.stringify([core.priorityState(states), core.priorityState(states.slice(0,2)),
+  core.priorityState(states.slice(0,1)), core.priorityState([], {}), core.priorityState([])]));
+""")
+    assert [s["state"] for s in out[:4]] == ["waiting on you", "done", "working", "waiting on you"]
+    assert out[4] is None
+
+
+def test_settings_precedence_and_invalid_values(tmp_path):
+    out = node(tmp_path, r"""
+console.log(JSON.stringify([
+ core.parseOptions('', {}),
+ core.parseOptions('scale=1.25&theme=dark&scan&trail', {scale:2,theme:'light',font:1.5,mode:'small'}),
+ core.parseOptions('scale=9&font=NaN&mode=broken&theme=bad&desc=bad&key=%3C&dwell=1oops&scan=-1',
+                   {scale:1.5,font:1.5,mode:'small',theme:'dark',desc:'off',key:'Enter',dwell:2,scan:3}),
+ core.parseOptions('scan=off&desc=off&trail=off&sound=off', {scan:'on',desc:'on',trail:'on',sound:'on'})
+]));
+""")
+    defaults, merged, invalid, disabled = out
+    assert defaults["mode"] == "large" and defaults["scan"] == "off"
+    assert (merged["scale"], merged["theme"], merged["font"], merged["mode"], merged["scan"], merged["trail"]) == (
+        1.25, "dark", 1.5, "small", "1.5", "on")
+    assert invalid == defaults
+    assert all(disabled[k] == "off" for k in ("scan", "desc", "trail", "sound"))
+
+
+def test_pip_uses_visible_window_focus_and_retains_held_keys(tmp_path):
+    """Synthetic windows test event routing only; requestWindow and rendering need Chromium."""
+    out = node(tmp_path, r"""
+function target() {
+  const handlers={}; return {addEventListener(name, fn) {(handlers[name] ||= []).push(fn);},
+    fire(name, event={}) {(handlers[name] || []).forEach(fn=>fn(event));}};
+}
+function win() {
+  const w=target(), d=target(); d.documentElement=target(); d.hidden=false; d.focused=true;
+  d.hasFocus=()=>d.focused; w.document=d; return w;
+}
+const t=loadPage(()=>{throw Error('no HTTP');}), original=win(), pip=win();
+t.S.dwell=new core.Dwell(1000,150); t.S.scan=new core.Scan(1500); t.S.over='allow_once';
+t.S.held.Space=true; t.bindInputs(original); t.bindInputs(pip); t.selectWindow(pip);
+frames(t.S.dwell,'allow_once',0,800);
+original.document.hidden=true; original.fire('blur'); original.document.fire('visibilitychange');
+const before=t.S.dwell.target, active=t.inputActive();
+pip.document.focused=false; pip.fire('blur');
+const stopped=t.S.dwell.target, blocked=t.S.dwell.blocked, inactive=t.inputActive();
+const held=t.S.held.Space;
+pip.document.fire('keyup',{code:'Space'});
+console.log(JSON.stringify({before,active,stopped,blocked,inactive,held,released:!t.S.held.Space}));
+""")
+    assert out == {"before": "allow_once", "active": True, "stopped": None,
+                   "blocked": "allow_once", "inactive": False, "held": True, "released": True}

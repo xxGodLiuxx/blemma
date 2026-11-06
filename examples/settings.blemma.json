@@ -1,6 +1,16 @@
 {
   "permissions": { "allow": ["mcp__blemma__ask_board"] },
   "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [
+        { "type": "command", "command": "<PY>", "args": ["<BLEMMA>/hooks/state.py"], "timeout": 5 }
+      ] }
+    ],
+    "Stop": [
+      { "hooks": [
+        { "type": "command", "command": "<PY>", "args": ["<BLEMMA>/hooks/state.py"], "timeout": 5 }
+      ] }
+    ],
     "PermissionRequest": [
       { "matcher": ".*", "hooks": [
         { "type": "command", "command": "<PY>", "args": ["<BLEMMA>/hooks/permission.py"],

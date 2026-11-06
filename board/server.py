@@ -245,6 +245,7 @@ class Board:
         self.last: Optional[dict] = None
         self.light: Optional[dict] = None
         self.light_until = 0.0
+        self.sessions: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
         self.closed = False
         self.viewers_open = 0                 # 開いている GET /pending の数 (見る人)
         self.viewer_seen = clock()            # 最後に見た時 = 起動も「見た」と数える
@@ -295,6 +296,9 @@ class Board:
         c.state = end
         if c in self.live:
             self.live.remove(c)
+        self._set_state(c.frm.get("session", ""),
+                        "working" if end == "answered" else "waiting on you", now,
+                        "" if end == "answered" else end)
         c.payload = None                      # 本文は札が生きている間だけ (§3.3)
         self.done[c.id] = c
         while len(self.done) > self.lim.keep_done:
@@ -347,6 +351,13 @@ class Board:
     def _advance(self, now: float) -> None:
         """時間で進む物 (接続の終了・期限・表示・猶予の終わり・帯) を進める。"""
         changed = False
+        for session, state in list(self.sessions.items()):
+            if now - state["at"] >= 86400:
+                del self.sessions[session]
+                changed = True
+            elif state["state"] == "working" and not state["stale"] and now - state["at"] >= 600:
+                state["stale"] = True
+                changed = True
         for c in list(self.live):
             if c.delivering or c.wait_inflight > 0:
                 continue
@@ -410,6 +421,7 @@ class Board:
                 return 503, {"error": "queue_full"}
             c = Card(secrets.token_hex(8), kind, _clean_from(frm), payload, now)
             self.live.append(c)
+            self._set_state(c.frm.get("session", ""), "waiting on you", now)
             self._bump()
             self._advance(now)
             hard = self.lim.hard_deadline
@@ -562,7 +574,41 @@ class Board:
             self.light = {"type": s("type", 60), "title": s("title", 200),
                           "message": s("message", 500), "from": _clean_from(d.get("from"))}
             self.light_until = now + self.lim.light
+            if s("type", 60) in ("permission_prompt", "idle_prompt", "elicitation_dialog",
+                                 "elicitation_url_dialog", "agent_needs_input"):
+                self._set_state(self.light["from"]["session"], "waiting on you", now, "notification")
             self._bump()
+
+    def _set_state(self, session: str, state: str, now: float, reason: str = "") -> None:
+        # Only a short session ID and status survive; no prompt, tool input or cwd.
+        session = session[:6]
+        self.sessions[session] = {"session": session, "state": state, "at": now,
+                                  "reason": reason, "stale": False}
+        self.sessions.move_to_end(session)
+        while len(self.sessions) > 128:
+            self.sessions.popitem(last=False)
+
+    def set_state(self, body: Any) -> Tuple[int, Optional[dict]]:
+        if (not isinstance(body, dict) or set(body) != {"session", "state"}
+                or body.get("state") not in ("working", "done")
+                or not isinstance(body.get("session"), str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,6}", body["session"])):
+            return 400, {"error": "bad_state"}
+        with self.cond:
+            self._set_state(body["session"], body["state"], self.clock())
+            self._bump()
+        return 204, None
+
+    def _states(self, now: float) -> List[dict]:
+        states = {sid: {**s, "ago": round(max(0, now - s["at"]), 1)}
+                  for sid, s in self.sessions.items()}
+        for c in self.live:
+            sid = c.frm.get("session", "")
+            states[sid] = {"session": sid, "state": "waiting on you", "stale": False,
+                           "reason": "card", "ago": 0}
+        for state in states.values():
+            state.pop("at", None)
+        return list(states.values())
 
     def reset_stats(self) -> None:
         with self.cond:
@@ -596,6 +642,7 @@ class Board:
             "queue": sum(1 for c in self.live if c.state == "queued"),
             "last": last,
             "light": light,
+            "states": self._states(now),
             "stats": {
                 "presses": dict(self.stats_presses),
                 "total": sum(self.stats_presses.values()),
@@ -791,6 +838,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/notify":
             board.notify(data)
             self._json(204, None)
+        elif path == "/state":
+            code, body = board.set_state(data)
+            self._json(code, body)
         elif path == "/stats/reset":
             board.reset_stats()
             self._json(204, None)

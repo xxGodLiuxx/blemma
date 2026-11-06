@@ -530,6 +530,25 @@ def _ask(hook_input: Any, kind: str, payload: dict, run_file: Any) -> Tuple[str,
         return "error", None
 
 
+def state(hook_input: Any, run_file: Any = None) -> bool:
+    """Send one status update with a 250 ms total deadline; never send input text."""
+    try:
+        if not isinstance(hook_input, dict):
+            return False
+        value = {"UserPromptSubmit": "working", "Stop": "done"}.get(hook_input.get("hook_event_name"))
+        sid = hook_input.get("session_id")
+        if value is None or not isinstance(sid, str) or not sid:
+            return False
+        run = _load_run(run_file)
+        if run is None:
+            return False
+        port, token = run
+        _call("POST", port, token, "/state", {"session": sid[:6], "state": value}, timeout=0.25)
+        return True
+    except Exception:
+        return False
+
+
 def notify(hook_input: Any, run_file: Any = None) -> bool:
     """Notification を板へ 1 回 POST する (待たない・1 秒で諦める)。届いたかだけ返す。"""
     try:

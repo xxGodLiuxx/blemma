@@ -3,12 +3,15 @@
  * 札の本文は textContent だけで描く (innerHTML を使わない)。 */
 (function () {
   "use strict";
+  var homeDocument = document, viewDocument = document, viewWindow = window;
+  var rafWindow = window, rafId = null;
   var C = window.BlemmaCore;
-  var $ = function (id) { return document.getElementById(id); };
+  var $ = function (id) { return viewDocument.getElementById(id); };
   var reduced = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
   var S = {
     token: "", lang: "ja", dwellMs: 1000, scanMs: 0, switchKey: "Space", sound: false,
+    mode: "large", desc: true, fan: false, firstPointer: true,
     seq: -1, snap: null, snapAt: 0, card: null, ui: C.newUi(null), key: "", gen: 0,
     btns: {}, optionKeys: [], scanList: [], scanEl: null, fillEl: null,
     delta: C.zeroPresses(), answering: false, undoing: false, sentKey: null,
@@ -22,13 +25,21 @@
 
   function L() { return C.I18N[S.lang]; }
 
+  function savedOptions() {
+    try { return JSON.parse(window.localStorage.getItem("blemma.options") || "{}"); }
+    catch (e) { return {}; }
+  }
+
   function readSettings() {
-    var q = new URLSearchParams(location.search);
-    S.lang = C.pickLang(q.get("lang"), navigator.language);
-    S.dwellMs = C.parseDwell(q.get("dwell"));
-    S.scanMs = C.parseScan(q.has("scan") ? q.get("scan") : null);
-    S.switchKey = q.get("key") || "Space";
-    S.sound = q.get("sound") === "1" || q.get("sound") === "on";
+    var o = C.parseOptions(location.search, savedOptions());
+    S.options = o;
+    S.lang = C.pickLang(o.lang, navigator.language);
+    S.dwellMs = C.parseDwell(o.dwell);
+    S.scanMs = C.parseScan(o.scan);
+    S.switchKey = o.key;
+    S.sound = o.sound === "on";
+    S.mode = o.mode;
+    S.desc = o.desc === "on";
     S.dwell = new C.Dwell(S.dwellMs, 150);
     S.scan = new C.Scan(S.scanMs);
   }
@@ -126,6 +137,7 @@
   function refreshView() {
     var k = C.viewKey(S.card, S.ui, S.lang);
     if (k !== S.key) {
+      S.ui.marks = [];
       S.key = k;
       render();
       bumpGen();
@@ -135,7 +147,7 @@
 
   /* ---- 描く ---- */
   function el(tag, cls, text) {
-    var e = document.createElement(tag);
+    var e = viewDocument.createElement(tag);
     if (cls) e.className = cls;
     if (text !== undefined && text !== null) e.textContent = text;
     return e;
@@ -146,9 +158,11 @@
     b.type = "button";
     b.dataset.key = key;
     b.dataset.dwell = "1";
+    b.dataset.label = label;
+    b.dataset.description = key === "fixed" ? C.actionDescription(S.card, key, S.lang) : desc || C.actionDescription(S.card, key, S.lang);
     b.appendChild(el("span", "fill"));
     b.appendChild(el("span", "label", label));
-    if (desc) b.appendChild(el("span", "desc", desc));
+    if (desc && S.desc) b.appendChild(el("span", "desc", desc));
     return b;
   }
 
@@ -161,14 +175,23 @@
     var lang = S.lang;
     var T = L();
     var card = S.card;
-    var focusedKey = document.activeElement && document.activeElement.dataset
-      ? document.activeElement.dataset.key : null;
-    document.documentElement.lang = lang;
+    var focusedKey = viewDocument.activeElement && viewDocument.activeElement.dataset
+      ? viewDocument.activeElement.dataset.key : null;
+    viewDocument.documentElement.lang = lang;
     $("kind").textContent = card ? T["kind_" + card.kind] : "";
+    if (S.mode === "small" && card && card.kind === "elicitation" && card.payload.head === "blemma") {
+      $("kind").textContent = lang === "ja" ? "次の一手 (Claude の先回り)" : "Next step (Claude's suggestion)";
+    }
     $("from").textContent = card ? fromText(card.from) : "";
+    if (S.mode === "small") $("copy").insertBefore($("from"), $("head"));
+    else $("remain").parentNode.insertBefore($("from"), $("remain"));
     var m = card ? C.buildScreen(card, S.ui, lang) : null;
+    S.fan = S.mode === "small" && C.fanEligible(card, S.ui, m);
+    viewDocument.body.classList.toggle("small", S.mode === "small");
+    viewDocument.body.classList.toggle("has-fan", S.fan);
+    viewDocument.body.classList.toggle("idle", !card);
     $("head").textContent = m ? m.head : "";
-    $("text").textContent = m ? m.text : T.empty;
+    $("text").textContent = m ? m.text : S.mode === "small" ? T.idle_line : T.empty;
     var blocks = $("blocks");
     blocks.replaceChildren();
     (m ? m.blocks : []).forEach(function (b) {
@@ -212,13 +235,54 @@
       S.btns.terminal = tb;
     }
     S.scanList = Array.prototype.filter.call(
-      document.querySelectorAll("#opts .btn, #fixed-zone .btn, #term-zone .btn"),
+      viewDocument.querySelectorAll("#opts .btn, #fixed-zone .btn, #term-zone .btn"),
       function (b) { return !b.disabled; });
+    renderFan(m);
     S.scanEl = null;
     S.fillEl = null;
     if (focusedKey && S.btns[focusedKey] && !S.btns[focusedKey].disabled) {
       S.btns[focusedKey].focus({ preventScroll: true });
     }
+  }
+
+  function spotlight(b) {
+    if (!b || S.mode !== "small") return;
+    setText($("spot-label"), b.dataset.label || "");
+    setText($("spot-desc"), S.desc ? b.dataset.description || "" : "");
+  }
+
+  function renderFan(m) {
+    var fan = $("fan"), clock = $("fan-time");
+    fan.replaceChildren(clock);
+    $("fan-scroll").hidden = !S.fan;
+    $("spotlight").hidden = !S.fan;
+    if (!S.fan) return;
+    var layout = C.fanLayout(m.options.length);
+    fan.style.width = layout.size + "px";
+    fan.style.height = layout.size + "px";
+    S.scanList = [];
+    layout.parts.forEach(function (p) {
+      var key = p.key === "option" ? S.optionKeys[p.index] : p.key;
+      var b = S.btns[key];
+      b.style.clipPath = p.polygon;
+      b.style.setProperty("--lx", p.label[0] + "px");
+      b.style.setProperty("--ly", p.label[1] + "px");
+      b.setAttribute("aria-label", b.dataset.label);
+      b.title = b.dataset.label;
+      if (p.key !== "option") b.appendChild(el("span", "num", p.key === "fixed" ? "Esc" : "0"));
+      var svg = viewDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", "0 0 " + layout.size + " " + layout.size);
+      svg.setAttribute("aria-hidden", "true");
+      svg.classList.add("dwell-arc");
+      var path = viewDocument.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", p.arc);
+      path.setAttribute("pathLength", "1");
+      svg.appendChild(path);
+      b.appendChild(svg);
+      fan.appendChild(b);
+      if (!b.disabled) S.scanList.push(b);
+    });
+    spotlight(S.btns[S.optionKeys[0]]);
   }
 
   /* 滞留を解く = 時計を止め、pointer の下の釦は一度外へ出て入り直すまで数えない (§4.2 の ①②)。
@@ -233,11 +297,12 @@
   function bumpGen() {
     S.gen += 1;
     S.over = keyAtPointer();
+    if (S.lastX < 0) S.firstPointer = true;
     releaseDwell();
     S.scan.restart(performance.now());
     if (S.scanEl) { S.scanEl.classList.remove("scan"); S.scanEl = null; }
     if (S.card && S.card.state === "shown" && S.lastInput === "key" && !S.overlay && S.scanMs <= 0) {
-      var first = document.querySelector("#opts .btn:not(:disabled)");
+      var first = S.fan ? S.scanList[0] : viewDocument.querySelector("#opts .btn:not(:disabled)");
       if (first) first.focus({ preventScroll: true });
     }
   }
@@ -250,7 +315,7 @@
 
   function keyAtPointer() {
     if (S.lastX < 0) return null;
-    return dwellKeyOf(document.elementFromPoint(S.lastX, S.lastY));
+    return dwellKeyOf(viewDocument.elementFromPoint(S.lastX, S.lastY));
   }
 
   function findBtn(key) {
@@ -278,14 +343,25 @@
   function updateSide(now) {
     var T = L();
     var card = S.card;
+    var state = C.priorityState(S.snap && S.snap.states, card), badge = $("work-state");
+    badge.hidden = S.mode !== "small";
+    var labels = S.lang === "ja" ? { working: "◐ 作業中", "waiting on you": "◆ あなたの番", done: "✓ 完了" } :
+      { working: "◐ working", "waiting on you": "◆ waiting on you", done: "✓ done" };
+    var label = state ? labels[state.state] : (S.lang === "ja" ? "○ 待機中" : "○ ready");
+    if (state && state.reason === "disconnected") label = S.lang === "ja" ? "■ 止まった・端末を見てください" : "■ stopped · check the terminal";
+    setText(badge, label);
+    badge.classList.toggle("stale", !!state && (state.stale || state.state === "working" && state.ago + (now - S.snapAt) / 1000 >= 600));
+    badge.dataset.state = state ? state.state : "idle";
     var rem = $("remain");
     if (card && card.state === "shown" && S.deadlineAt !== null) {
       var sec = Math.max(0, (S.deadlineAt - now) / 1000);
       setText(rem, C.fmt(T.remain, { t: C.mmss(Math.ceil(sec)) }));
+      setText($("fan-time"), C.mmss(Math.ceil(sec)));
       rem.classList.toggle("low", sec < 60);
     } else {
       setText(rem, "");
       rem.classList.remove("low");
+      setText($("fan-time"), "");
     }
     var qn = S.snap ? S.snap.queue : 0;
     setText($("queue"), qn > 0 ? C.fmt(T.queue, { n: qn }) : "");
@@ -303,10 +379,10 @@
     if (lightOn) {
       setText(band, C.lightText(S.snap.light, S.lang));
       band.hidden = false;
-      document.body.classList.add("glow");
+      viewDocument.body.classList.add("glow");
     } else {
       band.hidden = true;
-      document.body.classList.remove("glow");
+      viewDocument.body.classList.remove("glow");
       $("card").classList.remove("blink");
     }
     updateUndo(now);
@@ -375,11 +451,12 @@
 
   /* ---- 押す ---- */
   function press(key, by) {
-    if (key === "reset" || key === "phone" || key === "gear") {
+    if (key === "reset" || key === "phone" || key === "gear" || key === "pip") {
       if (by !== "key" && by !== "click") return;          /* 視線では押さない (§4.5) */
       if (key === "reset") api("POST", "/stats/reset", {}).catch(function () { S.offline = true; });
       if (key === "phone") openPhone();
       if (key === "gear") openGear();
+      if (key === "pip") openPip();
       return;
     }
     if (key === "close") { closeOverlay(); return; }
@@ -478,9 +555,19 @@
   /* ---- 入力 ---- */
   function onPointer(e) {
     if (e.pointerType === "touch") { S.pointerType = "touch"; return; }
+    S.pointerType = e.pointerType || "mouse";
     S.lastX = e.clientX;
     S.lastY = e.clientY;
     S.over = dwellKeyOf(e.target);
+    if (S.firstPointer) { S.dwell.block(S.over); S.firstPointer = false; }
+    spotlight(S.btns[S.over]);
+    if (S.options.trail === "on") {
+      var dots = $("trail").children;
+      for (var i = 0; i < dots.length; i++) {
+        dots[i].style.left = (e.clientX / S.options.scale) + "px";
+        dots[i].style.top = (e.clientY / S.options.scale) + "px";
+      }
+    }
   }
 
   function isSwitch(e) {
@@ -490,6 +577,7 @@
   }
 
   function onKeyDown(e) {
+    if (!inputActive()) return;
     var code = e.code || e.key;
     var sw = S.scanMs > 0 && isSwitch(e);
     if (e.repeat || S.held[code]) {                         /* 押したままの鍵は離すまで数えない */
@@ -502,10 +590,10 @@
       if (e.key === "Escape") { e.preventDefault(); closeOverlay(); }
       return;
     }
-    var active = document.activeElement && document.activeElement.closest
-      ? document.activeElement.closest("[data-key]") : null;
+    var active = viewDocument.activeElement && viewDocument.activeElement.closest
+      ? viewDocument.activeElement.closest("[data-key]") : null;
     if (!sw && active && (e.key === "Enter" || e.key === " ") &&
-        ["reset", "phone", "gear"].indexOf(active.dataset.key) >= 0) {
+        ["reset", "phone", "gear", "pip"].indexOf(active.dataset.key) >= 0) {
       e.preventDefault();
       press(active.dataset.key, "key");
       return;
@@ -528,6 +616,14 @@
     }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.key === "Escape") { e.preventDefault(); press("fixed", "key"); return; }
+    if (e.key === "0") { e.preventDefault(); press("terminal", "key"); return; }
+    if (S.fan && /^Arrow(Left|Right|Up|Down)$/.test(e.key)) {
+      e.preventDefault();
+      var at = S.scanList.indexOf(active), n = S.scanList.length;
+      var dir = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
+      if (n) S.scanList[at < 0 ? 0 : (at + dir + n) % n].focus({ preventScroll: true });
+      return;
+    }
     if (/^[1-6]$/.test(e.key)) {
       var k = S.optionKeys[parseInt(e.key, 10) - 1];
       if (k) { e.preventDefault(); press(k, "key"); }
@@ -549,7 +645,8 @@
 
   /* 毎こま = 滞留・走査・表示の秒 */
   function frame(now) {
-    if (S.dwellMs > 0 && !S.overlay) {
+    now = performance.now();  // Use one clock even after adopting the DOM into PiP.
+    if (S.dwellMs > 0 && S.pointerType !== "touch" && !S.overlay && inputActive()) {
       var r = S.dwell.update(S.over, now);
       setFill(r.target, r.progress);
       if (r.fire) {
@@ -564,7 +661,7 @@
       if (card && card.state === "deciding") {
         var u = $("undo-btn");                               /* 猶予のうち = 走査を止め、次の押下 = 取り消す */
         target = u.hidden ? null : u;
-      } else if (card && card.state === "shown" && !S.overlay && !S.answering) {
+      } else if (card && card.state === "shown" && !S.overlay && !S.answering && inputActive()) {
         var i = S.scan.index(now, S.scanList.length);
         target = i >= 0 ? S.scanList[i] : null;
       }
@@ -572,13 +669,68 @@
         if (S.scanEl) S.scanEl.classList.remove("scan");
         if (target) target.classList.add("scan");
         S.scanEl = target;
+        spotlight(target);
       }
     }
     if (now - S.sideAt > 250) {
       S.sideAt = now;
       updateSide(now);
     }
-    window.requestAnimationFrame(frame);
+    rafWindow = viewWindow;
+    rafId = viewWindow.requestAnimationFrame(frame);
+  }
+
+  function inputActive() { return !viewDocument.hidden && viewDocument.hasFocus(); }
+
+  function restartFrames() {
+    if (rafId !== null) rafWindow.cancelAnimationFrame(rafId);
+    rafWindow = viewWindow;
+    rafId = viewWindow.requestAnimationFrame(frame);
+  }
+
+  function bindInputs(w) {
+    var d = w.document;
+    function active(fn) { return function (e) { if (w === viewWindow) fn(e); }; }
+    d.addEventListener("pointermove", active(onPointer), { passive: true });
+    d.addEventListener("pointerover", active(onPointer), { passive: true });
+    d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; }), { passive: true, capture: true });
+    d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; }));
+    w.addEventListener("blur", active(releaseDwell));
+    w.addEventListener("focus", active(function () { releaseDwell(); S.scan.restart(performance.now()); }));
+    d.addEventListener("visibilitychange", active(releaseDwell));
+    d.addEventListener("keydown", active(onKeyDown));
+    d.addEventListener("keyup", active(function (e) { delete S.held[e.code || e.key]; }));
+    d.addEventListener("click", active(onClick));
+    d.addEventListener("focusin", active(function (e) { spotlight(e.target); }));
+  }
+
+  function openPip() {
+    if (viewWindow !== window) { viewWindow.close(); return; }
+    if (!window.documentPictureInPicture || S.pipOpening) return;
+    S.pipOpening = true;
+    var width = S.fan ? Math.max(420, parseFloat($("fan").style.width) * S.options.scale + 20) : 420;
+    var height = Math.max(640, width + 240);
+    window.documentPictureInPicture.requestWindow({ width: width, height: height }).then(function (w) {
+      var surface = $("surface");
+      w.addEventListener("pagehide", function () {
+        if (viewWindow !== w) return;
+        homeDocument.body.appendChild(surface);
+        viewWindow = window; viewDocument = homeDocument;
+        S.lastX = -1; S.over = null;
+        setChrome(); S.key = ""; refreshView(); restartFrames();
+      }, { once: true });
+      var link = w.document.createElement("link");
+      link.rel = "stylesheet"; link.href = location.origin + "/static/board.css";
+      w.document.head.appendChild(link);
+      w.document.body.appendChild(surface);
+      viewWindow = w; viewDocument = w.document;
+      bindInputs(w);
+      S.lastX = -1; S.over = null;
+      setChrome(); S.key = ""; refreshView(); restartFrames();
+    }).catch(function () {
+      if (viewWindow !== window) viewWindow.close();
+      showNotice(L().pip_error);
+    }).then(function () { S.pipOpening = false; });
   }
 
   /* ---- 携帯で開く・設定 (キーと click だけ) ---- */
@@ -613,6 +765,8 @@
     var lb = el("label");
     lb.appendChild(el("span", "", label));
     var sel = el("select");
+    cur = String(cur);
+    if (!opts.some(function (o) { return o[0] === cur; })) opts = opts.concat([[cur, cur]]);
     sel.name = name;
     opts.forEach(function (o) {
       var op = el("option", "", o[1]);
@@ -625,9 +779,20 @@
     body.appendChild(lb);
   }
 
+  function addInput(body, label, name, value, min, max) {
+    var lb = el("label"), input = el("input");
+    lb.appendChild(el("span", "", label));
+    input.name = name; input.value = value;
+    input.type = min === undefined ? "text" : "number";
+    if (min !== undefined) { input.min = min; input.max = max; input.step = "any"; }
+    else input.maxLength = 32;
+    input.addEventListener("change", function () { setParam(name, input.value); input.value = S.options[name]; });
+    lb.appendChild(input); body.appendChild(lb);
+  }
+
   function openGear() {
     var T = L();
-    var q = new URLSearchParams(location.search);
+    var o = S.options;
     showPanel(T.settings, function (body) {
       addSelect(body, T.set_dwell, "dwell",
                 [["0", "0"], ["0.8", "0.8"], ["1", "1.0"], ["1.2", "1.2"], ["1.5", "1.5"], ["2", "2.0"]],
@@ -635,15 +800,26 @@
       addSelect(body, T.set_scan, "scan",
                 [["off", T.off], ["1", "1.0"], ["1.5", "1.5"], ["2", "2.0"], ["3", "3.0"]],
                 S.scanMs ? String(S.scanMs / 1000) : "off");
-      addSelect(body, T.set_lang, "lang", [["", T.auto], ["ja", "日本語"], ["en", "English"]], q.get("lang") || "");
+      addInput(body, T.set_key, "key", o.key);
+      addSelect(body, T.set_lang, "lang", [["auto", T.auto], ["ja", "日本語"], ["en", "English"]], o.lang);
       addSelect(body, T.set_sound, "sound", [["off", T.off], ["on", T.on]], S.sound ? "on" : "off");
+      addSelect(body, T.set_mode, "mode", [["small", T.small], ["large", T.large]], o.mode);
+      addInput(body, T.set_scale, "scale", o.scale, .75, 2);
+      addInput(body, T.set_font, "font", o.font, .8, 2);
+      addSelect(body, T.set_theme, "theme", [["auto", T.auto], ["light", T.light], ["dark", T.dark], ["contrast", T.contrast]], o.theme);
+      addSelect(body, T.set_desc, "desc", [["on", T.on], ["off", T.off]], o.desc);
+      addSelect(body, T.set_trail, "trail", [["off", T.off], ["on", T.on]], o.trail);
     });
   }
 
   function setParam(name, value) {
     var p = new URLSearchParams(location.search);
-    if (value === "" || (name === "scan" && value === "off")) p.delete(name);
-    else p.set(name, value);
+    p.set(name, value);
+    try {
+      var saved = C.parseOptions("", savedOptions());
+      saved[name] = C.parseOptions(p.toString(), saved)[name];
+      window.localStorage.setItem("blemma.options", JSON.stringify(saved));
+    } catch (e) { /* URL still works when local storage is disabled. */ }
     var qs = p.toString();
     history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
     readSettings();
@@ -656,11 +832,20 @@
 
   function setChrome() {
     var T = L();
-    document.documentElement.lang = S.lang;
+    viewDocument.documentElement.lang = S.lang;
+    viewDocument.documentElement.dataset.theme = S.options.theme;
+    viewDocument.documentElement.style.zoom = S.options.scale === 1 ? "" : String(S.options.scale);
+    viewDocument.documentElement.style.setProperty("--font", String(S.options.font));
+    viewDocument.title = S.mode === "small" ? "BLEMMA · 扇 (OhGi)" : "BLEMMA";
     $("stats-reset").textContent = T.reset;
     $("phone-btn").textContent = T.phone;
     $("gear-btn").textContent = T.settings;
     $("panel-close").textContent = T.close;
+    $("gear-btn").textContent = S.mode === "small" ? "⚙" : T.settings;
+    $("gear-btn").setAttribute("aria-label", T.settings);
+    $("pip-btn").hidden = S.mode !== "small" || !window.documentPictureInPicture;
+    $("pip-btn").textContent = viewWindow === window ? T.pip : T.pip_back;
+    $("trail").hidden = S.options.trail !== "on";
   }
 
   function init() {
@@ -669,17 +854,7 @@
     setChrome();
     S.key = C.viewKey(null, S.ui, S.lang);
     render();
-    document.addEventListener("pointermove", onPointer, { passive: true });
-    document.addEventListener("pointerover", onPointer, { passive: true });
-    document.addEventListener("pointerdown", function (e) {
-      S.pointerType = e.pointerType || "mouse";
-    }, { passive: true, capture: true });
-    document.documentElement.addEventListener("pointerleave", function () { S.over = null; });
-    window.addEventListener("blur", function () { releaseDwell(); S.held = {}; });
-    document.addEventListener("visibilitychange", releaseDwell);
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("keyup", function (e) { delete S.held[e.code || e.key]; });
-    document.addEventListener("click", onClick);
+    bindInputs(window);
     window.addEventListener("hashchange", function () {
       var old = S.token;
       readToken();
@@ -692,7 +867,7 @@
         else { S.kicked = true; S.abort.abort(); }
       }
     });
-    window.requestAnimationFrame(frame);
+    restartFrames();
     if (!S.token) { S.problem = L().no_token; updateSide(performance.now()); return; }
     poll();
   }

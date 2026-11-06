@@ -19,7 +19,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, parse_qsl, urlencode
 
 from hooks._client import _Connection as _DeadlineConnection
 
@@ -33,7 +33,20 @@ HOOKS = (
     ("Elicitation", ".*", "elicitation.py", 600),
     ("Notification", "permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input",
      "notify.py", 10),
+    ("UserPromptSubmit", None, "state.py", 5),
+    ("Stop", None, "state.py", 5),
 )
+PAGE_KEYS = frozenset(("dwell", "scan", "key", "lang", "sound", "mode", "scale", "font", "theme", "desc", "trail"))
+
+
+def page_options(environment: str, assignments: list[str]) -> dict[str, str]:
+    """Only display keys enter the URL. Values are validated by the shared page parser."""
+    options = {k: v for k, v in parse_qsl(environment, keep_blank_values=True) if k in PAGE_KEYS}
+    for assignment in assignments:
+        key, sep, value = assignment.partition("=")
+        if sep and key in PAGE_KEYS:
+            options[key] = value
+    return options
 
 
 class LaunchError(Exception):
@@ -85,7 +98,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                       help="小窓 (既定)\nSmall app window (default)")
     mode.add_argument("--large", dest="mode", action="store_const", const="large",
                       help="既定のブラウザで開く\nOpen in the default browser")
-    parser.set_defaults(mode="small")
+    parser.set_defaults(mode=None)
+    parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                        help="頁の設定 (繰り返し可・BLEMMA_OPTS より優先)\nPage option (repeatable; overrides BLEMMA_OPTS)")
     parser.add_argument("--port", type=int, default=8765, metavar="PORT",
                         help="新しく起こす板のポート (既定 8765)\nPort for a new board (default: 8765)")
     parser.add_argument("--keep-board", action="store_true",
@@ -94,14 +109,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="板と設定を用意し、Claude の起動行だけ表示 (板を残すには --keep-board)\n"
                              "Prepare the board/configs and print the Claude command (--keep-board retains the board)")
     parser.add_argument("--window-size", type=size_value,
-                        default=os.environ.get("BLEMMA_WINDOW_SIZE", "480,360"), metavar="W,H",
-                        help="小窓の幅,高さ (BLEMMA_WINDOW_SIZE・既定 480,360)\n"
-                             "Window size (BLEMMA_WINDOW_SIZE; default: 480,360)")
+                        default=os.environ.get("BLEMMA_WINDOW_SIZE", "420,640"), metavar="W,H",
+                        help="小窓の幅,高さ (BLEMMA_WINDOW_SIZE・既定 420,640)\n"
+                             "Window size (BLEMMA_WINDOW_SIZE; default: 420,640)")
     parser.add_argument("--window-position", type=position_value,
                         default=os.environ.get("BLEMMA_WINDOW_POSITION", "bottom-right"), metavar="X,Y",
                         help="小窓の位置 (BLEMMA_WINDOW_POSITION・既定 右下)\n"
                              "Window position (BLEMMA_WINDOW_POSITION; default: bottom-right)")
     args = parser.parse_args(argv[:split])
+    args.page_options = page_options(os.environ.get("BLEMMA_OPTS", ""), args.set)
+    option_mode = args.page_options.pop("mode", "small")
+    args.mode = args.mode or (option_mode if option_mode in ("small", "large") else "small")
     if not 1 <= args.port <= 65535:
         parser.error("port")
     args.claude_args = argv[split + 1:]
@@ -113,10 +131,10 @@ def settings_data(root: Path) -> dict:
     return {
         "permissions": {"allow": ["mcp__blemma__ask_board"]},
         "hooks": {
-            event: [{"matcher": matcher, "hooks": [{
+            event: [{**({"matcher": matcher} if matcher else {}), "hooks": [{
                 "type": "command", "command": python_executable(),
                 "args": [str(root / "hooks" / name)], "timeout": timeout,
-                "statusMessage": STATUS_MESSAGE,
+                **({"statusMessage": STATUS_MESSAGE} if name != "state.py" else {}),
             }]}] for event, matcher, name, timeout in HOOKS
         },
     }
@@ -331,8 +349,9 @@ def work_area() -> tuple[int, int, int, int] | None:
 
 
 def open_board(info: RunInfo, mode: str, size: tuple[int, int],
-               position: tuple[int, int] | None) -> None:
-    url = f"http://127.0.0.1:{info.port}/?mode={mode}#t={quote(info.token, safe='')}"
+               position: tuple[int, int] | None, options: dict[str, str] | None = None) -> None:
+    query = urlencode({"mode": mode, **{k: v for k, v in (options or {}).items() if k in PAGE_KEYS and k != "mode"}})
+    url = f"http://127.0.0.1:{info.port}/?{query}#t={quote(info.token, safe='')}"
     browser = find_app_browser() if mode == "small" else None
     if browser and position is None:
         area = work_area()
@@ -411,7 +430,8 @@ def launch(args: argparse.Namespace, root: Path) -> int:
     session = ensure_board(root, args.port)
     completed = False
     try:
-        open_board(session.info, args.mode, args.window_size, args.window_position)
+        open_board(session.info, args.mode, args.window_size, args.window_position, **(
+            {"options": args.page_options} if args.page_options else {}))
         paths = write_configs(root)
         executable = find_claude()
         command = claude_command(executable, paths, args)

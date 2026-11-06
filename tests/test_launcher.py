@@ -39,7 +39,7 @@ def no_external_apps(monkeypatch):
 
     monkeypatch.setattr(subprocess, "Popen", guarded)
     monkeypatch.setattr(L.webbrowser, "open", unexpected_browser)
-    for name in ("BLEMMA_WINDOW_SIZE", "BLEMMA_WINDOW_POSITION"):
+    for name in ("BLEMMA_WINDOW_SIZE", "BLEMMA_WINDOW_POSITION", "BLEMMA_OPTS"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("BLEMMA_DEBUG", "0")
 
@@ -192,13 +192,15 @@ def test_generated_configs_and_templates(isolated_repo, monkeypatch):
         "Elicitation": (".*", "elicitation.py", 600),
         "Notification": ("permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input",
                          "notify.py", 10),
+        "UserPromptSubmit": (None, "state.py", 5),
+        "Stop": (None, "state.py", 5),
     }
     assert set(settings["hooks"]) == set(expected)
     for event, (matcher, name, timeout) in expected.items():
-        assert settings["hooks"][event] == [{"matcher": matcher, "hooks": [{
+        assert settings["hooks"][event] == [{**({"matcher": matcher} if matcher else {}), "hooks": [{
             "type": "command", "command": L.python_executable(),
             "args": [str(isolated_repo / "hooks" / name)], "timeout": timeout,
-            "statusMessage": "BLEMMA: 板 (ブラウザ) で答えを待っています / waiting on the board",
+            **({"statusMessage": L.STATUS_MESSAGE} if name != "state.py" else {}),
         }]}]
         assert (REPO / "hooks" / name).is_file()
     assert Path(L.python_executable()).is_absolute()
@@ -235,7 +237,7 @@ def test_flags_and_passthrough(tmp_path, demo):
     assert L.claude_command(None, paths, args) == expected + extra
     assert args.mode == "large" and args.port == 12345
     defaults = L.parse_args([])
-    assert defaults.mode == "small" and defaults.window_size == (480, 360)
+    assert defaults.mode == "small" and defaults.window_size == (420, 640)
     assert defaults.window_position is None and defaults.claude_args == []
 
 
@@ -246,6 +248,22 @@ def test_geometry_env_and_argument_precedence(monkeypatch):
     assert args.window_size == (640, 400) and args.window_position == (-200, 20)
     args = L.parse_args(["--window-size", "500,300", "--window-position=30,-10"])
     assert args.window_size == (500, 300) and args.window_position == (30, -10)
+
+
+def test_page_options_environment_repeated_set_and_url(monkeypatch):
+    monkeypatch.setenv("BLEMMA_OPTS", "scale=1.25&theme=dark&mode=large&scan&unknown=ignored")
+    args = L.parse_args(["--set", "theme=light", "--set", "theme=contrast", "--set", "desc=off"])
+    assert args.mode == "large"
+    assert args.page_options == {"scale": "1.25", "theme": "contrast", "scan": "", "desc": "off"}
+    assert L.parse_args(["--small"]).mode == "small"
+    assert L.parse_args(["--set", "mode=small"]).mode == "small"
+    urls = []
+    monkeypatch.setattr(L.webbrowser, "open", lambda url: urls.append(url) or True)
+    L.open_board(L.RunInfo(18770, "test-placeholder", 123), args.mode, (420, 640), None, args.page_options)
+    url = urlsplit(urls[0])
+    assert parse_qs(url.query, keep_blank_values=True) == {
+        "mode": ["large"], "scale": ["1.25"], "theme": ["contrast"], "scan": [""], "desc": ["off"]}
+    assert url.fragment == "t=test-placeholder"
 
 
 @pytest.mark.parametrize("argv", [

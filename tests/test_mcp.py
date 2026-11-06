@@ -172,6 +172,65 @@ def text_result(result):
     return result["content"][0]["text"]
 
 
+@pytest.mark.parametrize("descriptions", [None, ["案を確認します", "試験だけを実行します"]])
+def test_descriptions_are_optional_schema_annotations(client, descriptions):
+    args = dict(ARGS)
+    if descriptions is not None:
+        args["descriptions"] = descriptions
+    rid = client.call(args)
+    elicit = client.elicit()
+    opts = elicit["params"]["requestedSchema"]["properties"]["choice"]["oneOf"]
+    if descriptions is None:
+        assert all("description" not in o for o in opts)
+    else:
+        assert [o["description"] for o in opts[:2]] == descriptions
+        assert "description" not in opts[-1]  # The automatically added stop has no invented explanation.
+    client.answer(elicit, {"action": "cancel"})
+    assert not client.result(rid).get("isError")
+
+
+@pytest.mark.parametrize("descriptions", [[], ["one"], ["a", "b", "c"], "bad", ["a", 2], None])
+def test_invalid_descriptions_are_rejected(client, descriptions):
+    rid = client.call({**ARGS, "descriptions": descriptions})
+    assert client.result(rid)["isError"]
+
+
+@pytest.mark.parametrize("drop_descriptions", [False, True])
+def test_descriptions_through_real_elicitation_hook_and_board(client, live, drop_descriptions):
+    srv = live()
+    rid = client.call({**ARGS, "descriptions": ["案の全文を読みます", "試験を実行します"]})
+    elicitation = client.elicit()
+    schema = elicitation["params"]["requestedSchema"]
+    if drop_descriptions:
+        for option in schema["properties"]["choice"]["oneOf"]:
+            option.pop("description", None)
+    data = {"hook_event_name": "Elicitation", "mode": "form", "mcp_server_name": "blemma",
+            "session_id": "abcdef1234", "message": ARGS["title"], "requested_schema": schema}
+    env = {**os.environ, "BLEMMA_RUN_FILE": str(srv.run_file), "BLEMMA_DEBUG": "0"}
+    process = subprocess.Popen([sys.executable, "-I", "-B", str(ROOT / "hooks" / "elicitation.py")],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    try:
+        process.stdin.write(json.dumps(data).encode())
+        process.stdin.close()
+        card = srv.wait_card()
+        option = card["payload"]["fields"][0]["options"][1]
+        assert option.get("description") == (None if drop_descriptions else "試験を実行します")
+        assert srv.request("POST", "/answer", {"id": card["id"], "seq": card["view_seq"],
+                                                "choice": {"type": "accept", "picks": [[1]]}, "by": "key"})[0] == 200
+        process.wait(timeout=5)
+        assert process.returncode == 0 and process.stderr.read() == b""
+        output = json.loads(process.stdout.read())["hookSpecificOutput"]
+        assert output == {"hookEventName": "Elicitation", "action": "accept", "content": {"choice": "2"}}
+        client.answer(elicitation, {k: output[k] for k in ("action", "content")})
+        assert json.loads(text_result(client.result(rid)))["answer"] == ARGS["choices"][1]
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        process.stdout.close()
+        process.stderr.close()
+
+
 @pytest.mark.parametrize("action", ["accept", "decline", "cancel", "cancelled"])
 def test_response_table(client, action):
     rid = client.call()

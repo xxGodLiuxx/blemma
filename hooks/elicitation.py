@@ -131,6 +131,15 @@ def field_of(name: str, spec: Any, required: bool, free: bool) -> Optional[dict]
         return None
     if not 1 <= len(options) <= MAX_FIELD_OPTIONS:
         return None
+    # Description is an optional JSON Schema annotation. Its loss must never
+    # change option indices, labels, values, or the validity of the card.
+    source = spec.get("items", {}) if typ == "array" else spec
+    if isinstance(source, dict) and not isinstance(source.get("enum"), list):
+        entries = source.get("oneOf", source.get("anyOf"))
+        if isinstance(entries, list) and len(entries) == len(options):
+            for option, entry in zip(options, entries):
+                if isinstance(entry, dict) and isinstance(entry.get("description"), str):
+                    option["description"] = entry["description"]
     field = {"name": name, "title": title, "multi": multi, "required": required, "options": options}
     if least is not None:
         field["min_picks"] = least

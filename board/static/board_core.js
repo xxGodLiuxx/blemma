@@ -30,6 +30,10 @@
         "転送の先へ札の本文と token が渡ります。token は起動ごとに替わります。",
       settings: "設定", set_dwell: "滞留 (秒・0 = click だけ)", set_scan: "走査 (秒・切 = なし)",
       set_lang: "言葉", set_sound: "音", off: "切", on: "入", auto: "自動",
+      set_mode: "表示", set_scale: "全体の倍率", set_font: "字の倍率", set_theme: "配色", set_desc: "解説",
+      set_key: "スイッチのキー", set_trail: "視線の点", small: "扇 (OhGi)", large: "大きな板",
+      light: "明るい", dark: "暗い", contrast: "高コントラスト", pip: "常に手前", pip_back: "元の窓へ",
+      pip_error: "常に手前を開けませんでした", idle_line: "Claude が訊くと、ここに表示します",
       no_token: "token がありません。server.py の端末に出た URL (#t= つき) で開いてください",
       bad_token: "token が違います。server を起こし直した時は、新しい URL で開いてください",
       offline: "板の server に繋がりません (繋ぎ直しています)",
@@ -72,6 +76,10 @@
         "The card text and the token travel to wherever you forward. The token changes on every launch.",
       settings: "Settings", set_dwell: "Dwell (s, 0 = click only)", set_scan: "Scan (s, off = none)",
       set_lang: "Language", set_sound: "Sound", off: "off", on: "on", auto: "auto",
+      set_mode: "View", set_scale: "Overall scale", set_font: "Text scale", set_theme: "Theme", set_desc: "Descriptions",
+      set_key: "Switch key", set_trail: "Pointer trail", small: "OhGi", large: "Large board",
+      light: "Light", dark: "Dark", contrast: "High contrast", pip: "Always on top", pip_back: "Return to window",
+      pip_error: "Could not open always on top", idle_line: "Questions from Claude appear here",
       no_token: "No token. Open the URL (with #t=) printed by server.py",
       bad_token: "Wrong token. If the server was restarted, open the new URL",
       offline: "Cannot reach the board server (reconnecting)",
@@ -136,6 +144,37 @@
     if (!isFinite(x) || x <= 0) return 0;
     if (x > 20) x = x / 1000;
     return Math.round(Math.min(10, Math.max(0.5, x)) * 1000);
+  }
+
+  var OPTION_DEFAULTS = { dwell: "1", scan: "off", key: "Space", lang: "auto", sound: "off",
+    mode: "large", scale: 1, font: 1, theme: "auto", desc: "on", trail: "off" };
+
+  function parseOptions(query, saved) {
+    var q = new URLSearchParams(query), out = {};
+    saved = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+    Object.keys(OPTION_DEFAULTS).forEach(function (key) {
+      var fallback = OPTION_DEFAULTS[key];
+      var v = q.has(key) ? q.get(key) : Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : fallback;
+      var s = typeof v === "string" || typeof v === "number" ? String(v) : "!invalid";
+      var enums = {mode: ["small", "large"], lang: ["auto", "ja", "en"], theme: ["auto", "light", "dark", "contrast"]};
+      if (enums[key]) out[key] = enums[key].indexOf(s) >= 0 ? s : fallback;
+      else if (["sound", "desc", "trail"].indexOf(key) >= 0) {
+        out[key] = ["on", "true", "1", ""].indexOf(s) >= 0 ? "on" :
+          ["off", "false", "0"].indexOf(s) >= 0 ? "off" : fallback;
+      } else if (key === "key") {
+        out[key] = s === " " ? "Space" : /^(?:[A-Za-z0-9]|Space|Enter|NumpadEnter|Tab|Escape|Backspace|Arrow(?:Left|Right|Up|Down)|F(?:[1-9]|1[0-9]|2[0-4])|Key[A-Z]|Digit[0-9]|Numpad[0-9])$/.test(s) ? s : fallback;
+      } else {
+        var x = /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(s) ? Number(s) : NaN;
+        if (key === "scan" && ["", "on", "true"].indexOf(s) >= 0) x = 1.5;
+        if (key === "scan" && ["off", "false"].indexOf(s) >= 0) x = 0;
+        if ((key === "dwell" && x > 10) || (key === "scan" && x > 20)) x /= 1000;
+        var lo = {scale: .75, font: .8, dwell: .3, scan: .5}[key];
+        var hi = {scale: 2, font: 2, dwell: 5, scan: 10}[key];
+        out[key] = Number.isFinite(x) && (x >= lo && x <= hi || x === 0 && (key === "scan" || key === "dwell")) ?
+          (key === "scale" || key === "font" ? x : key === "scan" && x === 0 ? "off" : String(x)) : fallback;
+      }
+    });
+    return out;
   }
 
   function mmss(sec) {
@@ -285,6 +324,75 @@
     var st = steps(card);
     if (st.length > 1) return true;
     return st.some(function (s) { return isMulti(card, s); });
+  }
+
+  /* Small mode reuses the very same actions, including auxiliary choices. */
+  function fanEligible(card, ui, screen) {
+    if (!card || !ui || !screen || screen.summary) return false;
+    if (card.kind !== "permission" && (steps(card).length !== 1 || needConfirm(card) || ui.step !== 0)) return false;
+    return screen.options.length >= 2 && screen.options.length <= 6;
+  }
+
+  /* Angles run clockwise from noon. The two exits never move. Minimum inner
+   * chord AND radial depth are 90 CSS px at scale=1; larger fans scroll rather
+   * than silently shrinking targets. Polygon coordinates include the centre hole. */
+  function fanLayout(n) {
+    if (!Number.isInteger(n) || n < 2 || n > 6) return null;
+    var angles = [];
+    for (var i = 0; i < n; i++) angles.push(-112.5 + (i + 0.5) * 225 / n);
+    var first = angles.reduce(function (best, a, i) {
+      return Math.abs(a) < Math.abs(angles[best]) ||
+        (Math.abs(a) === Math.abs(angles[best]) && a > angles[best]) ? i : best;
+    }, 0);
+    var parts = angles.map(function (a, i) {
+      return { key: "option", index: (i - first + n) % n, angle: (a + 360) % 360 };
+    });
+    parts.push({ key: "fixed", angle: 225 }, { key: "terminal", angle: 135 });
+    parts.sort(function (a, b) { return a.angle - b.angle; });
+    parts.forEach(function (p, i) {
+      var prev = parts[(i + parts.length - 1) % parts.length].angle;
+      var next = parts[(i + 1) % parts.length].angle;
+      p.start = p.angle - ((p.angle - prev + 360) % 360) / 2 + 1;
+      p.end = p.angle + ((next - p.angle + 360) % 360) / 2 - 1;
+    });
+    var narrowest = Math.min.apply(null, parts.map(function (p) { return p.end - p.start; }));
+    var inner = Math.ceil(90 / (2 * Math.sin(narrowest * Math.PI / 360)));
+    var outer = Math.max(180, inner + 90), size = 2 * outer;
+    function point(r, a) {
+      return [outer + r * Math.sin(a * Math.PI / 180), outer - r * Math.cos(a * Math.PI / 180)];
+    }
+    parts.forEach(function (p) {
+      var points = [], count = Math.ceil((p.end - p.start) / 3);
+      for (var j = 0; j <= count; j++) points.push(point(outer, p.start + (p.end - p.start) * j / count));
+      for (var k = count; k >= 0; k--) points.push(point(inner, p.start + (p.end - p.start) * k / count));
+      p.polygon = "polygon(" + points.map(function (v) {
+        return (v[0] / size * 100).toFixed(4) + "% " + (v[1] / size * 100).toFixed(4) + "%";
+      }).join(",") + ")";
+      p.label = point((inner + outer) / 2, p.angle);
+      p.width = 2 * inner * Math.sin((p.end - p.start) * Math.PI / 360);
+      var a = point(outer - 7, p.start + 1), b = point(outer - 7, p.end - 1);
+      p.arc = "M " + a.join(" ") + " A " + (outer - 7) + " " + (outer - 7) + " 0 0 1 " + b.join(" ");
+    });
+    return { size: size, inner: inner, outer: outer, depth: outer - inner, parts: parts };
+  }
+
+  function actionDescription(card, key, lang) {
+    var ja = lang === "ja";
+    if (key === "terminal") return I18N[lang].terminal_sub;
+    if (!card || card.kind !== "permission") return "";
+    if (key === "allow_once") return ja ? "この1回だけ許可します" : "Allow this one request";
+    if (key === "deny") return ja ? "拒否する理由を選びます" : "Choose a reason to deny";
+    if (key === "fixed") return ja ? "この作業を止めます" : "Stop this work";
+    return "";
+  }
+
+  function priorityState(states, card) {
+    if (card) return { state: "waiting on you", reason: "card", stale: false };
+    var ranks = { "waiting on you": 3, done: 2, working: 1 };
+    return (Array.isArray(states) ? states : []).filter(function (s) { return s && ranks[s.state]; })
+      .slice().sort(function (a, b) {
+        return ranks[b.state] - ranks[a.state] || Number(a.stale) - Number(b.stale) || (a.ago || 0) - (b.ago || 0);
+      })[0] || null;
   }
 
   function newUi(cardId) {
@@ -540,6 +648,9 @@
     parseDwell: parseDwell, parseScan: parseScan, mmss: mmss, Dwell: Dwell, Scan: Scan,
     reasonsOf: reasonsOf, visibleSuggestions: visibleSuggestions, suggestionLabel: suggestionLabel,
     steps: steps, needConfirm: needConfirm, newUi: newUi, uiAfterUndo: uiAfterUndo,
+    fanEligible: fanEligible, fanLayout: fanLayout, actionDescription: actionDescription,
+    priorityState: priorityState,
+    parseOptions: parseOptions, OPTION_DEFAULTS: OPTION_DEFAULTS,
     buildScreen: buildScreen, pressKey: pressKey, choiceLabel: choiceLabel, viewKey: viewKey,
     statsText: statsText, endText: endText, lightText: lightText, zeroPresses: zeroPresses,
     addPresses: addPresses, newPressLedger: newPressLedger, takePressBatches: takePressBatches,
