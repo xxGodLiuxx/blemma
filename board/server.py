@@ -700,6 +700,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "BLEMMA"
     sys_version = ""
     protocol_version = "HTTP/1.0"
+    default_request_version = "HTTP/1.0"   # 壊れた要求の行にも状態行つきで返す (Python 3.10 の既定は HTTP/0.9 扱いで状態行を省く)
 
     @property
     def app(self) -> App:

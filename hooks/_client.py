@@ -106,7 +106,7 @@ multi は値の list・必須の multi を印 0 個で送った時 (min_picks 0)
 
 ### Notification (`hooks/notify.py`)
 
-    _client.notify(data)                       # 1 回 POST して待たない (1 秒で諦める)・返りは見ない
+    _client.notify(data)                       # 1 回 POST して待たない (notify.py は 2 秒で諦める)・返りは見ない
 """
 
 from __future__ import annotations
@@ -124,7 +124,7 @@ from typing import Any, Callable, Optional, Tuple
 # client だけが持つ数 (残りの数は board/server.py の Limits = §3.4 が持ち、/ask の返りで来る)
 # どちらも通信の全体の秒 (総期限・1 回の読み書きの待ちではない)
 ASK_GIVEUP_SEC = 2.0        # POST /ask を諦める秒 (= Limits.ask_giveup)
-NOTIFY_GIVEUP_SEC = 1.0     # POST /notify を諦める秒 (§2.4)
+NOTIFY_GIVEUP_SEC = 1.0     # POST /notify を諦める秒の既定 (§2.4・notify.py は 2.0 に上書きする)
 MAX_DEADLINE_SEC = 3600.0   # server が返す期限の正気の上限 (超える・負 = 壊れた返り)
 MAX_RESPONSE_BYTES = 1_000_000
 MAX_PAYLOAD_BYTES = 256 * 1024   # 札の payload の上限 (ensure_ascii の JSON の bytes・上の docstring)
