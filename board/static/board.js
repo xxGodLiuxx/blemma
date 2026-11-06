@@ -250,16 +250,21 @@
   function spotlight(b) {
     if (S.mode !== "small" || !S.fan) return;
     var on = !!(b && b.dataset && b.dataset.label);
+    S.spotKey = on ? b.dataset.key : null;
+    S.spotBtn = on ? b : null;
     var fit = C.fanScript(on ? b.dataset.label : "", S.fanArcs || [1, 1]);
+    var clipped = fit.clipped;
     [0, 1].forEach(function (i) {
       var t = $("fan-script-" + i);
       if (!t) return;
       t.style.fontSize = fit.size + "px";
       setText(t.firstChild, fit.lines[i]);
+      /* 字の幅は字体ごとに違う = 実際の長さが弧を越えたら、上の欄に全文を残す */
+      if (t.getComputedTextLength && t.getComputedTextLength() > S.fanArcs[i]) clipped = true;
     });
     var desc = on && S.desc ? b.dataset.description || "" : "";
-    $("spot-list").hidden = on && (fit.clipped || !!desc);
-    $("spot-label").hidden = !(on && fit.clipped);
+    $("spot-list").hidden = on && (clipped || !!desc);
+    $("spot-label").hidden = !(on && clipped);
     $("spot-desc").hidden = !desc;
     setText($("spot-label"), on ? b.dataset.label : "");
     setText($("spot-desc"), desc);
@@ -377,6 +382,9 @@
     });
     spotlight(null);
     fitFan();
+    if (viewDocument.fonts && viewDocument.fonts.ready) {       /* 字体の読み込みの後に幅を測り直す */
+      viewDocument.fonts.ready.then(function () { if (S.fan) spotlight(S.spotBtn); });
+    }
     if (S.fanCard !== S.card.id) {                  /* 新しい札で扇を開く動き (CSS・動きを止める設定では動かない) */
       S.fanCard = S.card.id;
       fan.classList.remove("open-anim");
@@ -767,9 +775,13 @@
   /* 毎こま = 滞留・走査・表示の秒 */
   function frame(now) {
     now = performance.now();  // Use one clock even after adopting the DOM into PiP.
+    var dwelling = false;
     if (S.dwellMs > 0 && S.pointerType !== "touch" && !S.overlay && inputActive()) {
       var r = S.dwell.update(S.over, now);
       setFill(r.target, r.progress);
+      dwelling = !!r.target;
+      /* 滞留の間は、数えている羽根の全文を必ず出す = 読んだ字と違う羽根が押されない (線 3) */
+      if (dwelling && S.spotKey !== r.target && S.btns[r.target]) spotlight(S.btns[r.target]);
       if (r.fire) {
         setFill(null, 0);
         S.lastInput = "dwell";
@@ -781,7 +793,7 @@
       var target = null;
       /* 窓の中で pointer が動いている間は光を回さない = 視線で読み押す人の邪魔をしない。
        * pointer が止まっているか窓の外なら回る (スイッチの人・OS の鍵盤を見ている時)。 */
-      var moving = now - (S.pointerAt || -1e9) < 1500;
+      var moving = dwelling || now - (S.pointerAt || -1e9) < 1500;
       if (moving) S.scanPaused = true;
       else if (S.scanPaused) { S.scanPaused = false; S.scan.restart(now); }
       if (card && card.state === "deciding") {

@@ -457,3 +457,10 @@ console.log(JSON.stringify({keys:m.options.map(o=>o.key), fits:core.fanEligible(
 """)
     assert "decline" in out["keys"] and out["fits"] is True
 
+
+def test_script_and_arrow_keys_cannot_change_the_text_while_dwelling():
+    """滞留の間は全文を数えている羽根に固定し、走査を止める (外部のレビュー 4 巡目の BLOCKER の反例)。"""
+    src = (Path(__file__).resolve().parent.parent / "board" / "static" / "board.js").read_text(encoding="utf-8")
+    assert "if (dwelling && S.spotKey !== r.target && S.btns[r.target]) spotlight(S.btns[r.target]);" in src
+    assert "var moving = dwelling || now - (S.pointerAt || -1e9) < 1500;" in src
+

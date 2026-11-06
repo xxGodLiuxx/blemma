@@ -129,6 +129,7 @@ async function closeCard(id) {
   // Pointer has not re-entered: a second answer must not occur.
   await sleep(600); assert((await api('/pending')).card.state==='shown');
   await mouse({x:5,y:5});
+  await sleep(1700);   // pointer が止まってから走査が回る
   await key(' ','Space');
   await until(`!document.querySelector('#undo-zone').hidden`);
   await mouse(await point('#undo-btn'));

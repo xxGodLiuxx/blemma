@@ -329,6 +329,7 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
 .fan-aux { position: absolute; right: 0; bottom: 0; display: flex; gap: 6px; }
 .small .fan-aux .btn { min-width: 96px; min-height: 44px; padding: 4px 12px; font-size: calc(16px * var(--font, 1)); background: transparent; border-width: 1px; border-radius: 6px; }
 .small .fan-aux .btn .num, .small .fan-aux .btn .desc { display: none; }
+.small .fan-aux .btn:is(:hover, :focus-visible, .scan) { background: var(--sec-on-bg); color: var(--sec-on-fg); }
 .fan-time { position: absolute; left: 50%; top: calc(var(--cy, 50%) - 40px); transform: translate(-50%, -50%); padding: 0 8px; background: var(--bg); border-radius: 6px; z-index: 1; font-size: calc(16px * var(--font, 1)); font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; pointer-events: none; }
 .small .undo-zone { top: 64px; padding: 6px; width: calc(100vw - 20px); max-height: 152px; overflow: auto; }
 .small .undo-label { font-size: calc(16px * var(--font, 1)); margin: 0 0 4px; max-height: 32px; overflow: auto; }
