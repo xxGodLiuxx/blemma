@@ -44,7 +44,7 @@ function loadPage(fetchImpl) {
   let src = fs.readFileSync(%(page)s, "utf8");
   const re = /\n  init\(\);(\r?\n)/;
   if (!re.test(src)) throw new Error("board.js の init(); の行が見つからない");
-  src = src.replace(re, "\n  window.__t = { S: S, press: press, releaseDwell: releaseDwell, bindInputs: bindInputs, inputActive: inputActive, selectWindow: function(w) { viewWindow=w; viewDocument=w.document; }, onClick: onClick, disarm: disarm, fitFan: fitFan, windowCall: windowCall, poll: poll, goneSince: goneSince, bumpGen: bumpGen, onPointer: onPointer, letGo: letGo, pushShape: pushShape, window: window, frame: frame, forgetSends: forgetSends, startDrag: startDrag, endDrag: endDrag, fitWindow: fitWindow, windowMoved: windowMoved, onKeyDown: onKeyDown, togglePin: togglePin };$1");
+  src = src.replace(re, "\n  window.__t = { S: S, press: press, releaseDwell: releaseDwell, bindInputs: bindInputs, inputActive: inputActive, selectWindow: function(w) { viewWindow=w; viewDocument=w.document; }, onClick: onClick, disarm: disarm, fitFan: fitFan, windowCall: windowCall, poll: poll, goneSince: goneSince, bumpGen: bumpGen, onPointer: onPointer, letGo: letGo, pushShape: pushShape, window: window, frame: frame, forgetSends: forgetSends, startDrag: startDrag, endDrag: endDrag, fitWindow: fitWindow, windowMoved: windowMoved, onKeyDown: onKeyDown, togglePin: togglePin, scrolled: scrolled, placeWindow: placeWindow, apply: apply };$1");
   const win = { BlemmaCore: core, crypto: require("crypto").webcrypto };
   vm.runInNewContext(src, { window: win, document: {}, performance: performance, fetch: fetchImpl,
                             setTimeout: setTimeout, clearTimeout: clearTimeout, console: console,
@@ -1106,6 +1106,313 @@ now = 3010; t.frame(now); seen.fan = brought;              /* 扇では送らな
 console.log(JSON.stringify(seen));
 """).replace("__CARD__", json.dumps(card)))
     assert out == {"list": 1, "next": 2, "fan": 2}
+
+
+# ---- 4 巡目 (反証役の所見): 送られた列・人が置いた焦点・スイッチの 2 打目・入口ごとの見張り ----
+
+DWELL_STAGE = r"""
+const plain = { disabled: false, style: { setProperty: function () {} } };
+function stage(t, dwellMs) {                           /* 滞留を回せる最小の窓 (DOM なし) */
+  t.S.btns = { allow_once: plain, deny: plain };
+  t.S.dwellMs = dwellMs; t.S.dwell = new core.Dwell(dwellMs, 150);
+  t.S.sideAt = Infinity; t.S.mode = "small"; t.S.options = core.parseOptions("", {});
+  t.selectWindow({ document: { hidden: false, elementFromPoint: function () { return null; } },
+                   requestAnimationFrame: function () { return 1; } });
+}
+function under(key) { return { closest: function (s) { return key && s === "[data-dwell]" ? { disabled: false, hidden: false, dataset: { key: key } } : null; } }; }
+function move(t, key, buttons) { t.onPointer({ buttons: buttons || 0, pointerType: "mouse", clientX: 40, clientY: 40, target: under(key) }); }
+function frames(t, from, to) { for (now = from; now <= to; now += 16) t.frame(now); return sent.length; }
+"""
+
+
+def test_a_scrolled_list_does_not_press_what_arrives_under_the_pointer(tmp_path, clock):
+    """頁や列が送られると、置いたままの pointer の下の物が入れ替わる (走査の光が窓の外の釦を見える所へ送る・ホイール)。
+    送られた後に pointer の下へ来た釦は、入り直すまで滞留で押さない (反証役の再現 = 滞留と走査を両方入れた板で、
+    誰も押していないのに答えが送られた)。入り直せば押せる。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + DWELL_STAGE + r"""
+const t = loadPage(function (path, opt) {
+  sent.push({ path: path, by: JSON.parse(opt.body).by });
+  return Promise.resolve(reply(200, { undo_ms: 3000, undo_remaining: 3 }));
+});
+show(t); stage(t, 500);
+const counts = {};
+now = 0; move(t, null);                                /* 釦と釦の間に pointer を置いたまま */
+frames(t, 16, 2000);
+now = 2010; t.scrolled();                              /* 列が送られた (scroll の知らせ) */
+now = 2020; move(t, "allow_once");                     /* ブラウザが配る知らせ = 置いたままの pointer の下に釦が来た */
+counts.resting = frames(t, 2036, 5000);                /* 動かさずに約 3 秒 (滞留 0.5 秒の 6 倍) */
+now = 5010; move(t, null);
+frames(t, 5016, 5200);
+now = 5210; move(t, "allow_once");                     /* 入り直す */
+counts.reentered = frames(t, 5216, 6000);
+setTimeout(function () { console.log(JSON.stringify(Object.assign(counts, { sent: sent }))); }, 20);
+""").replace("__CARD__", json.dumps(card)))
+    assert out == {"resting": 0, "reentered": 1, "sent": [{"path": "/answer", "by": "dwell"}]}
+
+
+def test_the_scan_light_scrolling_the_list_arms_the_same_guard(tmp_path, clock):
+    """走査の光が釦を見える所へ送った時は、scroll の知らせを待たずに、その場で同じ守りを掛ける (知らせは次のこまに来る)。
+    文書の scroll の知らせ (capture) も同じ守りへ繋がっている。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + r"""
+const t = loadPage(function () { throw new Error("通信しない"); });
+show(t);
+function item() { return { classList: { add: function () {}, remove: function () {} }, scrollIntoView: function () {} }; }
+const handlers = {};
+const doc = { hidden: false, addEventListener: function (name, fn) { handlers[name] = fn; }, documentElement: { addEventListener: function () {} } };
+const win = { document: doc, addEventListener: function () {}, requestAnimationFrame: function () { return 1; } };
+t.selectWindow(win); t.bindInputs(win);
+t.S.sideAt = Infinity; t.S.scanMs = 500; t.S.scan = new core.Scan(500); t.S.scanList = [item(), item()];
+t.S.fan = false; t.S.scan.restart(0);
+t.S.dwellMs = 0;                                       /* ここでは守りが掛かる所だけを見る (滞留のこまは回さない) */
+const seen = {};
+t.S.windowAt = -1e9; t.S.firstPointer = false; t.S.over = "allow_once";
+now = 10; t.frame(now);                                /* 光が当たり、見える所へ送った */
+seen.byLight = { at: t.S.windowAt, first: t.S.firstPointer, over: t.S.over };
+t.S.windowAt = -1e9; t.S.firstPointer = false; t.S.over = "allow_once"; t.S.lastX = 77;
+now = 900; handlers.scroll();                          /* ホイールなどで送られた */
+seen.byEvent = { at: t.S.windowAt, first: t.S.firstPointer, over: t.S.over, lastX: t.S.lastX };
+console.log(JSON.stringify(seen));
+""").replace("__CARD__", json.dumps(card)))
+    assert out["byLight"] == {"at": 10, "first": True, "over": None}
+    assert out["byEvent"] == {"at": 900, "first": True, "over": None, "lastX": 77}   # 位置は捨てない (見つめて送る動きが続く)
+
+
+def test_a_key_press_on_a_page_button_keeps_the_focus_where_the_person_put_it(tmp_path, clock):
+    """鍵で使う人のために、表示が替わると先頭の釦へ焦点を置く。ただし、人が自分で置いた焦点 (配色・設定などの釦) は奪わない
+    (反証役の再現 = 配色の釦を鍵で 2 回押すと、2 回目が焦点の移った先頭の羽根 = 許可に当たった)。
+    焦点がどこにも無い時と、描き直しで消えた釦に在った時は、今までどおり先頭へ置く。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + r"""
+const t = loadPage(function () { throw new Error("通信しない"); });
+show(t);
+t.S.scan = new core.Scan(0); t.S.scanMs = 0; t.S.lastInput = "key"; t.S.fan = true;
+let focused = 0;
+const first = { focus: function () { focused += 1; } };
+t.S.scanList = [first];
+const body = { classList: { toggle: function () {} } }, theme = { dataset: { key: "theme" } }, gone = { dataset: { key: "allow_once" } };
+const doc = { hidden: false, body: body, documentElement: {}, elementFromPoint: function () { return null; },
+              contains: function (e) { return e === theme || e === body; } };
+t.selectWindow({ document: doc });
+const seen = {};
+doc.activeElement = theme; t.bumpGen(true); seen.onThemeButton = focused;      /* 人が置いた焦点 = 奪わない */
+doc.activeElement = body; t.bumpGen(true); seen.nowhere = focused;             /* どこにも無い = 先頭へ */
+doc.activeElement = gone; t.bumpGen(true); seen.removedBlade = focused;        /* 描き直しで消えた羽根 = 先頭へ */
+console.log(JSON.stringify(seen));
+""").replace("__CARD__", json.dumps(card)))
+    assert out == {"onThemeButton": 0, "nowhere": 1, "removedBlade": 2}
+
+
+def test_a_press_and_release_inside_one_frame_still_blocks_the_dwell(tmp_path, clock):
+    """押した・離したその場で滞留を解く (こま単位の見張りだけだと、1 こまの内に押して離す速い click の後に
+    「入り直すまで数えない」が掛からない)。pointerdown / pointerup の聞き手から入る。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + DWELL_STAGE + r"""
+const t = loadPage(function (path, opt) {
+  sent.push({ path: path, by: JSON.parse(opt.body).by });
+  return Promise.resolve(reply(200, { undo_ms: 3000, undo_remaining: 3 }));
+});
+show(t); stage(t, 1000);
+const handlers = {};
+const doc = { hidden: false, elementFromPoint: function () { return null; }, addEventListener: function (name, fn, opt) { if (opt && opt.capture) handlers[name] = fn; },
+              documentElement: { addEventListener: function () {} } };
+const win = { document: doc, addEventListener: function () {}, requestAnimationFrame: function () { return 1; } };
+t.selectWindow(win); t.bindInputs(win);
+const counts = {};
+now = 0; move(t, null); frames(t, 16, 700);            /* 守りを使い切ってから */
+now = 710; move(t, "allow_once");
+frames(t, 726, 1200);                                  /* 0.5 秒ぶん数えた所で */
+now = 1204; handlers.pointerdown({ pointerType: "mouse" });
+const down = t.S.down;
+now = 1206; handlers.pointerup({});                    /* 同じこまの内に押して離した */
+counts.afterClick = frames(t, 1216, 4000);             /* そのまま 2.8 秒 = 滞留では押されない */
+now = 4010; move(t, null); frames(t, 4016, 4200);
+now = 4210; move(t, "allow_once");
+counts.reentered = frames(t, 4216, 5400);
+setTimeout(function () { console.log(JSON.stringify(Object.assign(counts, { down: down, sent: sent }))); }, 20);
+""").replace("__CARD__", json.dumps(card)))
+    assert out == {"afterClick": 0, "reentered": 1, "down": True, "sent": [{"path": "/answer", "by": "dwell"}]}
+
+
+def test_a_dwell_shorter_than_the_quiet_moment_cannot_press_right_after_a_change(tmp_path, clock):
+    """0.4 秒より短い滞留 (URL や --set で入れた時) でも、板から表示が替わって 0.4 秒の内には押さない
+    (反証役の再現 = dwell=0.3 と pointer の揺れ 1 こまで、替わって 368 ms 後に新しい札の許可が出た)。
+    押しを捨てるのではなく、数え始めを遅らせる = 見続けていれば 0.4 秒を過ぎた所で押せる。1 秒の滞留は今までどおり。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + DWELL_STAGE + r"""
+function run(dwellMs, until) {
+  const posted = [];
+  const t = loadPage(function (path, opt) { posted.push(now); return Promise.resolve(reply(200, { undo_ms: 3000, undo_remaining: 3 })); });
+  show(t); stage(t, dwellMs);
+  now = 0; move(t, null);
+  for (now = 16; now <= 4990; now += 16) t.frame(now);  /* 守りを使い切ってから */
+  now = 5000; t.S.genAt = 5000;                         /* 板から表示が替わった */
+  now = 5010; move(t, "allow_once");                    /* 揺れで入り直した pointer が、新しい札の許可の上に来た */
+  for (now = 5016; now <= until; now += 16) t.frame(now);
+  return posted;
+}
+const short = run(300, 6000), usual = run(1000, 6500);
+setTimeout(function () { console.log(JSON.stringify({ short: short, usual: usual })); }, 20);
+""").replace("__CARD__", json.dumps(card)))
+    assert len(out["short"]) == 1 and 5400 <= out["short"][0] <= 5460, out   # 替わって 0.4 秒より後・見続けていれば押せる
+    assert len(out["usual"]) == 1 and 6010 <= out["usual"][0] <= 6050, out   # 1 秒の滞留は入ってから 1 秒 (遅らせない)
+
+
+def test_the_first_pointer_after_the_window_settles_is_the_one_that_is_blocked(tmp_path, clock):
+    """窓が開く途中に届いた pointer (前の配置の物) で「最初の 1 つ」を使い切らない。窓が落ち着いた後 (0.7 秒後) に初めて
+    「許可」の上で届いた pointer も、入り直すまで数えない (反証役の再現 = 落ち着くまでの間に「最初の 1 つ」を立て直す行を
+    外しても、今までの試験は通った)。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + DWELL_STAGE + r"""
+const t = loadPage(function (path, opt) {
+  sent.push({ path: path, by: JSON.parse(opt.body).by });
+  return Promise.resolve(reply(200, { undo_ms: 3000, undo_remaining: 3 }));
+});
+show(t); stage(t, 1000);
+const counts = {};
+now = 0; t.windowMoved();                              /* 窓が開き始めた */
+now = 20; move(t, "deny");                             /* 開く途中に届いた pointer = 前の配置で下に居た物 */
+frames(t, 32, 690);                                    /* 落ち着くまで (0.6 秒) */
+now = 700; move(t, "allow_once");                      /* 落ち着いた後に初めて届いた pointer = 置いたままの所に「許可」が来ていた */
+counts.resting = frames(t, 716, 3500);                 /* 動かさずに約 2.8 秒 */
+now = 3510; move(t, null);
+frames(t, 3516, 3700);
+now = 3710; move(t, "allow_once");
+counts.reentered = frames(t, 3716, 4900);
+setTimeout(function () { console.log(JSON.stringify(Object.assign(counts, { sent: sent }))); }, 20);
+""").replace("__CARD__", json.dumps(card)))
+    assert out == {"resting": 0, "reentered": 1, "sent": [{"path": "/answer", "by": "dwell"}]}
+
+
+def test_the_scan_stays_quiet_after_a_change_even_when_it_resumes(tmp_path, clock):
+    """板から表示が替わった後の「走査の静かな 1 こま」は、走査が止まっていた所から動き出す時にも持ち越す
+    (pointer が止まって走査が戻る時・窓に焦点が戻る時)。持ち越さないと、替わった直後に先頭 (許可) が光る。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + r"""
+const t = loadPage(function () { throw new Error("通信しない"); });
+show(t);
+function item(name) { return { name: name, classList: { add: function () {}, remove: function () {} } }; }
+const handlers = {};
+const doc = { hidden: false, body: { classList: { toggle: function () {} } }, addEventListener: function () {}, documentElement: { addEventListener: function () {} },
+              elementFromPoint: function () { return null; } };
+const win = { document: doc, addEventListener: function (name, fn) { handlers[name] = fn; }, requestAnimationFrame: function () { return 1; } };
+t.selectWindow(win); t.bindInputs(win);
+t.S.dwellMs = 0; t.S.dwell = new core.Dwell(0, 150); t.S.sideAt = Infinity; t.S.fan = true; t.S.mode = "large";
+t.S.scanMs = 1500; t.S.scan = new core.Scan(1500); t.S.scanList = [item("first"), item("second")];
+function lit(at) { now = at; t.frame(now); return t.S.scanEl ? t.S.scanEl.name : null; }
+const seen = {};
+t.S.pointerAt = 3600;                                  /* 札が替わる 1.4 秒前に pointer が動いた = 走査は 5100 まで止まる */
+lit(4000);
+now = 5000; t.bumpGen(true);                           /* 板から表示が替わった = 静かな間は 6500 まで */
+seen.resumed = [lit(5116), lit(6400), lit(6510)];      /* pointer が止まって走査が戻っても、6500 までは光らない */
+now = 9000; t.bumpGen(true);                           /* もう 1 度替わった = 静かな間は 10500 まで */
+now = 9200; handlers.focus();                          /* 窓に焦点が戻った = 走査を頭から数え直す */
+seen.focused = [lit(9216), lit(10400), lit(10510)];
+console.log(JSON.stringify(seen));
+""").replace("__CARD__", json.dumps(card)))
+    assert out == {"resumed": [None, None, "first"], "focused": [None, None, "first"]}
+
+
+def test_moving_the_window_to_a_corner_counts_as_a_window_change(tmp_path):
+    """設定で窓を隅へ動かした時も「窓の位置が変わった」= 前の位置での pointer と、その下に居た釦を捨てる。"""
+    out = node(tmp_path, FAKE_CLOCK + r"""
+const t = loadPage(function () { throw new Error("通信しない"); });
+t.S.dwell = new core.Dwell(1000, 150);
+t.S.options = core.parseOptions("pos=br", {});
+const w = t.window;
+const moved = [];
+w.screen = { availLeft: 0, availTop: 0, availWidth: 2560, availHeight: 1392 };
+w.outerWidth = 640; w.outerHeight = 720;
+w.moveTo = function (x, y) { moved.push([x, y]); };
+t.S.lastX = 50; t.S.over = "allow_once"; t.S.firstPointer = false; t.S.windowAt = -1e9;
+now = 700; t.placeWindow();
+const corner = { moved: moved, lastX: t.S.lastX, over: t.S.over, first: t.S.firstPointer, at: t.S.windowAt };
+t.S.options = core.parseOptions("pos=keep", {});
+t.S.lastX = 50; t.S.windowAt = -1e9;
+now = 900; t.placeWindow();                            /* 動かさない設定 = 何も捨てない */
+console.log(JSON.stringify({ corner: corner, keep: { moved: moved.length, lastX: t.S.lastX, at: t.S.windowAt } }));
+""")
+    assert out["corner"] == {"moved": [[1920, 672]], "lastX": -1, "over": None, "first": True, "at": 700}
+    assert out["keep"] == {"moved": 1, "lastX": 50, "at": -1e9}
+
+
+def test_a_waiting_retry_and_a_new_token_do_not_run_two_watches(tmp_path):
+    """板が落ちている間は、次の取り直しを timer で待つ。その間に見張りを起こし直しても (新しい token の URL を貼った時)、
+    待っていた取り直しは捨てる = 見張りは常に 1 本 (反証役の再現 = 2 本が並走し続けた)。"""
+    out = node(tmp_path, r"""
+const timers = [];
+const realSetTimeout = setTimeout;
+globalThis.setTimeout = function (fn, ms) { if (ms >= 1000) { const id = { fn: fn, ms: ms, live: true }; timers.push(id); return id; } return realSetTimeout(fn, ms); };
+globalThis.clearTimeout = function (id) { if (id && typeof id === "object" && "live" in id) id.live = false; };
+let calls = 0;
+const t = loadPage(function () { calls += 1; return Promise.reject(new Error("down")); });
+t.S.token = "x";
+t.poll();                                              /* 落ちている板 = 失敗して、取り直しを待つ */
+realSetTimeout(function () {
+  const waiting = timers.filter(function (x) { return x.live && x.ms < 40000; }).length;
+  t.poll();                                            /* 待っている間に、見張りを起こし直す */
+  realSetTimeout(function () {
+    const live = timers.filter(function (x) { return x.live && x.ms < 40000; }).length;
+    console.log(JSON.stringify({ waiting: waiting, liveRetries: live, calls: calls }));
+  }, 20);
+}, 20);
+""")
+    assert out == {"waiting": 1, "liveRetries": 1, "calls": 2}   # 前の待ちは捨てられ、新しい待ちが 1 つだけ残る
+
+
+def test_the_key_that_made_a_click_is_remembered_by_the_key_listeners(tmp_path, clock):
+    """鍵が自分で起こした click (押したままの Enter の繰り返しなど) を数えない守りは、keydown / keyup の聞き手が
+    「鍵が動いた時刻」を覚える事に懸かっている。聞き手から入れて確かめる (時刻を手で置かない)。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + r"""
+const t = loadPage(function (path, opt) { sent.push(JSON.parse(opt.body).by); return Promise.resolve(reply(200, { undo_ms: 3000, undo_remaining: 3 })); });
+show(t);
+const handlers = {};
+const btn = { dataset: { key: "allow_once" }, disabled: false, closest: function (s) { return s === "[data-key]" ? btn : null; } };
+const doc = { hidden: true, activeElement: null, addEventListener: function (name, fn) { handlers[name] = handlers[name] || fn; }, documentElement: { addEventListener: function () {} } };
+const win = { document: doc, addEventListener: function () {} };
+t.selectWindow(win); t.bindInputs(win);
+t.S.genAt = -1e9; t.S.keyAt = -1e9;
+now = 5000; handlers.keydown({ key: "Enter", code: "Enter", repeat: true, preventDefault: function () {} });   /* 押したままの Enter の繰り返し */
+now = 5100; handlers.click({ detail: 0, target: btn });        /* その鍵が起こした click */
+const byRepeat = sent.length;
+now = 6000; handlers.keyup({ key: "Enter", code: "Enter" });
+now = 6100; handlers.click({ detail: 0, target: btn });        /* 鍵を離した直後の click も、鍵の物 */
+const byKeyup = sent.length;
+now = 7000; handlers.click({ detail: 0, target: btn });        /* 鍵が 0.5 秒より前 = 支援技術の押し */
+setTimeout(function () { console.log(JSON.stringify({ byRepeat: byRepeat, byKeyup: byKeyup, sent: sent })); }, 20);
+""").replace("__CARD__", json.dumps(card)))
+    assert out == {"byRepeat": 0, "byKeyup": 0, "sent": ["key"]}
+
+
+def test_a_new_card_forgets_a_send_that_never_came_back(tmp_path, clock):
+    """札が替わったら、前の札への送信の印を持ち越さない。板の写しを当てる所 (apply) から入れて確かめる
+    (返らない送信が残っていても、新しい札は押せる)。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + r"""
+const t = loadPage(function (path, opt) { sent.push(JSON.parse(opt.body).id); return new Promise(function () {}); });   /* 返らない送信 */
+show(t);
+const el = { hidden: true, style: {}, classList: { add: function () {}, remove: function () {}, toggle: function () {} }, dataset: {}, appendChild: function () {},
+             replaceChildren: function () {}, setAttribute: function () {}, querySelector: function () { return null; }, querySelectorAll: function () { return []; } };
+t.selectWindow({ document: { hidden: false, body: el, documentElement: el, activeElement: el, elementFromPoint: function () { return null; },
+                             getElementById: function () { return el; }, createElement: function () { return Object.assign({}, el, { dataset: {}, style: {} }); },
+                             querySelector: function () { return null; }, querySelectorAll: function () { return []; }, contains: function () { return true; } },
+                 requestAnimationFrame: function () { return 1; } });
+t.S.scan = new core.Scan(0); t.S.scanMs = 0; t.S.lang = "ja"; t.S.fan = false; t.S.mode = "large"; t.S.genAt = -1e9;
+now = 1000; t.press("allow_once", "key");              /* 1 枚目を押した = 送信は返らない */
+const stuck = t.S.answering;
+const next = Object.assign({}, card, { id: "card-2", view_seq: 9 });
+now = 2000;
+let drawn = "";
+try { t.apply({ seq: 9, card: next, queue: 0, last: null, light: null, states: [], stats: {}, undo_ms: 3000 }); } catch (e) { drawn = "描けない: " + e.message; }
+const cleared = t.S.answering;
+t.S.btns = { allow_once: { disabled: false } };
+now = 3000; t.press("allow_once", "key");              /* 2 枚目も押せる */
+setTimeout(function () { console.log(JSON.stringify({ stuck: stuck, cleared: cleared, sent: sent, drawn: drawn })); }, 20);
+""").replace("__CARD__", json.dumps(card)))
+    assert out["stuck"] is True and out["cleared"] is False, out
+    assert out["sent"] == [card["id"], "card-2"], out
 
 
 def test_omitted_optional_fields_are_announced_on_the_card(tmp_path):

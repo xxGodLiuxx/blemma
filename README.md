@@ -94,7 +94,7 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 
 1. **先回り** — Claude が作業の区切りで、次の一手を 2〜6 択で差し出します (同梱の MCP の道具 `ask_board`。使い方の芯は MCP server が Claude に伝えます。細かな作法は手順 [`skills/board/SKILL.md`](skills/board/SKILL.md) にあり、`~/.claude/skills/board/` へ写すと skill として読まれます)。区切りごとに Claude に訊き返させる使い方でも、その場で選んで答えられます。Claude 自身が迷った時に訊く `AskUserQuestion` (2〜4 択) も同じ扇に出ます。板が無い時、`ask_board` の選択肢はいつもの確認に出ます。
 2. **選ぶ問いは全部 1 枚で** — 権限の確認・Claude の質問・MCP の問いが、同じ扇に同じ形で出ます。
-3. **マウス・視線・スイッチで押せる** — 既定はマウスの 2 回押し。必要なら、見つめて押す機能やスイッチの走査を設定で入れられます。決めた後 3 秒は取り消せます。「止」(止める側) と「戻」(いつもの確認に戻る) は親骨の左右で動きません。札が替わった瞬間と、ボタンを押したままの間 (ドラッグ中) は、注視で押されません。札が替わった直後の 0.4 秒は、キー・スイッチ・クリックの押しも数えません (前の札へ向けた遅れた 1 押しが、新しい札に当たりません)。読み上げの「押す」や音声操作のクリックも、1 回の押しとして受けます。全文を読む内側の帯は押せず、確定後の猶予の間だけ「取り消す (n)」のボタンになります。
+3. **マウス・視線・スイッチで押せる** — 既定はマウスの 2 回押し。必要なら、見つめて押す機能やスイッチの走査を設定で入れられます。決めた後 3 秒は取り消せます。「止」(止める側) と「戻」(いつもの確認に戻る) は親骨の左右で動きません。札が替わった瞬間・列が送られた直後・ボタンを押したままの間 (ドラッグ中) は、注視で押されません。札が替わった直後の 0.4 秒は、キー・スイッチ・クリックの押しも数えません (前の札へ向けた遅れた 1 押しが、新しい札に当たりません)。読み上げの「押す」や音声操作のクリックも、1 回の押しとして受けます。全文を読む内側の帯は押せず、確定後の猶予の間だけ「取り消す (n)」のボタンになります。
 
 質問を小窓に集める道具や、携帯から承認する道具は先にあります。BLEMMA の芯は、Claude が次の一手を差し出す所と、3 種の問いを視線とスイッチで押せる 1 枚にまとめた所です。
 
@@ -122,7 +122,7 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 - 手元で試した OS は Windows だけです。mac と Linux は確かめていません。mac / Linux で右下の小窓になるのは、画面の寸法が取れる時 (Python の tkinter がある時) です。取れない時は、既定のブラウザのタブで開きます。Windows で `--print-only` が表示する 1 行は、PowerShell 用の書き方です。
 - 提出版で直さずに残した制限は [`docs/design.md` §5.7](docs/design.md#57-知っていて残した制限) に並べました。
 - Windows の「常に手前」は `POST /window` → `board/window_win.py` → 標準ライブラリの `ctypes` で既存の小窓を固定します。触るのはその板の小窓 1 枚だけです (既定でないポートの板は、窓の名にポート番号が付きます)。対象の窓が見つからない時・固定に失敗した時と他の OS では、対応ブラウザの Document Picture-in-Picture を使います。
-- 11/6 の自動試験の記録は 528 本・skip 0。実ブラウザの試験も含みます。代用品に差し替えている経路と実機での確認範囲は [`docs/design.md` §7.3](docs/design.md#73-試験と検収) に記載しています。
+- 11/6 の自動試験の記録は 539 本・skip 0。実ブラウザの試験も含みます。代用品に差し替えている経路と実機での確認範囲は [`docs/design.md` §7.3](docs/design.md#73-試験と検収) に記載しています。
 
 ## この後
 
@@ -134,9 +134,9 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 
 Claude Code を開発の中心に置きました。
 
-- 設計の文書 (`docs/design.md`) を正本にして、実装は部品ごとの依頼書に分け、Claude Code の subagent と別の LLM の agent に並列で任せました。主催の資料の読み取りと計画の反証は、Claude Code の dynamic workflow で回しました (読み手 7 体 + 反証 82 体)。
+- 設計の文書 (`docs/design.md`) を正本にして、実装は部品ごとの依頼書に分け、Claude Code の subagent と別の LLM の agent に並列で任せました。主催の資料の読み取りと計画の反証は、Claude Code の dynamic workflow で回しました (全部で 82 体 = 読み手 7・反証 72・束ねと書き出し 3)。
 - 実機の確かめを実装の初日 (11/4) に置きました。hook の欄名と挙動を公式 doc と実の `claude` (v2.1.318) で測り、結果を設計 §10.3 に残しました。この確かめで、auto mode (v2.1.318 時点の既定) では権限の確認が出ないことが分かり、起動の 1 行に `--permission-mode default` を入れました。
-- 外部のレビュー (別の LLM による反証) を、設計の前後と実装の後に入れました。tkinter の小窓へ全面で転換する案は、このレビューの反証を受けて「同じ頁の小型の見え方」に変えました。実装の後のレビューでは、自動の試験が全部通っているコードに、線を破る道が 3 つ見つかりました (待ちの期限・注視の数え直し・通知の仕掛けの実行環境)。反例の試験を足してから直しました。
+- 外部のレビュー (別の LLM による反証) を、設計の前後と実装の後に入れました。tkinter の小窓へ全面で転換する案は、このレビューの反証を受けて「同じ頁の小型の見え方」に変えました。実装の後のレビューでは、自動の試験が全部通っているコードに、線を破る道が 3 つ見つかりました (待ちの期限・注視の数え直し・通知の仕掛けの実行環境)。反例の試験を足して直し、足した試験が直す前のコードで落ちる事を確かめました。
 - 出荷の code を実の Claude Code に挟んで 15 の経路を検収しました。板なし・時限・見る頁なし・端末で先に答えた時のどれでも、勝手に続行した例はありません。
 - 仕上げでは、4 つの持ち場 (頁・板・hook と MCP・起こし方と文書) に読むだけの反証役を置き、重い所見は別の検証役に確かめさせました。所見は鵜呑みにせず、実測で採否を決めました (検証役が「確定」とした 1 件は、実の窓と実のブラウザで 3 通り測って再現せず、退けました)。採った直しは、直しを 1 件ずつ外した木で見張りの試験が落ちる事まで確かめています。実の窓の稽古では、表示倍率 150% の画面で扇を運ぶたびに窓が 1 画素ずつ大きくなる、という試験では出ない不具合も見つけて直しました。
 
@@ -162,7 +162,7 @@ MIT (see LICENSE). 扇の字体 Yuji Syuku は SIL Open Font License 1.1 で同�
 
 **Three points.** (1) Pre-emptive choices with the bundled MCP tool `ask_board` (the MCP server tells Claude how to use it; the fuller guide is the skill under `skills/board/`, which you can copy to `~/.claude/skills/board/`). (2) One surface for every selectable question. (3) Mouse input with optional gaze and switch input, a 3-second undo period, and fixed stop and return blades (Japanese: 止 / 戻; English: Esc / 0). The reading band cannot be pressed until it becomes the Undo target during that period. Keys, enabled dwell and switches confirm in one action. For 0.4 seconds after a card changes no key, switch or click is counted, so a late press cannot land on the new card; clicks from screen readers and voice control count as one press.
 
-**Reading and windows.** Resize the window to resize the fan, paper and text; wide windows put the question on the left. Drag the fan background to move the app window. Hover over More for 0.35 seconds to start paging, then every 1.5 seconds; clicking or ↓ ↑ PageDown PageUp also works. Reading the paper does not move it. Hover to reveal Copy, or press C. Settings offer three typefaces, five text sizes, paper-aware colors and four corner positions. Windows pins the existing app window; other OSes use supported Document Picture-in-Picture windows sized to the screen. Optional `clear=on` cuts only the corners outside the fan on Windows at `scale=1`, and hides the title bar while idle. It does nothing if no matching window is found. Two terminals share one fan, and the board stops when the last one exits (`python blemma.py --stop` stops a board you kept). The app window closes after a detected board disconnection persists for 10 seconds. Nov 6 test record: 528 passed, 0 skipped, including the real-browser test; see the design document for substituted paths that still need manual checks.
+**Reading and windows.** Resize the window to resize the fan, paper and text; wide windows put the question on the left. Drag the fan background to move the app window. Hover over More for 0.35 seconds to start paging, then every 1.5 seconds; clicking or ↓ ↑ PageDown PageUp also works. Reading the paper does not move it. Hover to reveal Copy, or press C. Settings offer three typefaces, five text sizes, paper-aware colors and four corner positions. Windows pins the existing app window; other OSes use supported Document Picture-in-Picture windows sized to the screen. Optional `clear=on` cuts only the corners outside the fan on Windows at `scale=1`, and hides the title bar while idle. It does nothing if no matching window is found. Two terminals share one fan, and the board stops when the last one exits (`python blemma.py --stop` stops a board you kept). The app window closes after a detected board disconnection persists for 10 seconds. Nov 6 test record: 539 passed, 0 skipped, including the real-browser test; see the design document for substituted paths that still need manual checks.
 
 **Phone.** The board stays on your PC. To reach Claude Code from a phone, see the official [Remote Control](https://code.claude.com/docs/en/remote-control).
 

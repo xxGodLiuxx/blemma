@@ -283,6 +283,17 @@ async function closeCard(id) {
   await until(`!document.querySelector('#undo-zone').hidden`);
   await key('Escape');
   await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan > .btn').disabled`);
+  // A key press on a page button keeps the focus where the person put it. Pressing the theme button twice (change it,
+  // change it back) must not send the second press to the first blade (Allow), where the focus used to jump.
+  await evaluate(`document.querySelector('#theme-btn').focus()`);
+  const themeNow=await evaluate(`document.documentElement.dataset.theme`);
+  await key('Enter');
+  await until(`document.documentElement.dataset.theme !== ${JSON.stringify(themeNow)}`);
+  assert.equal(await evaluate(`document.activeElement.id`),'theme-btn','The focus stays on the button the person pressed');
+  await key('Enter');                            // key() waits until presses count again.
+  await until(`document.documentElement.dataset.theme === ${JSON.stringify(themeNow)}`);
+  await sleep(150);
+  assert.equal((await api('/pending')).card.state,'shown','The second press on the theme button does not answer the card');
   await mouse({x:5,y:5}); await closeCard(edit);
   // In an app window the waiting fan is a small window, and the next card brings the remembered size back.
   const stubs=`window.matchMedia=()=>({matches:true}); window.__sizes=[]; window.__ops=[]; window.resizeTo=(w,h)=>{window.__sizes.push([w,h]);window.__ops.push('resize');Object.defineProperty(window,'outerWidth',{value:w,configurable:true});Object.defineProperty(window,'outerHeight',{value:h,configurable:true});}; window.moveTo=()=>window.__ops.push('move');`;
@@ -356,6 +367,45 @@ async function closeCard(id) {
   await until(`!document.querySelector('#undo-zone').hidden`);
   assert.equal((await api('/pending')).card.state,'deciding','Two quick presses inside one card both count');
   await sleep(1050); await api('/wait?id='+quick);
+  await until(`document.body.classList.contains('idle')`);
+  // From a switch the same two presses are different: the second is a bounce, not a choice on a screen the person has
+  // seen. Deny… then Back, and a press 50 ms behind it, must not land on Allow, the first blade of the screen they return to.
+  const space={key:' ',code:'Space',windowsVirtualKeyCode:32};
+  const lit=async key=>{ for (let i=0;i<400;i++) { if (await evaluate(`!!document.querySelector('[data-key="${key}"].scan')`)) return; await sleep(20); } throw new Error('The scan light never reached '+key); };
+  await open('mode=small&lang=ja&dwell=0&scan=0.5');
+  const sw=(await api('/ask',{kind:'permission',from:{cwd:'repo'},payload:{head:'Bash',text:'ls',blocks:[{label:'command',text:'ls',mono:true}]}})).id;
+  await until(`document.querySelectorAll('.btn[data-key="deny"]').length === 1`);
+  await lit('deny');
+  await key(' ','Space');                        // Deny… opens the reasons.
+  await until(`document.querySelectorAll('[data-key="back"]').length === 1`);
+  await lit('back');
+  await call('Input.dispatchKeyEvent',{type:'keyDown',...space}); await call('Input.dispatchKeyEvent',{type:'keyUp',...space});   // Back.
+  await sleep(50);
+  await call('Input.dispatchKeyEvent',{type:'keyDown',...space}); await call('Input.dispatchKeyEvent',{type:'keyUp',...space});   // The bounce.
+  await sleep(300);
+  assert.equal(await evaluate(`document.querySelectorAll('.btn[data-key="deny"]').length`),1,'Back returned to the first screen');
+  assert.equal((await api('/pending')).card.state,'shown','A switch bounce right behind Back does not land on Allow');
+  await closeCard(sw);
+  // With both dwell and scan on, the scan light scrolls a long list to the button it lights. A pointer left resting
+  // between two buttons must not, by dwell, press the button that scrolls in under it: nobody pressed anything.
+  await open('mode=small&lang=ja&dwell=0.5&scan=0.5');
+  const many=(await api('/ask',{kind:'elicitation',from:{cwd:'repo'},payload:{head:'blemma',text:'どれにしますか',fields:[{name:'choice',title:'どれにしますか',multi:false,required:true,
+    options:Array.from({length:12},(_,i)=>({label:'選択肢 '+(i+1)+' — 長めの文を入れて釦の高さを確かめる',value:String(i+1)}))}]}})).id;
+  await until(`document.querySelectorAll('#opts .btn').length >= 12 && ${READY}`);
+  const list=await evaluate(`(() => { const bs=Array.from(document.querySelectorAll('#opts .btn')).map(b => { const r=b.getBoundingClientRect(); return {top:r.top,bottom:r.bottom,x:r.left+r.width/2}; }); return {h:innerHeight,bs}; })()`);
+  const seen=list.bs.filter(b=>b.top>=0&&b.bottom<=list.h);
+  let rest=null;
+  for (let i=seen.length-2;i>=1&&!rest;i--) { const gap=seen[i+1].top-seen[i].bottom; if (gap>=4) rest={x:seen[i].x,y:seen[i].bottom+gap/2}; }
+  assert(rest && list.bs[list.bs.length-1].bottom>list.h,'The list is longer than the window and has a gap to rest the pointer in');
+  await mouse(rest);
+  let moved=false;
+  for (let i=0;i<500&&!moved;i++) { moved=Math.abs((await evaluate(`document.querySelector('#opts .btn').getBoundingClientRect().top`))-list.bs[0].top)>2; if (!moved) await sleep(30); }
+  assert(moved,'The scan light scrolled the list');
+  await sleep(2000);                             // Four dwell times with the pointer left where it was.
+  assert.equal((await api('/pending')).card.state,'shown','A button that scrolls in under a resting pointer is not pressed');
+  await key('Escape');
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  await sleep(1050); await api('/wait?id='+many);
   await until(`document.body.classList.contains('idle')`);
   // Assistive technology (a screen reader's "activate", voice control) presses with a click that carries no pointer.
   // It counts as one press, like a key: no second press is asked for, and the Undo period still follows.

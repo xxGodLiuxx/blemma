@@ -107,7 +107,7 @@ def test_real_browser_fan_inputs_and_fallback(tmp_path):
         config = {"endpoint": endpoint, "origin": f"http://127.0.0.1:{httpd.server_port}",
                   "output": str(output.resolve())}
         result = subprocess.run([node, str(ROOT / "tests" / "browser_ohgi.cjs")], input=json.dumps(config),
-                                capture_output=True, text=True, encoding="utf-8", timeout=150, **flags)
+                                capture_output=True, text=True, encoding="utf-8", timeout=240, **flags)
         if "browser unavailable:" in result.stdout:
             pytest.skip("Isolated Chromium renderer could not start; no real DOM or PiP check ran")
         if result.returncode:

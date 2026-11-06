@@ -67,6 +67,7 @@
   }
 
   function poll() {
+    if (S.retryTimer) { clearTimeout(S.retryTimer); S.retryTimer = null; }   /* 待っている取り直しと並走しない (見張りは常に 1 本) */
     if (S.stopped) return;
     if (!S.token) { S.problem = L().no_token; S.stopped = true; return; }
     var ctl = new AbortController();
@@ -90,7 +91,7 @@
       S.offline = true;
       S.health.fail(performance.now());
       S.retry = S.retry ? Math.min(5000, S.retry * 2) : 1000;
-      setTimeout(poll, S.retry);
+      S.retryTimer = setTimeout(poll, S.retry);
     });
   }
 
@@ -534,6 +535,16 @@
     releaseDwell();
   }
 
+  /* 頁や列が送られた時も同じ = 置いたままの pointer の下の物が入れ替わる (走査の光が窓の外の釦を見える所へ送る・ホイール・
+     見つめて本文を送る)。落ち着くまで滞留を数えず、その後に pointer の下に居た釦は入り直すまで数えない (線 3)。
+     pointer の位置は捨てない (見つめて送る動きは、止まった pointer の位置で続く) */
+  function scrolled() {
+    S.windowAt = performance.now();
+    S.over = null;
+    S.firstPointer = true;
+    releaseDwell();
+  }
+
   /* 扇の周りを透かす = 題の帯と和紙は四角のまま、扇の外の角だけを窓から切る */
   function pushShape() {
     if (S.mode !== "small" || viewWindow !== window || S.shapeBusy) return;   /* 前の頼みの返事を待つ = 順が入れ替わらない */
@@ -575,6 +586,8 @@
       /* 開いた直後は窓の名がまだ付いていない = 当たるまで少し繰り返す (API が失敗した時も同じ) */
       S.shapeTries = done ? 0 : (S.shapeTries || 0) + 1;
       if (!done && S.shapeTries < 20 && S.shapeSig === sig) S.shapeSig = "";
+    }, function () {
+      S.shapeBusy = false;            /* 頼みが例外で終わっても、次の形を送れる (待ちの印を残さない) */
     });
   }
 
@@ -585,6 +598,7 @@
     var x = pos.charAt(1) === "r" ? s.availLeft + s.availWidth - window.outerWidth : s.availLeft;
     var y = pos.charAt(0) === "b" ? s.availTop + s.availHeight - window.outerHeight : s.availTop;
     window.moveTo(x, y);
+    windowMoved();                    /* 位置が変わった = 置いたままの pointer の下の物が入れ替わる (大きさの変化と同じ扱い) */
   }
 
   function releaseDwell() {
@@ -618,8 +632,14 @@
     S.scan.restart(fromBoard ? now + scanQuiet() : now);   /* 板から替わった後は、1 こまぶん何も光らせない */
     if (S.scanEl) { S.scanEl.classList.remove("scan"); S.scanEl = null; }
     if (S.card && S.card.state === "shown" && S.lastInput === "key" && !S.overlay && S.scanMs <= 0) {
+      /* 鍵で使う人のために先頭の釦へ焦点を置く。ただし、人が自分で置いた焦点 (配色・設定・コピーなどの釦) は奪わない =
+         配色の釦を鍵で 2 回押した 2 回目が、焦点の移った先頭の羽根 (許可) に当たらない (線 3)。
+         奪ってよいのは、焦点がどこにも無い時と、描き直しで消えた釦に在った時だけ */
+      var held = viewDocument.activeElement;
+      var kept = held && held !== viewDocument.body && held !== viewDocument.documentElement &&
+        (!viewDocument.contains || viewDocument.contains(held));
       var first = S.fan ? S.scanList[0] : viewDocument.querySelector("#opts .btn:not(:disabled)");
-      if (first) first.focus({ preventScroll: true });
+      if (first && !kept) first.focus({ preventScroll: true });
     }
   }
 
@@ -635,6 +655,9 @@
     if (S.settling === on) return;
     S.settling = on;
     if (b && b.classList) b.classList.toggle("settling", on);
+    /* 印を付けた後に頁が PiP の窓へ移った (戻った) 時 = 元の文書の印も消す (残ると、外の道具が「まだ押せない」と読み続ける) */
+    var home = homeDocument && homeDocument.body;
+    if (!on && home && home !== b && home.classList) home.classList.remove("settling");
   }
 
   function dwellKeyOf(target) {
@@ -842,7 +865,8 @@
     if (key === "close") { closeOverlay(); return; }
     /* 表示が替わった直後の押しは数えない (線 3) = 前の表示へ向けた遅れた 1 押しや、スイッチ・鍵のばたつきが、
        新しい札の先頭 (許可) や出たばかりの「取り消す」に当たらない。人が新しい表示を見て押すには、これより長く掛かる。
-       滞留は「入り直すまで数えない」(bumpGen の releaseDwell) が別に守る */
+       滞留は「入り直すまで数えない」(bumpGen の releaseDwell) と、短い滞留の数え始めを遅らせる frame の枝が別に守る
+       (ここで滞留の押しを捨てると、捨てた釦は入り直すまで数えなくなり、見続けている人が押せなくなる) */
     if (by !== "dwell" && performance.now() - S.genAt < settleFor(key)) return;
     if (key === "more") {                                  /* 和紙の続きを 1 画面分送る。最後まで読んだら先頭へ */
       copyPage(1);
@@ -873,7 +897,10 @@
     if (r.gen || k !== S.key) {
       S.key = k;
       render();
-      bumpGen();
+      /* 札の中で人が画面を進めた (拒否 → 理由・前の画面へ・次の設問)。スイッチの時だけ、板から替わった時と同じ間を置く =
+         ばたつきや震えの 2 打目が、進んだ先の先頭 (戻った画面の「許可」・見ていない次の設問) に当たらない (線 3)。
+         鍵で続けて打つ人の 2 打目は捨てない (進んだ先を知って打っている) */
+      bumpGen(by === "switch");
     } else {
       render();                                            /* 印を付けただけ = 世代は進めない */
     }
@@ -1113,6 +1140,11 @@
       } else if (now - S.windowAt < WINDOW_SETTLE_MS) {
         S.firstPointer = true;        /* 窓が落ち着くまで (windowMoved)。この間に届いた pointer は、最初の 1 つに数えない */
         releaseDwell();
+      } else if (now - S.genAt < SETTLE_MS - S.dwellMs) {
+        /* 0.4 秒より短い滞留 (URL や --set で入れた時) = 板から表示が替わった直後は、数え始めを遅らせる。pointer の揺れが
+           入り直しに数えられても、滞留の押しは替わって 0.4 秒より後になる (鍵・スイッチ・click と同じ線 3)。
+           数えないだけで、守り (入り直すまで数えない釦) は消さない。0.4 秒以上の滞留では、この枝は通らない */
+        setFill(null, 0);
       } else {
         var r = S.dwell.update(S.over, now);
         setFill(r.target, r.progress);
@@ -1148,7 +1180,10 @@
         if (S.scanEl) S.scanEl.classList.remove("scan");
         if (target) {
           target.classList.add("scan");
-          if (!S.fan && target.scrollIntoView) target.scrollIntoView({ block: "nearest" });   /* 列が窓より長い札 */
+          if (!S.fan && target.scrollIntoView) {            /* 列が窓より長い札 = 光を見える所へ送る */
+            target.scrollIntoView({ block: "nearest" });
+            scrolled();                                     /* 送られて pointer の下に来た釦を、滞留で押さない */
+          }
         }
         S.scanEl = target;
         if (target) spotlight(target);
@@ -1205,9 +1240,12 @@
     function active(fn) { return function (e) { if (w === viewWindow) fn(e); }; }
     d.addEventListener("pointermove", active(onPointer), { passive: true });
     d.addEventListener("pointerover", active(onPointer), { passive: true });
-    d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; S.down = true; }), { passive: true, capture: true });
-    d.addEventListener("pointerup", active(function () { S.down = false; }), { passive: true, capture: true });
-    d.addEventListener("pointercancel", active(function () { S.down = false; }), { passive: true, capture: true });
+    /* 押した・離したその場で滞留を解く (こま単位の見張りだけだと、1 こまの内に押して離す速い click や、押したまま羽根へ来て
+       同じこまで離した時に「入り直すまで数えない」が掛からない) */
+    d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; S.down = true; releaseDwell(); }), { passive: true, capture: true });
+    d.addEventListener("pointerup", active(function () { S.down = false; releaseDwell(); }), { passive: true, capture: true });
+    d.addEventListener("pointercancel", active(function () { S.down = false; releaseDwell(); }), { passive: true, capture: true });
+    d.addEventListener("scroll", active(scrolled), { passive: true, capture: true });
     d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.overMore = false; S.lastX = -1; S.scrollRest = 0; }));
     d.addEventListener("pointerdown", active(startDrag));
     d.addEventListener("pointerup", active(endDrag));
