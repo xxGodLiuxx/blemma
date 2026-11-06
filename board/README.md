@@ -28,24 +28,29 @@ python board/server.py
 | 引数 | 既定 | 意味 |
 |---|---|---|
 | `dwell` | 1.0 | 視線の滞留で押す秒 (0.3〜5)。`0` = 頁の滞留を止めて click で押す (OS の視線の道具が click する時) |
-| `scan` | なし | スイッチ 1 鍵の走査 (秒ごとに次の釦へ)。`?scan` だけなら 1.5 |
+| `scan` | なし | スイッチ 1 鍵の走査 (秒ごとに次のボタンへ)。`?scan` だけなら 1.5 |
 | `key` | Space | 走査で選ぶ鍵 (`KeyboardEvent.code` か `key`・例 `Enter`・`F13`) |
 | `lang` | ブラウザの言葉 | `ja` / `en` |
 | `sound` | 切 | `on` = 待ちの合図で短い音 |
+| `mode` | `large` | `small` = 扇 (`python blemma.py` の既定)・`large` = 大きなボタンの板 |
+| `theme` | `auto` | `light`・`dark`・`contrast` (窓の ☀ ☾ でも切り替え) |
+| `scale` / `font` | 1 | 窓の中の倍率 (0.75〜2) / 字の倍率 (0.8〜2) |
+| `desc` | `on` | `off` = 選択肢の解説を出さない |
+| `trail` | `off` | `on` = 見ている所に点を重ねる (録画用) |
 
-頁の右上の「設定」でも替えられます (キーと click だけ)。「携帯で開く」は `#t=` つきの URL を大きな字で出します。携帯は利用者の転送で 127.0.0.1 へ届けます (例 USB の Android = `adb reverse tcp:8765 tcp:8765`)。転送の先へ札の本文と token が渡ります。
+頁の右上の「設定」でも替えられます (キーと click だけ・保存はブラウザの localStorage)。優先の順は URL の引数 > 保存した値 > 既定です。`blemma.py` からは `--set 鍵=値` か環境変数 `BLEMMA_OPTS` で渡せます。「携帯で開く」は `#t=` つきの URL を大きな字で出します。携帯は利用者の転送で 127.0.0.1 へ届けます (例 USB の Android = `adb reverse tcp:8765 tcp:8765`)。転送の先へ札の本文と token が渡ります。
 
 ### 入力
 
 | 入力 | 押す | 取り消す (押した後の猶予のうち) |
 |---|---|---|
-| 視線 | 釦の上に留まる (縁が満ちる)。外れても 150 ms のうちに戻れば数え続ける | 上の中央の「取り消す」に留まる |
-| キー | Tab で移って Space / Enter・数字 1〜6・Esc = 左下の固定の位置の釦 | Backspace / Esc |
-| スイッチ 1 鍵 | 光った釦で鍵を押す | 鍵を一度離してから、もう一度押す |
+| 視線 | ボタンの上に留まる (縁が満ちる)。外れても 150 ms のうちに戻れば数え続ける | 上の中央の「取り消す」に留まる |
+| キー | Tab で移って Space / Enter・数字 1〜6・Esc = 左下の固定の位置のボタン | Backspace / Esc |
+| スイッチ 1 鍵 | 光ったボタンで鍵を押す | 鍵を一度離してから、もう一度押す |
 | 携帯 | 触る (縦 1 列) | 「取り消す」を触る |
 | マウス | click | 「取り消す」を click |
 
-札・設問・並びが替わったら、pointer の下の釦は一度外へ出て入り直すまで数えず、押したままの鍵は離すまで数えません (見続けて 2 回押さない)。
+札・設問・並びが替わったら、pointer の下のボタンは一度外へ出て入り直すまで数えず、押したままの鍵は離すまで数えません (見続けて 2 回押さない)。
 
 ## 手で確かめる (5 分)
 
@@ -56,7 +61,7 @@ python board/server.py
 4. もう一度押して 3 秒待つ → 端末に `('answered', {'type': 'allow_once'})`。「端末で答える」なら `('released', None)`。
 5. server を止めた状態で 2. を打つ → すぐ `('no_board', None)` (= hook は何も書かず、Claude Code のいつもの確認へ)。
 
-頁の純粋な計算 (滞留・走査・釦の並び・字) は `board/static/board_core.js` に分けてあり、node で読めます:
+頁の純粋な計算 (滞留・走査・ボタンの並び・字) は `board/static/board_core.js` に分けてあり、node で読めます:
 `node -e "const c = require('./board/static/board_core.js'); console.log(c.suggestionLabel({type: 'addRules', rules: [{toolName: 'Bash', ruleContent: 'git commit:*'}], behavior: 'allow', destination: 'localSettings'}, 'ja'))"`
 
 自動の試験 = `python -m pytest tests -q` (試験だけ pytest が要ります)。
