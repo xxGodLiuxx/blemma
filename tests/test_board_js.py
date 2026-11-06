@@ -386,10 +386,11 @@ frames(t.S.dwell,'allow_once',0,800);
 original.document.hidden=true; original.fire('blur'); original.document.fire('visibilitychange');
 const before=t.S.dwell.target, active=t.inputActive();
 pip.document.focused=false; pip.fire('blur');
-const stopped=t.S.dwell.target, blocked=t.S.dwell.blocked, inactive=t.inputActive();
+const stopped=t.S.dwell.target, blocked=t.S.dwell.blocked, unfocused=t.inputActive();
+pip.document.hidden=true; const inactive=t.inputActive(); pip.document.hidden=false;
 const held=t.S.held.Space;
 pip.document.fire('keyup',{code:'Space'});
-console.log(JSON.stringify({before,active,stopped,blocked,inactive,held,released:!t.S.held.Space}));
+console.log(JSON.stringify({before,active,stopped,blocked,unfocused,inactive,held,released:!t.S.held.Space}));
 """)
     assert out == {"before": "allow_once", "active": True, "stopped": None,
-                   "blocked": "allow_once", "inactive": False, "held": True, "released": True}
+                   "blocked": "allow_once", "unfocused": True, "inactive": False, "held": True, "released": True}

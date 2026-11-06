@@ -370,10 +370,18 @@
       }).join(",") + ")";
       p.label = point((inner + outer) / 2, p.angle);
       p.width = 2 * inner * Math.sin((p.end - p.start) * Math.PI / 360);
+      var arcWidth = (p.end - p.start) * Math.PI / 180 * (inner + outer) / 2 * 0.82, depthWidth = (outer - inner) * 0.92;
+      p.labelWidth = depthWidth + Math.max(0, arcWidth - depthWidth) * Math.pow(Math.cos(p.angle * Math.PI / 180), 2);
       var a = point(outer - 7, p.start + 1), b = point(outer - 7, p.end - 1);
       p.arc = "M " + a.join(" ") + " A " + (outer - 7) + " " + (outer - 7) + " 0 0 1 " + b.join(" ");
     });
     return { size: size, inner: inner, outer: outer, depth: outer - inner, parts: parts };
+  }
+
+  /* 見つめて本文を送る向き = 枠の下寄りで下へ・上寄りで上へ・真ん中は止まる (視線の人は巻物を回せない) */
+  function scrollDirection(ratio) {
+    if (!(ratio >= 0 && ratio <= 1)) return 0;
+    return ratio > 0.68 ? 1 : ratio < 0.32 ? -1 : 0;
   }
 
   function actionDescription(card, key, lang) {
@@ -486,7 +494,8 @@
       out.options.push({ key: "send", label: L.send });
       out.options.push({ key: "restart", label: L.restart, aux: true });
     }
-    if (card.kind === "elicitation") out.options.push({ key: "decline", label: L.decline, aux: true });
+    /* ask_board は必ず「ここで止める」を持つ = 断るは足さない (6 択が 7 つになって扇から外れる) */
+    if (card.kind === "elicitation" && p.head !== "blemma") out.options.push({ key: "decline", label: L.decline, aux: true });
     return out;
   }
 
@@ -648,7 +657,7 @@
     parseDwell: parseDwell, parseScan: parseScan, mmss: mmss, Dwell: Dwell, Scan: Scan,
     reasonsOf: reasonsOf, visibleSuggestions: visibleSuggestions, suggestionLabel: suggestionLabel,
     steps: steps, needConfirm: needConfirm, newUi: newUi, uiAfterUndo: uiAfterUndo,
-    fanEligible: fanEligible, fanLayout: fanLayout, actionDescription: actionDescription,
+    fanEligible: fanEligible, fanLayout: fanLayout, scrollDirection: scrollDirection, actionDescription: actionDescription,
     priorityState: priorityState,
     parseOptions: parseOptions, OPTION_DEFAULTS: OPTION_DEFAULTS,
     buildScreen: buildScreen, pressKey: pressKey, choiceLabel: choiceLabel, viewKey: viewKey,

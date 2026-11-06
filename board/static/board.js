@@ -269,7 +269,11 @@
       b.style.setProperty("--ly", p.label[1] + "px");
       b.setAttribute("aria-label", b.dataset.label);
       b.title = b.dataset.label;
-      if (p.key !== "option") b.appendChild(el("span", "num", p.key === "fixed" ? "Esc" : "0"));
+      var text = el("span", "fan-text");
+      text.appendChild(b.querySelector(".num") || el("span", "num", p.key === "fixed" ? "Esc" : "0"));
+      text.appendChild(b.querySelector(".label"));
+      b.appendChild(text);
+      b.style.setProperty("--lw", Math.round(p.labelWidth) + "px");
       var svg = viewDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
       svg.setAttribute("viewBox", "0 0 " + layout.size + " " + layout.size);
       svg.setAttribute("aria-hidden", "true");
@@ -372,7 +376,7 @@
     if (S.problem) st = S.problem;
     else if (S.offline) st = T.offline;
     else if (S.notice && now < S.noticeUntil) st = S.notice;
-    else if (S.endText && now < S.endUntil) st = S.endText;
+    else if (S.endText && now < S.endUntil && !S.card) st = S.endText;
     setText($("status"), st);
     var band = $("band");
     var lightOn = !!(S.snap && S.snap.light) && now < S.lightUntil;
@@ -672,6 +676,7 @@
         spotlight(target);
       }
     }
+    gazeScroll(now);
     if (now - S.sideAt > 250) {
       S.sideAt = now;
       updateSide(now);
@@ -680,7 +685,35 @@
     rafId = viewWindow.requestAnimationFrame(frame);
   }
 
-  function inputActive() { return !viewDocument.hidden && viewDocument.hasFocus(); }
+  /* 見えている窓なら受ける。焦点は問わない = 端末で作業したまま隅の窓を見て押す (扇の芯)。
+   * 焦点の出入りの瞬間に古い滞留で押さない守りは blur / focus の releaseDwell が持つ。 */
+  function inputActive() { return !viewDocument.hidden; }
+
+  /* 見つめて本文を送る = 視線だけの人は巻物を回せない (§4.1)。本文の枠の下寄りで下へ・上寄りで上へ */
+  function scrollerAt(x, y) {
+    var n = viewDocument.elementFromPoint(x, y);
+    while (n && n !== viewDocument.body) {
+      var named = n.id === "copy" || n.id === "card" || n.id === "spotlight" || n.tagName === "PRE" ||
+        (n.classList && n.classList.contains("plain"));
+      if (named && n.scrollHeight > n.clientHeight + 2) return n;
+      n = n.parentElement;
+    }
+    return null;
+  }
+
+  function gazeScroll(now) {
+    var dt = Math.min(0.1, Math.max(0, (now - (S.scrollAt || now)) / 1000));
+    S.scrollAt = now;
+    if (S.lastX < 0 || S.pointerType === "touch" || S.overlay || !inputActive()) return;
+    var box = scrollerAt(S.lastX, S.lastY);
+    if (!box) return;
+    var r = box.getBoundingClientRect();
+    var dir = C.scrollDirection((S.lastY - r.top) / r.height);
+    if (!dir) return;
+    S.scrollRest = (S.scrollRest || 0) + dir * 90 * dt;
+    var whole = S.scrollRest > 0 ? Math.floor(S.scrollRest) : Math.ceil(S.scrollRest);
+    if (whole) { box.scrollTop += whole; S.scrollRest -= whole; }
+  }
 
   function restartFrames() {
     if (rafId !== null) rafWindow.cancelAnimationFrame(rafId);
