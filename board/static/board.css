@@ -307,11 +307,11 @@ body.small.glow { box-shadow: inset 0 0 0 2px var(--rib); }
 .small .fan > .btn .fill, .small .fan > .btn .desc, .small .fan > .btn .def, .small .fan > .btn .label, .small .fan > .btn .num { display: none; }
 .small .fan > .btn .fan-text {
   position: absolute; left: var(--lx); top: var(--ly); transform: translate(-50%, -50%) rotate(var(--rot));
-  font-family: "Yuji Syuku", "Yu Mincho", "Hiragino Mincho ProN", serif;
+  font-family: var(--face);
   font-size: calc(30px * var(--font, 1)); font-weight: 500; line-height: 1;
 }
 .spot-list { display: flex; flex-wrap: wrap; gap: 2px 16px; color: var(--muted); font-size: calc(15px * var(--font, 1)); line-height: 1.45; }
-.spot-list b { font-family: "Yuji Syuku", "Yu Mincho", "Hiragino Mincho ProN", serif; color: var(--fg); margin-right: 2px; }
+.spot-list b { font-family: var(--face); color: var(--fg); margin-right: 2px; }
 .small .fan > .btn .dwell-arc { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .dwell-arc path { fill: none; stroke: var(--arc); stroke-width: 14px; stroke-dasharray: 1; stroke-dashoffset: calc(1 - var(--p)); }
 .fan-bones { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
@@ -321,7 +321,7 @@ body.small.glow { box-shadow: inset 0 0 0 2px var(--rib); }
 .fan-bones .edge { fill: none; stroke: var(--rib); stroke-width: 2px; }
 .fan-bones .seam { fill: none; stroke: var(--rib); stroke-width: 1px; opacity: .3; }
 .fan-bones .pivot { fill: var(--pivot); stroke: var(--rib); stroke-width: 2px; }
-.fan-script { fill: var(--sec-fg); font-family: "Yuji Syuku", "Yu Mincho", "Hiragino Mincho ProN", serif; font-weight: 500; letter-spacing: .04em; }
+.fan-script { fill: var(--sec-fg); font-family: var(--face); font-weight: 500; letter-spacing: .04em; }
 .fan-seal {
   position: absolute; left: 6px; bottom: 4px; width: 30px; height: 30px; display: grid; place-items: center;
   background: var(--seal); color: #fff; border-radius: 4px; pointer-events: none;
@@ -430,6 +430,9 @@ mark.ins { text-decoration: underline; text-underline-offset: .15em; }
 .small .blocks .change .plain { font-weight: 700; }
 
 /* 和紙 = 問いの文章を扇の上の紙に出す。読む所だけ紙にして、窓の地は静かに沈める */
+:root { --face: "Yuji Syuku", "Yu Mincho", "Hiragino Mincho ProN", serif; }
+:root[data-face="mincho"] { --face: "Yu Mincho", "Hiragino Mincho ProN", "Noto Serif CJK JP", serif; }
+:root[data-face="gothic"] { --face: "Yu Gothic UI", "Hiragino Sans", "Noto Sans CJK JP", sans-serif; }
 :root { --paper: #f4ecd8; --ink: #1c1a17; --ink-soft: #5b5344; --paper-line: #b9ab8c; }
 :root[data-theme="contrast"] { --paper: #000; --ink: #fff; --ink-soft: #fff; --paper-line: #fff; }
 .small.has-fan .top, .small.has-fan .status, .small.has-fan .card {
@@ -457,7 +460,7 @@ mark.ins { text-decoration: underline; text-underline-offset: .15em; }
 }
 
 /* 小型の字は佑字 粛ひとつに揃える。字体に太さが無いので太字は使わず、大きさで強弱を付ける */
-body.small { font-family: "Yuji Syuku", "Yu Mincho", "Hiragino Mincho ProN", serif; }
+body.small { font-family: var(--face); }
 .small * { font-weight: 400 !important; }
 .small :is(pre, code, button, select, input, textarea) { font-family: inherit; }
 .small.has-fan .work-state { background: none; color: var(--ink); border: 0; padding: 0; }

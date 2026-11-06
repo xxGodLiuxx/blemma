@@ -414,23 +414,25 @@
     }
   }
 
-  /* 窓が扇より小さい時は、見切れないよう扇を窓に合わせて縮める (大きい窓では 1 倍のまま) */
+  /* 窓の大きさに扇と字を合わせる = ドラッグで窓を変えると、扇も和紙も字も一緒に追従する */
   function fitFan() {
-    if (!S.fan) return;
-    var fan = $("fan"), box = $("fan-scroll");
-    var w = parseFloat(fan.style.width), h = parseFloat(fan.style.height);
-    var wide = viewWindow.innerWidth / viewWindow.innerHeight >= 1.5;   /* 横向き = 左に問い・右に扇 */
-    var roomW = viewDocument.documentElement.clientWidth - (wide ? 300 : 20);
-    var roomH = viewWindow.innerHeight - (wide ? 20 : 250);             /* 縦向きは上の札と全文の欄の分を残す */
-    var k = Math.max(0.45, Math.min(1, roomW / w, roomH / h));
-    fan.style.transform = k < 1 ? "scale(" + k.toFixed(4) + ")" : "";
-    box.style.height = Math.ceil(h * k) + "px";
-    box.style.width = wide ? Math.ceil(w * k) + "px" : "";
-    viewDocument.documentElement.style.setProperty("--fan-w", Math.ceil(w * k) + "px");
+    var root = viewDocument.documentElement, fit = 1;
+    if (S.fan) {
+      var fan = $("fan"), box = $("fan-scroll");
+      var w = parseFloat(fan.style.width), h = parseFloat(fan.style.height);
+      var wide = viewWindow.innerWidth / viewWindow.innerHeight >= 1.5;      /* 横向き = 左に問い・右に扇 */
+      var roomW = root.clientWidth - (wide ? 300 : 20);
+      var roomH = wide ? viewWindow.innerHeight - 20 : viewWindow.innerHeight * 0.45;  /* 縦向きの残りは和紙 */
+      var k = Math.max(0.45, Math.min(1.8, roomW / w, roomH / h));
+      fan.style.transform = "scale(" + k.toFixed(4) + ")";
+      box.style.height = Math.ceil(h * k) + "px";
+      box.style.width = wide ? Math.ceil(w * k) + "px" : "";
+      root.style.setProperty("--fan-w", Math.ceil(w * k) + "px");
+      fit = Math.max(0.85, Math.min(1.4, k));
+    }
+    root.style.setProperty("--font", String(S.options.font * fit));
   }
 
-  /* 滞留を解く = 時計を止め、pointer の下の釦は一度外へ出て入り直すまで数えない (§4.2 の ①②)。
-   * 世代が進んだ時・頁が隠れた時と見えた時・焦点を失った時 (戻った瞬間に古い滞留で押さない)。 */
   function releaseDwell() {
     S.dwell.reset();
     S.dwell.block(S.over);
@@ -876,7 +878,7 @@
 
   /* 見つめて本文を送る = 視線だけの人は巻物を回せない (§4.1)。本文の枠の下寄りで下へ・上寄りで上へ */
   function scrollerAt(x, y) {
-    if (S.fan) return null;                                /* 和紙の文章は読む間に動かさない。続きは「▼ 続き」で送る */
+    if (S.fan || !(S.dwellMs > 0)) return null;            /* 視線の機能が切の時と和紙の文章は動かさない。続きは「▼ 続き」で送る */
     var n = viewDocument.elementFromPoint(x, y);
     while (n && n !== viewDocument.body) {
       var named = n.id === "copy" || n.id === "card" || n.id === "spotlight" || n.tagName === "PRE" ||
@@ -1052,22 +1054,23 @@
     var T = L();
     var o = S.options;
     showPanel(T.settings, function (body) {
+      addSelect(body, T.set_click, "click", [["double", T.click_double], ["single", T.click_single]], o.click);
+      addSelect(body, T.set_font, "font", [["0.85", T.size_s], ["1", T.size_m], ["1.15", T.size_l], ["1.3", T.size_xl], ["1.5", T.size_xxl]], o.font);
+      addSelect(body, T.set_face, "face", [["yuji", T.face_yuji], ["mincho", T.face_mincho], ["gothic", T.face_gothic]], o.face);
+      addSelect(body, T.set_theme, "theme", [["auto", T.auto], ["light", T.light], ["dark", T.dark], ["contrast", T.contrast]], o.theme);
+      addSelect(body, T.set_lang, "lang", [["auto", T.auto], ["ja", "日本語"], ["en", "English"]], o.lang);
+      addSelect(body, T.set_sound, "sound", [["off", T.off], ["on", T.on]], S.sound ? "on" : "off");
+      addSelect(body, T.set_mode, "mode", [["small", T.small], ["large", T.large]], o.mode);
+      addSelect(body, T.set_desc, "desc", [["on", T.on], ["off", T.off]], o.desc);
+      addInput(body, T.set_scale, "scale", o.scale, .75, 2);
       addSelect(body, T.set_dwell, "dwell",
-                [["0", "0"], ["0.8", "0.8"], ["1", "1.0"], ["1.2", "1.2"], ["1.5", "1.5"], ["2", "2.0"]],
+                [["0", T.off], ["0.8", "0.8"], ["1", "1.0"], ["1.2", "1.2"], ["1.5", "1.5"], ["2", "2.0"]],
                 String(S.dwellMs / 1000));
+      addSelect(body, T.set_trail, "trail", [["off", T.off], ["on", T.on]], o.trail);
       addSelect(body, T.set_scan, "scan",
                 [["off", T.off], ["1", "1.0"], ["1.5", "1.5"], ["2", "2.0"], ["3", "3.0"]],
                 S.scanMs ? String(S.scanMs / 1000) : "off");
       addInput(body, T.set_key, "key", o.key);
-      addSelect(body, T.set_lang, "lang", [["auto", T.auto], ["ja", "日本語"], ["en", "English"]], o.lang);
-      addSelect(body, T.set_sound, "sound", [["off", T.off], ["on", T.on]], S.sound ? "on" : "off");
-      addSelect(body, T.set_mode, "mode", [["small", T.small], ["large", T.large]], o.mode);
-      addInput(body, T.set_scale, "scale", o.scale, .75, 2);
-      addInput(body, T.set_font, "font", o.font, .8, 2);
-      addSelect(body, T.set_theme, "theme", [["auto", T.auto], ["light", T.light], ["dark", T.dark], ["contrast", T.contrast]], o.theme);
-      addSelect(body, T.set_desc, "desc", [["on", T.on], ["off", T.off]], o.desc);
-      addSelect(body, T.set_trail, "trail", [["off", T.off], ["on", T.on]], o.trail);
-      addSelect(body, T.set_click, "click", [["double", T.click_double], ["single", T.click_single]], o.click);
     });
   }
 
@@ -1101,6 +1104,7 @@
     var T = L();
     viewDocument.documentElement.lang = S.lang;
     viewDocument.documentElement.dataset.theme = S.options.theme;
+    viewDocument.documentElement.dataset.face = S.options.face;
     viewDocument.documentElement.style.zoom = S.options.scale === 1 ? "" : String(S.options.scale);
     viewDocument.documentElement.style.setProperty("--font", String(S.options.font));
     viewDocument.title = S.mode === "small" ? "BLEMMA · 扇 (OhGi)" : "BLEMMA";

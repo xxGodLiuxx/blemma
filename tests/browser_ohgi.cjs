@@ -48,7 +48,8 @@ async function key(key, code = key) {
 async function point(selector) {
   return evaluate(`(() => { const b=document.querySelector(${JSON.stringify(selector)}), r=b.getBoundingClientRect(), s=getComputedStyle(b);
     const lx=parseFloat(s.getPropertyValue('--lx')), ly=parseFloat(s.getPropertyValue('--ly'));
-    return Number.isFinite(lx) ? {x:r.x+lx, y:r.y+ly} : {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+    const k=b.offsetWidth ? r.width/b.offsetWidth : 1;   // The fan follows the window, so the label is scaled too.
+    return Number.isFinite(lx) ? {x:r.x+lx*k, y:r.y+ly*k} : {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
 }
 async function mouse(p, type='mouseMoved') { await call('Input.dispatchMouseEvent', {type, ...p, ...(type==='mouseMoved'?{}:{button:'left',clickCount:1})}); }
 async function click(selector) { const p=await point(selector); await mouse(p,'mousePressed'); await mouse(p,'mouseReleased'); }
@@ -85,7 +86,7 @@ async function closeCard(id) {
     const id=await card(n);
     await until(`document.querySelectorAll('#fan > .btn').length === ${n+2}`);
     const geometry=await evaluate(`Array.from(document.querySelectorAll('#fan > .btn')).map(b=>{const s=getComputedStyle(b),r=b.getBoundingClientRect();
-      const x=r.x+parseFloat(s.getPropertyValue('--lx')),y=r.y+parseFloat(s.getPropertyValue('--ly'));
+      const k=r.width/b.offsetWidth,x=r.x+parseFloat(s.getPropertyValue('--lx'))*k,y=r.y+parseFloat(s.getPropertyValue('--ly'))*k;
       return {key:b.dataset.key,x,y,hit:document.elementFromPoint(x,y)?.closest('button')?.dataset.key};})`);
     // Larger fans retain target size: inspect them in a wider isolated viewport too.
     if (n===6) await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
@@ -99,7 +100,8 @@ async function closeCard(id) {
     assert.equal(await evaluate(`document.activeElement.dataset.key`),'opt:1');
     assert.equal(await evaluate(`document.querySelector('#fan-script-0 textPath').textContent`),'試験を実行する');
     const hits=await evaluate(`Array.from(document.querySelectorAll('#fan > .btn')).every(b=>{const s=getComputedStyle(b),r=b.getBoundingClientRect();
-      return document.elementFromPoint(r.x+parseFloat(s.getPropertyValue('--lx')),r.y+parseFloat(s.getPropertyValue('--ly')))?.closest('button')===b;})`);
+      const k=r.width/b.offsetWidth;
+      return document.elementFromPoint(r.x+parseFloat(s.getPropertyValue('--lx'))*k,r.y+parseFloat(s.getPropertyValue('--ly'))*k)?.closest('button')===b;})`);
     assert(hits,'Actual clip-path hit targets must agree with labels');
     await screenshot('ohgi-'+n);
     // A notification arrives about 6 seconds after the card: it must not move the blade under the gaze.
@@ -175,6 +177,15 @@ async function closeCard(id) {
   assert(paper.cardBottom<=paper.fanTop,'The washi sits above the fan: '+JSON.stringify(paper));
   assert(paper.fanBottom<=paper.h && paper.sh<=paper.h,'Nothing is cut off: '+JSON.stringify(paper));
   await screenshot('ohgi-washi');
+  // Dragging the window bigger makes the fan and the text follow; the fan never leaves the window.
+  const small=await evaluate(`[document.querySelector('#fan').getBoundingClientRect().width, parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--font'))]`);
+  await call('Emulation.setDeviceMetricsOverride',{width:900,height:1000,deviceScaleFactor:1,mobile:false});
+  await until(`document.querySelector('#fan').getBoundingClientRect().width > ${small[0]*1.2}`);
+  const big=await evaluate(`(() => { const f=document.querySelector('#fan').getBoundingClientRect(); return {w:f.width,right:f.right,bottom:f.bottom,iw:innerWidth,ih:innerHeight,font:parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--font'))}; })()`);
+  assert(big.right<=big.iw && big.bottom<=big.ih,'The bigger fan stays inside: '+JSON.stringify(big));
+  assert(big.font>small[1],'The text follows the window');
+  await call('Emulation.setDeviceMetricsOverride',{width:624,height:688,deviceScaleFactor:1,mobile:false});
+  await until(`Math.abs(document.querySelector('#fan').getBoundingClientRect().width-${small[0]})<1`);
   const top0=await evaluate(`document.querySelector('#copy').scrollTop`);
   await click('#more');
   assert((await evaluate(`document.querySelector('#copy').scrollTop`))>top0,'More pages the text');

@@ -36,7 +36,7 @@ HOOKS = (
     ("UserPromptSubmit", None, "state.py", 5),
     ("Stop", None, "state.py", 5),
 )
-PAGE_KEYS = frozenset(("dwell", "scan", "key", "lang", "sound", "mode", "scale", "font", "theme", "desc", "trail", "click"))
+PAGE_KEYS = frozenset(("dwell", "scan", "key", "lang", "sound", "mode", "scale", "font", "theme", "desc", "trail", "click", "face"))
 
 
 def page_options(environment: str, assignments: list[str]) -> dict[str, str]:

@@ -30,10 +30,11 @@
       phone_help: "携帯は利用者の転送で 127.0.0.1 へ届けます (例: USB の Android = adb reverse tcp:{port} tcp:{port})。" +
         "127.0.0.1 / localhost 以外の名で開く時は、server を --allow-host <名> で起こしてください。" +
         "転送の先へ札の本文と token が渡ります。token は起動ごとに替わります。",
-      settings: "設定", set_dwell: "滞留 (秒・0 = click だけ)", set_scan: "走査 (秒・切 = なし)",
+      settings: "設定", set_dwell: "視線で押す (見つめる秒)", set_scan: "走査 (秒・切 = なし)",
       set_lang: "言葉", set_sound: "音", off: "切", on: "入", auto: "自動",
-      set_mode: "表示", set_scale: "全体の倍率", set_font: "字の倍率", set_theme: "配色", set_desc: "解説",
-      set_key: "スイッチのキー", set_trail: "視線の点", small: "扇 (OhGi)", large: "大きな板",
+      set_mode: "表示", set_scale: "全体の倍率", set_font: "文字の大きさ", set_theme: "配色", set_desc: "解説",
+      set_key: "スイッチのキー", set_trail: "視線の点", set_face: "字体", face_yuji: "佑字 粛", face_mincho: "明朝", face_gothic: "ゴシック",
+      size_s: "小", size_m: "標準", size_l: "やや大", size_xl: "大", size_xxl: "特大", small: "扇 (OhGi)", large: "大きな板",
       to_light: "明るい配色へ", to_dark: "暗い配色へ", light: "明るい", dark: "暗い", contrast: "高コントラスト", pip: "常に手前", pip_back: "元の窓へ",
       pip_error: "常に手前を開けませんでした", idle_line: "Claude が訊くと、ここに表示します",
       no_token: "token がありません。server.py の端末に出た URL (#t= つき) で開いてください",
@@ -81,10 +82,11 @@
       phone_help: "Reach 127.0.0.1 from the phone through your own forwarding (e.g. USB Android: adb reverse tcp:{port} tcp:{port}). " +
         "If you open it under a name other than 127.0.0.1 / localhost, start the server with --allow-host <name>. " +
         "The card text and the token travel to wherever you forward. The token changes on every launch.",
-      settings: "Settings", set_dwell: "Dwell (s, 0 = click only)", set_scan: "Scan (s, off = none)",
+      settings: "Settings", set_dwell: "Press by gaze (seconds)", set_scan: "Scan (s, off = none)",
       set_lang: "Language", set_sound: "Sound", off: "off", on: "on", auto: "auto",
-      set_mode: "View", set_scale: "Overall scale", set_font: "Text scale", set_theme: "Theme", set_desc: "Descriptions",
-      set_key: "Switch key", set_trail: "Pointer trail", small: "OhGi", large: "Large board",
+      set_mode: "View", set_scale: "Overall scale", set_font: "Text size", set_theme: "Theme", set_desc: "Descriptions",
+      set_key: "Switch key", set_trail: "Pointer trail", set_face: "Typeface", face_yuji: "Yuji Syuku", face_mincho: "Serif", face_gothic: "Sans serif",
+      size_s: "Small", size_m: "Normal", size_l: "Large", size_xl: "Larger", size_xxl: "Largest", small: "OhGi", large: "Large board",
       to_light: "Switch to light", to_dark: "Switch to dark", light: "Light", dark: "Dark", contrast: "High contrast", pip: "Always on top", pip_back: "Return to window",
       pip_error: "Could not open always on top", idle_line: "Questions from Claude appear here",
       no_token: "No token. Open the URL (with #t=) printed by server.py",
@@ -153,8 +155,8 @@
     return Math.round(Math.min(10, Math.max(0.5, x)) * 1000);
   }
 
-  var OPTION_DEFAULTS = { dwell: "1", scan: "off", key: "Space", lang: "auto", sound: "off",
-    mode: "large", scale: 1, font: 1, theme: "auto", desc: "on", trail: "off", click: "double" };
+  var OPTION_DEFAULTS = { dwell: "0", scan: "off", key: "Space", lang: "auto", sound: "off",
+    mode: "large", scale: 1, font: 1, theme: "auto", desc: "on", trail: "off", click: "double", face: "yuji" };
 
   function parseOptions(query, saved) {
     var q = new URLSearchParams(query), out = {};
@@ -163,7 +165,7 @@
       var fallback = OPTION_DEFAULTS[key];
       var v = q.has(key) ? q.get(key) : Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : fallback;
       var s = typeof v === "string" || typeof v === "number" ? String(v) : "!invalid";
-      var enums = {click: ["double", "single"], mode: ["small", "large"], lang: ["auto", "ja", "en"], theme: ["auto", "light", "dark", "contrast"]};
+      var enums = {click: ["double", "single"], face: ["yuji", "mincho", "gothic"], mode: ["small", "large"], lang: ["auto", "ja", "en"], theme: ["auto", "light", "dark", "contrast"]};
       if (enums[key]) out[key] = enums[key].indexOf(s) >= 0 ? s : fallback;
       else if (["sound", "desc", "trail"].indexOf(key) >= 0) {
         out[key] = ["on", "true", "1", ""].indexOf(s) >= 0 ? "on" :
