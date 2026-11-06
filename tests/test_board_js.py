@@ -1895,6 +1895,34 @@ console.log(JSON.stringify(out));
     assert out == {k: want for k in ("small:button", "small:Backspace", "small:Escape", "large:button")}
 
 
+def test_an_undo_this_page_did_not_watch_leaves_the_key_focus_nowhere(tmp_path, clock):
+    """ほかの頁が取り消した時、この頁は「決めている途中」の写しを受けないまま、同じ札の選ぶ画面 (表示の seq が進んだ写し) へ
+    戻る事がある (外部のレビューの再現 = 「次から訊かない」に焦点を置いたまま Esc で止め、ほかの頁から取り消されると、焦点が
+    同じ釦に付け直され、次の Enter が恒久の許可を送った)。同じ札で表示の seq だけが進んだ写しも取り消しとして扱い、鍵の焦点を
+    どこにも置かない。扇でも大きな板でも同じ。"""
+    a = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("git status")))
+    out = page(tmp_path, r"""
+const out = {};
+for (const mode of ["small", "large"]) {
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(A);
+  await c.run(500);
+  await c.key("Tab", "Tab");
+  c.btn("sugg:0").focus();                         /* 鍵で「次から訊かない」へ */
+  await c.key("Escape", "Escape");                 /* 止める側を送る */
+  c.show(reshown(A));                              /* ほかの頁が取り消した = 途中の写しを受けないまま、選ぶ画面へ戻る */
+  await c.run(20);
+  const focus = c.active();
+  await c.run(580);
+  await c.key("Enter", "Enter");                   /* 焦点はどこにも無い = 何も押さない */
+  out[mode] = { focus: focus, sent: choices(c).map(function (x) { return x.type; }) };
+}
+console.log(JSON.stringify(out));
+""", A=a)
+    want = {"focus": "body", "sent": ["stop"]}
+    assert out == {"small": want, "large": want}, out
+
+
 def test_moving_to_the_pip_window_and_back_keeps_the_key_focus(tmp_path, clock):
     """「常に手前」で別の窓 (Document Picture-in-Picture) へ移る・「元の窓へ」で戻る・窓を閉じて戻る時は、付け替える前に
     焦点の在った釦へ焦点を戻す (反証役の再現 = 焦点が先頭の「許可」へ移り、次の Enter が許可を送った)。戻す釦が無い時は、
@@ -1938,6 +1966,33 @@ console.log(JSON.stringify({ inPip: inPip, back: back, closed: closed, nowhere: 
     assert out == {"inPip": {"pip": True, "focus": "pip"}, "back": {"home": True, "focus": "pip"},
                    "closed": {"home": True, "focus": "deny"}, "nowhere": {"pip": True, "focus": "body"},
                    "nowhereBack": "body", "sent": 0}
+
+
+def test_coming_back_from_the_pip_window_keeps_the_key_focus_on_undo(tmp_path, clock):
+    """扇の PiP の窓で、猶予の内の「取り消す」に鍵の焦点を置いたまま窓を閉じて元へ戻っても、焦点は「取り消す」に残り、Enter で
+    取り消せる (外部のレビューの再現 = 戻った後の描き直しが取り消しの枠を付け替えて焦点が外れ、Enter では取り消せなかった)。"""
+    perm = _card(clock)
+    out = page(tmp_path, r"""
+const c = await P.boot({ query: "?mode=small&lang=ja", pip: true });
+c.show(PERM);
+await c.run(500);
+await c.key("Tab", "Tab");
+c.$("pip-btn").focus();
+await c.key("Enter", "Enter");                     /* PiP の窓へ移る */
+await c.run(600);
+c.btn("allow_once").focus();
+await c.key("Enter", "Enter");                     /* 許可を送る */
+c.show(deciding(PERM, { type: "allow_once" }));
+await c.run(500);
+c.$("undo-btn").focus();                           /* 猶予の内の「取り消す」へ */
+c.vwin().close();                                  /* 窓の × で閉じて、元の窓へ戻る */
+await c.run(20);
+const focus = c.active();
+await c.run(500);                                  /* 戻った直後の、押しを数えない間が過ぎてから */
+await c.key("Enter", "Enter");
+console.log(JSON.stringify({ home: c.vwin() === c.win, focus: focus, posts: c.posts() }));
+""", PERM=perm)
+    assert out == {"home": True, "focus": "undo", "posts": ["/answer", "/undo"]}, out
 
 
 def test_moving_to_the_pip_window_by_mouse_leaves_no_key_focus(tmp_path, clock):

@@ -118,8 +118,13 @@
       S.delta = C.zeroPresses();
       S.pressLedger = C.newPressLedger(S.pressLedger.source);
       forgetSends();
-    } else if (prev && prev.id === card.id && prev.state === "deciding" && card.state === "shown") {
-      S.ui = C.uiAfterUndo(card, S.ui);          /* 取り消した = 確かめの画面か頭へ */
+    } else if (prev && prev.id === card.id && card.state === "shown" &&
+               (prev.state === "deciding" || prev.view_seq !== card.view_seq)) {
+      /* 取り消した = 確かめの画面か頭へ。ほかの頁が取り消した時は、途中 (deciding) の写しを受けないまま、同じ札の選ぶ画面へ
+         戻る事がある (表示の seq だけが進む) = それも取り消しとして扱う。この描き直しでは、鍵の焦点を同じ釦へ付け直さない
+         (止める・拒否を送って取り消された人の次の Enter が、前に焦点を置いていた「次から訊かない」に当たらない・線 3) */
+      S.ui = C.uiAfterUndo(card, S.ui);
+      S.drawnScreen = null;
       undone = true;
     }
     S.card = card;
@@ -1317,8 +1322,12 @@
     return a && a !== viewDocument.body && surface.contains(a) ? a : null;
   }
 
+  /* 描き直しの前と後の 2 回呼ぶ。前 = 描き直しが同じ画面の同じ釦へ付け直せる様に。後 = 描き直しが付け替えた物 (扇の
+     取り消しの枠) に在った焦点を戻す (作り直された釦は、もう文書に無いので何もしない) */
   function keepFocus(held) {
-    if (held && viewDocument.contains(held)) held.focus({ preventScroll: true });
+    if (held && viewDocument.contains(held) && !held.disabled && !(held.closest && held.closest("[hidden]"))) {
+      held.focus({ preventScroll: true });
+    }
   }
 
   function openPip() {
@@ -1335,7 +1344,7 @@
         homeDocument.body.appendChild(surface);
         viewWindow = window; viewDocument = homeDocument;
         S.lastX = -1; S.over = null;
-        setChrome(); keepFocus(held); S.key = ""; refreshView(true); restartFrames();
+        setChrome(); keepFocus(held); S.key = ""; refreshView(true); keepFocus(held); restartFrames();
       }, { once: true });
       var link = w.document.createElement("link");
       link.rel = "stylesheet"; link.href = location.origin + "/static/board.css";
@@ -1345,7 +1354,7 @@
       viewWindow = w; viewDocument = w.document;
       bindInputs(w);
       S.lastX = -1; S.over = null;
-      setChrome(); keepFocus(held); S.key = ""; refreshView(true); restartFrames();
+      setChrome(); keepFocus(held); S.key = ""; refreshView(true); keepFocus(held); restartFrames();
     }).catch(function () {
       if (viewWindow !== window) viewWindow.close();
       showNotice(L().pip_error);
