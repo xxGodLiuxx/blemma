@@ -4,6 +4,8 @@
 
 > **11/4 の同期** = 本文を 11/4 の実装 (板の server・共通の client・板の頁・hook 4 本・MCP server・起こし方の 1 行) と 11/4 の転換 (§1) に合わせた。食い違いは code を正とし、code の方が良い所は「実装の判断」、code がまだ設計に届かない所は「未対応 (今後)」と書いた。その日の記録 = §15。
 
+> **11/6 の同期** = 扇 (OhGi)・状態を送る 2 本を含む hooks 6 本・設定・実機の検収で直した所を、`c7cf6c9..409703d` の実装差分に合わせた。検収と扇の形の記録 = §16。§9 の台本はこの同期の対象外。
+
 > **v1.2 = 2026-11-01** = 規約 (参加者ガイド・10/31 に読んだ) と主催の回答 (11/1) を反映した版。変えた所 = **提出の締切は 11/8 (日) 20:00 JST** → 工程を前倒し (§8・11/7 録り・11/8 15:00 提出)・デモは字幕も日本語・尺 2:50 前後・冒頭 30 秒に 3 点とテーマ (§9)・名乗るテーマ = テーマ 2「本来、誰にでも届くべきものを。」(§1・§6.2)・§11.4 の 6 件を確定に (期間前の設計の文書は主催の回答で repo に入れてよい・公開の形は新しい repo と新しい履歴)。技術の契約 (§2〜§5・§7・§10・§12) は v1.1 のまま。
 > **v1.1 = 2026-10-31** (v1 = 同日)。外部のレビュー (別の LLM による反証) 1 巡目 (2026-10-31・MAJOR_REVISION・BLOCKER 0・HIGH 5・MEDIUM 4・LOW 2) の **11 件に対応した = 10 件を本書で閉じ、#11 (公開前の資料の門) は本書の側だけを閉じた** (他の file の直しは公開の門で・対応表 = §14)。
 > - v1 = 設計 v0 (2026-10-14・非公開の作業メモ) + v0 → v1 の差分 (2026-10-30・同) + 公式の裏取り (2026-10-30・`docs/research_official_docs.md`) を 1 枚にした物。**code は 2026-11-02 12:00 (JST) から** = この file は文書だけ (code・試験・設定の file はまだ 1 行も無い)。
@@ -33,7 +35,7 @@
 **なぜ**: Claude Code は仕事の途中で何度も人に訊く。どれも端末の小さな dialog に出て、矢印キーと Enter で答える形 = 視線・スイッチ・片手では狙いにくく、結局は打鍵が要る。公式の accessibility は screen reader・拡大鏡・動きの低減・色覚の theme・ベルまでで、視線とスイッチに触れる文は無い (裏取り §3.5【raw】 https://code.claude.com/docs/en/accessibility.md)。BLEMMA は訊く瞬間だけを横取りして別の頁 (板) に出し、答えを公式の仕組みで Claude Code に戻す。
 
 **線 3 本** (動かさない):
-1. **公式の口だけに乗る** = settings の hooks (`PermissionRequest`・`PreToolUse`・`Elicitation`・`Notification`) と MCP の elicitation。Claude Code 本体の fork・patch・端末への打鍵の注入はしない。
+1. **公式の口だけに乗る** = settings の hooks (`PermissionRequest`・`PreToolUse`・`Elicitation`・`Notification`・状態だけを送る `UserPromptSubmit`・`Stop`) と MCP の elicitation。Claude Code 本体の fork・patch・端末への打鍵の注入はしない。
 2. **板が無ければ退化** = 板が居ない・時限を過ぎた・壊れた時、BLEMMA は判断を返さず (無出力・exit 0)、Claude Code の通常の判断の流れに委ねる。対話の環境で他の決定 (規則・他の hook・mode) が無ければ、いつもの確認が出る (§5.1・§5.3)。
 3. **勝手に許可しない** = 人が板で選んだ時だけ allow を返す。時限・不明・誤り = 判断なし (allow でも deny でもない)。
 
@@ -42,15 +44,17 @@
 **名乗るテーマ** (v1.2・作り手の決め 10/31): 公募のテーマ 2「本来、誰にでも届くべきものを。」= 壁を取り払って、届いていない人の手に。BLEMMA が取り払う壁 = **操作の壁** (端末の小さな dialog と打鍵。公募の例に挙がる専門知識・費用・言語・手続きには無い壁 = 自分の言葉で名指しする)。壁の外側の具体的なひとり = 視線だけで打つ作り手本人。同じ板が携帯・片手・スイッチの人にも届く。概要・README・動画の冒頭でこの順に言う (§9)。
 
 **11/4 の転換** (作り手の決め・外部のレビュー (別の LLM による反証) を受けた): 板の既定の前面を、同じ板の頁の**小型**の見え方にする。
-- 位置・大きさ・字・配色は設定で替え、釦を大きくする切り替えも同じ頁の中 (別の画面は作らない)。起こし方は 1 コマンド (`python blemma.py`・§3.2) = Chrome / Edge の app モードの小窓で開く。常に手前に置くのは利用者の操作 (ブラウザの Picture-in-Picture = 開くには利用者の操作が要り、位置は頁から決められない)。
+- 位置・大きさ・字・配色は設定で替え、釦を大きくする切り替えも同じ頁の中 (別の画面は作らない)。起こし方は 1 コマンド (`python blemma.py`・§3.2) = Chrome / Edge の app モードの小窓で開く。「常に手前」は Document Picture-in-Picture (開くには利用者の操作が要り、位置は頁から決められない・§4.4)。
 - 携帯の場面と転送は提出版の外 (§4.4)。携帯から答えたい人には、公式の Remote Control が使える環境ならそちらを案内する。
 - 語りの順は変えない = 視線で使う作り手の壁 → 端末から目を離して働く机の全員へ。
-- 理由 = 外部のレビューの反証: 「誰でも使う小窓」への全面の転換は、実在するひとりの壁を、規模の分からない一般の不便に置き換えて危うい (同じ板を小窓でも使う形には条件つきで賛成)。OS 固有の「常に手前・焦点を奪わない」窓は、標準ライブラリだけでは 3 つの OS で保証できない = 専用の窓は作らず、ブラウザの頁を共用する。焦点を奪わない窓にはキーが届かない = スイッチの走査は板に焦点がある時だけ効く。
-- 11/4 の時点の実装 = 起こし方の app モードの小窓 (`--small`・既定 480×360・画面の右下) と、既定のブラウザで開く `--large` まで。頁の側の小型の見え方 (URL の `?mode=small` を読む見た目・設定・釦を大きくする切り替え) と Picture-in-Picture の釦は**未対応 (今後)**。今の小窓 (幅 480) では、頁は携帯の幅の見え方 (縦 1 列・余白 16px・§4.1) になる。
+- 理由 = 外部のレビューの反証: 「誰でも使う小窓」への全面の転換は、実在するひとりの壁を、規模の分からない一般の不便に置き換えて危うい (同じ板を小窓でも使う形には条件つきで賛成)。OS 固有の「常に手前・焦点を奪わない」窓は、標準ライブラリだけでは 3 つの OS で保証できない = 専用の窓は作らず、ブラウザの頁を共用する。焦点を奪わない窓にはキーが届かない = スイッチのキーで選ぶには板に焦点が要る (見えていれば走査と滞留は進む・§4.2)。
+- **11/6 の実装** = 小型の見え方は **扇 (OhGi)** (`?mode=small`) として実装済み。app モードの既定は 660×700・画面の右下。折り扇と縦 1 列の使い分け (§4.1)・頁の設定と「大きな板」への切り替え (§4.2)・対応するブラウザの「常に手前」(§4.4) が同じ頁で動く。
 
 ---
 
 ## 2. 4 つの口と先回りの 1 本 — 契約
+
+**登録する hooks は 6 本** (11/6): 下の 4 つの口に、`UserPromptSubmit` と `Stop` を足す。後の 2 本は同じ `hooks/state.py` を使い、session の頭 6 字と状態だけを `POST /state` へ 1 回送る (`UserPromptSubmit` = `working`・`Stop` = `done`)。通信の総期限は 250 ms・settings の `timeout` は 5 秒。札も判断も作らず、無出力・exit 0 (共通の失敗時の扱いは §2.0)。この 2 本に matcher と `statusMessage` は付けない (§7.2)。
 
 ### 2.0 4 本に共通の決まり
 
@@ -86,7 +90,7 @@
 | 発火 | "When a tool call needs a permission decision" / "Runs when Claude Code is about to ask you for permission to use a tool." (裏取り §1.2・§1.5【断片】)。hook が `allow` を返すと "Claude Code answers the request on your behalf" (hooks-guide【raw】) |
 | matcher | `.*` (= 全部の道具)。人が押した時だけ allow を返すので全部でも安全。公式の注意 "Matching on `.*` or leaving the matcher empty would auto-approve every tool permission prompt" (【raw】・裏取り §1.5) は無条件に allow を返す hook の話。除く物は script の側 (下の「板に出さない物」) |
 | 公式の入力 (stdin の鍵) | 共通欄 + `tool_name`・`tool_input` (PreToolUse と同じ形・`tool_use_id` は無い)・MCP の道具なら `mcp_server`・任意で `permission_suggestions` (許可の更新の配列) |
-| 板に出す物 | 頭 = 道具の種と出どころ。本文 = 何をしようとしているか (下)。釦 = **許可 (今回)**・**次から訊かない** (`permission_suggestions` が在る時だけ・対象と保存期間つき)・**拒否** (理由を定型 3 つから)・**作業を止める** (固定の位置・§4.3)・**端末で答える** (96px 以上) |
+| 板に出す物 | 頭 = 道具の種と出どころ。本文 = 何をしようとしているか (下)。釦 = **許可 (今回)**・**次から訊かない** (`permission_suggestions` が在る時だけ・対象と保存期間つき)・**拒否** (理由を定型 3 つから)・**作業を止める** (固定の位置・§4.3)・**端末で答える** (見え方と寸法は §4.1) |
 | 返す出力 (stdout) | 下の JSON。exit は全部 0。端末で答える・時限・板なし・板に出さない物 = 無出力 |
 | 時限と退化 | 板の期限 (§3.4)・板へ繋がらない (client が無出力に変える) → 無出力。"A hook that exits 2 without a `decision` object leaves the permission flow unchanged" (裏取り §1.5【断片】)・Claude Code の timeout = 出力を捨てる (裏取り §1.9)。どれも Claude Code の通常の流れへ (対話で他の決定が無ければ端末の dialog) |
 | 出典 | https://code.claude.com/docs/en/hooks.md (PermissionRequest 節)・https://code.claude.com/docs/en/hooks-guide.md・裏取り §1.5 |
@@ -132,7 +136,7 @@
 | 発火 | "Before a tool call executes. Can block it" (裏取り §1.2)。`AskUserQuestion` と `ExitPlanMode` は "require user interaction"。hook の手順 = 入力を stdin から読む → "Collects the answer through your own UI" → `allow` と答えを入れた `updatedInput` を返す。**"Returning "allow" alone is not sufficient for these tools."** (裏取り §1.6【断片】) |
 | matcher | `AskUserQuestion` (英字だけ = 完全一致・裏取り §1.3) |
 | 公式の入力 (stdin の鍵) | 共通欄 + `tool_name` (= `AskUserQuestion`)・`tool_use_id`・`tool_input.questions` = 1〜4 問、各問 = `question`・`header` (12 字まで)・`options` (2〜4 個・各 `label` と `description`)・`multiSelect` (数の上限 = Agent SDK の user-input 頁【raw】) |
-| 板に出す物 | 1 問 = 1 画面。頭 = `header`、本文 = `question`、釦 = 各 `label` (下に小さく `description`)。**押す数** = 1 問の単一選択は選んだ 1 押しで送る (取り消しの猶予が見直しの代わり)・複数の問いと `multiSelect` は最後に「送る」の 1 押しを足す (確かめの 1 画面)。固定の位置 = **この質問に答えない**。端末の Other に当たる「ほかの答え」は板では書かず端末で答える。端末で答える (96px 以上) |
+| 板に出す物 | 1 問 = 1 画面。頭 = `header`、本文 = `question`、釦 = 各 `label` と補いの `description` (見え方と寸法は §4.1)。**押す数** = 1 問の単一選択は選んだ 1 押しで送る (取り消しの猶予が見直しの代わり)・複数の問いと `multiSelect` は最後に「送る」の 1 押しを足す (確かめの 1 画面)。固定の位置 = **この質問に答えない**。端末の Other に当たる「ほかの答え」は板では書かず端末で答える。端末で答える釦も置く |
 | 返す出力 (stdout) | 下の JSON。この質問に答えない = deny。端末で答える・時限・板なし = 無出力。exit は全部 0 |
 | 時限と退化 | PreToolUse の hook の timeout = "doesn't block the tool call" / "The call continues through the normal permission flow" (裏取り §1.9【断片】) = 端末に AskUserQuestion の dialog が出る。無出力 (板の期限・板へ繋がらない・端末で答える) も同じ |
 | 出典 | https://code.claude.com/docs/en/hooks.md (PreToolUse 節)・https://code.claude.com/docs/en/agent-sdk/user-input.md・https://code.claude.com/docs/en/permissions.md・裏取り §1.6 |
@@ -163,7 +167,7 @@
 | 発火 | "Runs when an MCP server requests user input mid-task. By default, Claude Code shows an interactive dialog for the user to respond. Hooks can intercept this request and respond programmatically, skipping the dialog entirely." (裏取り §1.7【raw】) |
 | matcher | `.*` (= 全部の MCP server)。matcher の対象は MCP server の名 (裏取り §1.3)・`.*` は正規表現の規則で全部に当たる (§2.0) |
 | 公式の入力 (stdin の鍵) | 共通欄 + `mcp_server_name`・`message`・任意で `mode` (`form` / `url`)・`url`・`elicitation_id`・`requested_schema` |
-| 板に出す物 | 頭 = **問うている server の名** (MCP の MUST "Provide UI that makes it clear which server is requesting information"・裏取り §2.2【raw】)、本文 = `message`、欄 = 下の表。**押す数** = 1 欄の単一選択 (enum・`oneOf`・boolean) は選んだ 1 押しで送る (取り消しの猶予が MCP の MUST "allow users to review and modify their responses before sending" の見直しの代わり・v1.1 の判断)・2 欄以上と複数選択は確かめの 1 画面と「送る」の 1 押し。釦 = **断る** (decline)・**この問い合わせを閉じる** (cancel・固定の位置)・端末で答える (96px 以上) |
+| 板に出す物 | 頭 = **問うている server の名** (MCP の MUST "Provide UI that makes it clear which server is requesting information"・裏取り §2.2【raw】)、本文 = `message`、欄 = 下の表。**押す数** = 1 欄の単一選択 (enum・`oneOf`・boolean) は選んだ 1 押しで送る (取り消しの猶予が MCP の MUST "allow users to review and modify their responses before sending" の見直しの代わり・v1.1 の判断)・2 欄以上と複数選択は確かめの 1 画面と「送る」の 1 押し。釦 = **断る** (decline)・**この問い合わせを閉じる** (cancel・固定の位置)・端末で答える (見え方と寸法は §4.1) |
 | 返す出力 (stdout) | 送る = 下の JSON・断る = `"action": "decline"`・この問い合わせを閉じる = `"action": "cancel"`・端末で答える・時限・板なし・板で描けない形・url mode = 無出力。exit は全部 0 |
 | 時限と退化 | 「利用者に任せる = 出力なしで exit 0 → dialog での利用者の答え」(裏取り §1.7【raw】の表)。板の期限・板へ繋がらない → 無出力 → 端末に form が出る |
 | 出典 | https://code.claude.com/docs/en/hooks.md (Elicitation 節)・https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation.md・裏取り §1.7・§2 |
@@ -231,7 +235,7 @@
 
 役: エージェントが文脈から用意した 2〜6 個の選択肢を、MCP の elicitation (form・enum) で人に出す。Elicitation の hook (§2.3) が板に出し、選ばれた物が道具の戻りになる。独自の注入の口は要らない。
 
-**道具の schema** (`tools/list` で返す・v1 の判断。下は 11/4 の実装の通り = v1 の案から `minLength`・`uniqueItems` と、説明文の「ここで止める」の 2 文を足した):
+**道具の schema** (`tools/list` で返す。11/4 に `minLength`・`uniqueItems` と説明文の「ここで止める」の 2 文、11/6 に任意の `descriptions` を足した):
 ```json
 {
   "name": "ask_board",
@@ -245,7 +249,10 @@
                    "minItems": 2, "maxItems": 6, "uniqueItems": true,
                    "description": "Short, distinct labels; at most five if the stop choice is absent" },
       "allow_free_text": { "type": "boolean", "default": false,
-                           "description": "Also accept an answer in the human's own words" }
+                           "description": "Also accept an answer in the human's own words" },
+      "descriptions": { "type": "array", "items": { "type": "string" },
+                        "minItems": 2, "maxItems": 6,
+                        "description": "Optional short explanations, in the same order and length as choices" }
     },
     "required": ["title", "choices"]
   }
@@ -253,6 +260,7 @@
 ```
 - 道具の説明文は英語 (Claude が読む物・README と揃える)。字の上限・重複・数を道具の側で確かめ、外れたら `isError: true` で理由を返す。
 - **「ここで止める」は server が足す** (11/4 の実装): 選択肢に「ここで止める」が無ければ末尾に足す = 自分の選択肢は 5 つまで・6 つ渡す時は必ず「ここで止める」を含む (含まない 6 つは `isError`)。
+- **任意の `descriptions`** (11/6) = 渡す `choices` と同じ順・同じ数の文字列の配列。数や型が違えば `isError`。各文は `oneOf` の各要素の `description` (補助の欄) に載せ、`hooks/elicitation.py` が板の選択肢の `description` へ写す。自動で足した「ここで止める」と「ほかの答え」に説明は足さない。補助の欄が途中で落ちても番号・字・値と答えの意味は変わらない。頁の解説は `desc` で入 / 切 (§4.2)。
 
 **出す elicitation** (2025-11-25 の版の `elicitation/create` の params):
 ```json
@@ -266,8 +274,8 @@
         "type": "string",
         "title": "次の一手を選んでください",
         "oneOf": [
-          { "const": "1", "title": "PR の本文を書く" },
-          { "const": "2", "title": "試験を回す" },
+          { "const": "1", "title": "PR の本文を書く", "description": "変更と確かめた事をまとめます" },
+          { "const": "2", "title": "試験を回す", "description": "変更に関わる試験を実行します" },
           { "const": "3", "title": "ここで止める" }
         ]
       }
@@ -290,7 +298,7 @@
 | `cancel` | `{"answer": null, "cancelled": true}` + 「人はこの問い合わせを閉じました。作業を止めて次の指示を待ってください」 | false |
 | client が elicitation を宣言していない | 「この環境では MCP の問いが出せません。AskUserQuestion か文で訊いてください」 | true |
 | 応答が期限までに来ない (11/4 の実装) | 「回答の待ち時間を過ぎました。作業を止めて次の指示を待ってください」+ 出した問いに `notifications/cancelled` を送る | true |
-| client が `tools/call` を取り消した (`notifications/cancelled`・11/4 の実装) | 待ちを解き、`cancel` と同じ戻り (出した問いにも取り消しを送る) | false |
+| client が `tools/call` を取り消した (`notifications/cancelled`・11/6 の直し) | 待ちを解き、出した問いにも取り消しを送る。取り消された `tools/call` には応答しない | — |
 | 応答の形が合わない (`choice` が出した選択肢に無い・`other_text` が 200 字を超える など) | 理由の 1 文 (英語) | true |
 
 - `cancel` の戻りの「止めて待ってください」は Claude への**指示で、止まる保証ではない** (§5.4)。時間切れの戻りも同じ (止めて待つ指示・同じ問いを繰り返させない = 同梱の skill の読み方の表)。
@@ -309,7 +317,7 @@
 
 **要る版**: Claude Code **v2.1.287 以降** (利用者が設定した stdio の MCP server に elicitation を宣言する版・裏取り §2.4【raw】)。v2.1.314 で確かめる → v2.1.318 で確かめた (§10.3 の 3)。
 
-**別の公式の口 (提出版の外)**: `Stop` の hook が `"decision": "block"` + `reason` を返すと、Claude は止まらず `reason` を指示として続ける (連続 8 回の上限・裏取り §1.8【raw】) = 「Claude が止まった時に板で次の一手を選ぶ」をエージェントの協力なしで作れる。ただ応答のたびに待ちが入り、キーで使う人の端末を塞ぐ (§5.6)。
+**Stop の別の使い方 (提出版の外)**: `Stop` の hook が `"decision": "block"` + `reason` を返すと、Claude は止まらず `reason` を指示として続ける (連続 8 回の上限・裏取り §1.8【raw】) = 「Claude が止まった時に板で次の一手を選ぶ」をエージェントの協力なしで作れる。ただ応答のたびに待ちが入り、キーで使う人の端末を塞ぐ (§5.6)。実装済みの `Stop` は状態だけを送り、判断を返さない (§2 の冒頭)。
 
 ---
 
@@ -319,12 +327,13 @@
 Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`POST /ask` → `GET /wait` の long-poll で待つ) → 板の server (127.0.0.1・待ち行列) → 板の頁 (`GET /pending` の long-poll で札を受ける → 人が選ぶ → `POST /answer`) → server が取り消しの猶予を持つ → hook の `GET /wait` に答え → hook が自分の stdin の写しから公式の JSON を組んで stdout へ → Claude Code。札の終わりは §3.5 の 4 つ (11/4 = `resolved` は作らない) のどれか 1 つに排他で決まる。
 
 ### 3.2 起動と在処 (v1 の判断)
-- **起こし方の 1 行** (11/4 の実装・`blemma.py`): `python blemma.py [--demo] [--small|--large] [--port PORT] [--keep-board] [--print-only] [--window-size W,H] [--window-position X,Y] [-- claude の引数]`。
+- **起こし方の 1 行** (11/6 の実装・`blemma.py`): `python blemma.py [--demo] [--small|--large] [--set KEY=VALUE] [--port PORT] [--keep-board] [--print-only] [--window-size W,H] [--window-position X,Y] [-- claude の引数]`。
   1. 板を用意する = `board/state/run.json` の記録が 24 時間以内で、token つきの照会に板が答えれば、その板を使い回す (照会は札を作らず、見る人にも数えない)。居なければ `board/server.py --no-browser --port PORT` を裏で起こす (最長 10 秒待つ)。 起動の確認は既存の板の照会から共通の絶対期限 (最長 10 秒) で測り、照会の各送受信と成功を返す直前にも見直す (11/4 の実装・外部のレビュー 2 巡目の MEDIUM)。
-  2. 頁を開く = `--small` (既定) は Chrome / Edge の app モードの小窓 (`--window-size` 既定 480,360・`--window-position` 既定 = 画面の作業領域の右下・環境変数 `BLEMMA_WINDOW_SIZE` / `BLEMMA_WINDOW_POSITION` でも)。`--large` か、app モードが使えない環境 (Chrome / Edge が無い・画面の寸法が取れない) は既定のブラウザ。URL に `?mode=small|large` を付ける (頁の側は未対応 = §1)。
-  3. 設定を生成する = hooks 4 本と同梱の MCP の設定を `board/state/settings.generated.json`・`mcp.generated.json` に書く (§7.2 の形・路はこの repo の絶対路)。
+  2. 頁を開く = `--small` (既定) は Chrome / Edge の app モードの小窓 (`--window-size` 既定 **660,700**・`--window-position` 既定 = 画面の作業領域の右下・環境変数 `BLEMMA_WINDOW_SIZE` / `BLEMMA_WINDOW_POSITION` でも)。`--large` か、app モードが使えない環境 (Chrome / Edge が無い・画面の寸法が取れない) は既定のブラウザ。URL の `?mode=small|large` で扇 / 大きな板を選ぶ。**`--print-only` では頁を開かない**。
+  3. 設定を生成する = hooks **6 本**と同梱の MCP の設定を `board/state/settings.generated.json`・`mcp.generated.json` に書く (§7.2 の形・路はこの repo の絶対路)。
   4. claude を起こす = `claude --settings <生成> --mcp-config <生成> --permission-mode default` (`--demo` なら `--setting-sources project,local --strict-mcp-config` を足す = 個人の設定と MCP を混ぜない・§10.3 の 5) + `--` の後の引数。`--print-only` か claude が見つからない時は、起動の行を表示するだけ (Windows は PowerShell に貼れる形・板を残すには `--keep-board` も付ける)。
   5. claude が終わったら (`--print-only` なら表示の後に)、自分で起こした板を止める (`--keep-board` で残す・使い回した板は止めない)。誤りの時も引数と例外の文は出さない (prompt や token つきの URL を含みうる)。
+- 頁の設定 = `BLEMMA_OPTS` に URL の query と同じ形 (例 `scale=1.25&theme=dark`) で書くか、`--set scale=1.25 --set theme=dark` と指定する。`--set` は繰り返せ、同じ鍵は後の指定が勝ち、環境変数より優先する。`mode` は明示した `--small` / `--large` が最優先。渡せる鍵と頁の保存値との関係 = §4.2。
 - 子の process (板の server・hook・MCP server) は**本体の python** で起こす (venv の中なら `sys._base_executable`)。理由 = Windows の venv の `python.exe` は本体を孫として起こす転送役 = run.json の pid が子と合わず、hook の起動も 1 段遅い (実装の判断)。
 - 板だけを起こす時 (`blemma.py` も裏でこれを起こす) = `python board/server.py [--port 8765] [--wait 300] [--perm-wait SEC] [--undo-ms 3000] [--allow-host NAME] [--no-browser] [--no-log]` で利用者が起こす (hook から自動では起こさない = 隠れた常駐を作らない)。数の意味と上限 = §3.4。起きたら頁を既定のブラウザで開く (`webbrowser`)。URL は `localhost` でなく `127.0.0.1` で出す (localhost は ::1 に引かれうる)。
 - 起動ごとに token = `secrets.token_urlsafe(32)`。在処の file = `board/state/run.json` (`{"port":…, "token":…, "pid":…, "started":…}`・`board/state/` は .gitignore 済み・POSIX は 0600)。hook は自分の路から `../board/state/run.json` を読む (利用者の project の cwd に依らない)。file が無い・読めない = 板なし = 無出力。止まる時に消す (落ちて残っても、接続が断られて無出力になるだけ)。
@@ -338,13 +347,15 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 | `POST /ask` | hook | `kind` (permission / question / elicitation)・`from` (cwd の末尾の名・session の頭 6 字・agent_type)・`payload` (表示に要る物だけ) | `200` + `id` (札の一意の ID)・`hard_deadline` (時刻)・`hard_deadline_in` (秒 = 555・§3.4)・`wait_giveup` (20)・`wait_hold` (15) / `400` (形が違う) / `401` (token 違い) / `503` + `no_viewer` (見る人なし・§3.4) か `queue_full` (待ちが上限を超えた) → hook は無出力 |
 | `GET /wait?id=…` | hook | long-poll (server は最長 15 秒抱える・hook はすぐ呼び直す) | `state` = waiting (+ `card` = 札の状態・`remaining`) / answered (+ `answer`) / released / expired / disconnected。答えを渡し終えた札と終わった札への再照会は closed・知らない id は `404` |
 | `POST /notify` | notify.py | `type`・`from`・`title`・`message` | `204` (待たない) |
-| `GET /pending?seq=N` | 頁 | long-poll (最長 25 秒・seq が進んだら返す) | `seq`・`card` (無ければ null・`id`・`kind`・`from`・`payload`・`state`・`view_seq`・`remaining`、deciding の時は `choice` と `undo_remaining`)・`queue` (待ちの数)・`last` (直前に終わった札の種と終わり)・`light`・`stats`・`undo_ms` |
+| `POST /state` | state.py (`UserPromptSubmit` / `Stop`) | `session` (頭 6 字・英数字と `_`・`-` の 1〜6 字)・`state` (`working` / `done`) の 2 欄だけ | `204` / `400` + `bad_state` (余分な欄・型・値の違い)。札は作らない |
+| `GET /pending?seq=N` | 頁 | long-poll (最長 25 秒・seq が進んだら返す) | `seq`・`card` (無ければ null・`id`・`kind`・`from`・`payload`・`state`・`view_seq`・`remaining`、deciding の時は `choice` と `undo_remaining`)・`queue` (待ちの数)・`last` (直前に終わった札の種と終わり)・`light`・`states` (下)・`stats`・`undo_ms` |
 | `POST /answer` | 頁 | `id`・`seq` (= 札の `view_seq`)・`choice` (下)・`by` (dwell / key / switch / touch / click)・`presses` (まだ送っていない押しの数・§4.5)・`press_batches` (束の ID つきの押しの数・任意・同じ ID は二度数えない・§4.5) | `200` + `undo_ms`・`undo_remaining` / `409` + `ended` (終わった札・終わりの種つき)・`not_current`・`expired`・`not_shown`・`stale` / `400` (`bad_choice`) |
 | `POST /undo` | 頁 | `id`・`by`・`presses`・`press_batches` (猶予のうちだけ) | `200` + `state` (shown・期限の後なら expired) / `409` (`not_undoable`) |
 | `POST /stats/reset` | 頁 | 空の object (11/4 の実装) | `204` (計を 0 に・§4.5) |
 | `POST /resolve` | 観察の hook (`PostToolUse`・`PermissionDenied`・**提出版では登録しない**) | `session`・`event` (post_tool_use / permission_denied)・`key` (要求と 1 対 1 に結べる照合の鍵) | **提出版では作らない** (11/4・§10.3 = 1 対 1 の鍵が無い) = 他の知らない口と同じ `404`。作るなら `200` + `closed` (id か null)・`reason` (none / ambiguous / no_key) |
 | `GET /`・`/static/…` | 頁 | 板の頁 (data を持たない) | token なしで返す (自分の file だけを許す CSP・`X-Frame-Options: DENY`) |
 
+- **`states`** = session ごとの `session`・`state` (`working` / `waiting on you` / `done`)・`reason`・`stale`・`ago` (更新からの秒)。札の受付と対象の Notification は `waiting on you`、答えを渡し終えると `working`、released / expired / disconnected はその理由つきの `waiting on you`。生きた札がある session は `reason: "card"` の待ちを優先する。状態の記憶は最大 128 件・24 時間、10 分更新のない `working` は `stale`。本文・入力・cwd は持たない。小型の頁の印は「◐ 作業中」「◆ あなたの番」「✓ 完了」(状態なしは「○ 待機中」、理由が disconnected なら「■ 止まった・端末を見てください」)。待ちを最優先し、作業中と完了は古くなっていない物、次に新しい物を選ぶ = 別の会話の古い完了で今の作業を隠さない。
 - **choice = 種と番号だけ** (hook が自分の stdin の写しから文と公式の JSON を組む = 板が文を作り変えられない・`answers` の鍵が 1 字もずれない)。形は object = `{"type": …}` + 添字 (0 から・11/4 の実装):
   - permission = `allow_once` / `allow_always` + `suggestion` (何番目) / `deny` + `reason` (定型の何番目) / `stop` / `terminal`
   - question = `answer` + `picks` (問いごとの選んだ番号の列) / `skip` (この質問に答えない) / `terminal`
@@ -372,10 +383,12 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 | hook の自前の期限 (`hard_deadline`) | 作った時 + 540 + 5 + 10 = 555 秒 | settings の `timeout` 600 より 45 秒短い |
 | `POST /ask` / `GET /wait` の諦め | 2 秒 / 20 秒 | server は `/wait` を最長 15 秒抱える。`/ask` の 2 秒は繋ぐ所から受け終えるまでの総期限 = Windows では閉じた 127.0.0.1 の port への接続がすぐには断られず、この 2 秒まで掛かる (§10.3 の 4)。2 秒は client の側の数 (`hooks/_client.py`・server の `Limits` の値は写しで、試験が両方を照らす) |
 | `POST /notify` の諦め | 2 秒 | `hooks/notify.py` の 1 か所 (§2.4) |
+| `POST /state` の諦め | 0.25 秒 | `hooks/_client.py` の `state()`・1 回だけ送る (§2 の冒頭) |
 | 接続の終了の判定 | 最後の `/wait` が返ってから 5 秒 | 次の `/wait` が来なければ disconnected |
 | 待ちの上限 | 20 件 | 超えたら `503` (`queue_full`) → hook は無出力 |
 | 見る人の判定 (11/4 の実装) | 30 秒 | 開いている `GET /pending` が無く、最後の返りから 30 秒を過ぎたら「見る人なし」(板の起動も「見た」と数える)。見る人なしの間は `/ask` に `503` (`no_viewer`) = hook は無出力で端末へ・待ちと表示の札は expired (決めた札は猶予を完走・§3.5)。`None` にすると判定しない (試験だけ・旗は無い) |
 
+- **閉じた頁の long-poll** (11/6 の直し): `GET /pending` は相手の接続の生死を 1 秒以下の間隔で見て、切断を見つけたらすぐ返し、見る人の数から外す。実機では閉じた頁を最長 25 秒抱え、その後の 30 秒と合わせて最大 55 秒掛かっていた。余計な long-poll の待ちを解消したもので、見る人なしと判るまでの 30 秒は残る (§16)。
 - **settings の `timeout` を変える時は 3 つを一緒に直す**: 作成からの上限 (= `timeout` − 60)・hook の自前の期限 (= 上限 + 猶予の上限 5 秒 + 10 秒)・`--wait` の上限 (= 作成からの上限)。不等式 = `--wait` ≤ 上限 < 上限 + 15 < `timeout`。
 - hook の自前の期限 (と `/ask`・`/wait` の諦めの秒) は**受信の完了まで効く総期限** (単調時計) = 通信の無応答の時間 (読み書き 1 回の待ち) とは別。少しずつ返されても延びず、受け終えた後にも見直し、過ぎていれば答えでも判断なし (無出力)。
 
@@ -413,7 +426,7 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 - (b) **止められない**: hook は待ち続け、札は期限まで残って次の札を塞ぐ。縮小 (§10.2) = 古い札は人が「端末で答えた・閉じる」(= 端末で答える と同じ動き = released・§4.3) で閉じる + 権限の札の待ちを縮める (`--perm-wait`)。
 - **11/4 の確定** (§10.3 の §12.3 の 1・実機): **答えの種で分かれる**。権限の dialog で許可の側 (Yes) を選ぶと、hook は止められず最後まで走る = 板の遅れた答えは効かない (= (b))。No (turn を止める) では hook が殺される (= (a))。質問と MCP の口は待つ間に端末の dialog が無く、端末でできるのは Esc (中断) だけ = 殺される (a)。→ (a) と (b) を両方作った:
   - (a) = 呼び直しの途絶えで 5 秒の後に disconnected。
-  - (b) = 端末で許可した権限の札は板に残る = 人が「端末で答える」で閉じる (釦の下に常に「端末で答えた時も、これで閉じる」・§4.3)。端末で答えることが多い人には `--perm-wait` を縮める助言 (例 120 秒・README)。
+  - (b) = 端末で許可した権限の札は板に残る = 人が「端末で答える」で閉じる (補いの文「端末で答えた時も、これで閉じる」の見え方は §4.3)。端末で答えることが多い人には `--perm-wait` を縮める助言 (例 120 秒・README)。
 - `/resolve` (§3.3) は、要求と 1 対 1 に結べる鍵が初日に見つかった時だけ作る (11/4 = 見つからなかったので作らない)。**指紋 (session_id + tool_name + tool_input) は 1 対 1 にならない** (同じ入力の要求が同じセッションで並ぶ・規則で自動で許された同じ呼び出しの PostToolUse も来る) = 指紋では閉じない。PermissionRequest の入力に `tool_use_id` は無い (裏取り §1.5)。
 
 ### 3.8 記録と通信の範囲
@@ -425,33 +438,56 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 ## 4. 板の頁 (`board/static/`)
 
 ### 4.1 見た目
-- 札 1 枚 = 頭 (口の種・出どころ・残りの秒) / 本文 (何をしようとしているか・問い) / 釦の列。例 (権限):「EDIT · README.md — 誤字 2 か所を直す」の下に [許可 (今回)] [次から訊かない] [拒否] の大きな釦、左下に固定の [作業を止める]、右下に [端末で答える]、右上に計。
-- 釦は **96px 以上** (高さと幅・倍率 1 の CSS px・「端末で答える」も同じ大きさで色を控えめに)、釦どうしの間は 24px 以上、画面の端から 48px 以上離す (視線は端ほど揺れる・v1 の判断)。字は 28px 以上。残りの秒は 60 秒を切ったら色を変える。
-- 字の線 (11/4 の実装): 釦と本文 28px (頭 36px・問い 32px)・釦の下の説明 22px・本文の巻物と状態の行と帯 24px・計と小さな釦 20px。**28px の線の例外** = 押す釦でない補いの字 (説明・計・巻物の見出し) と、キーと click だけで押す小さな釦 (計を 0 に・携帯で開く・設定・閉じる = 高さ 44px・滞留では押さない)。
-- 携帯の幅 (720px 以下) の例外 = 端からの余白と釦の間を 16px に詰め、釦を縦 1 列に並べ、計を隠す (釦の 96px は変えない)。起こし方の小窓 (幅 480) もこの見え方になる。
-- 小型の見え方 (11/4 の転換・§1) = 頁の側は**未対応 (今後)**。
-- 無地・高コントラスト (文字と背景の比 7:1 を狙う・最低 4.5:1)・`prefers-color-scheme` の明暗・`prefers-reduced-motion` で動きを止める。作り手の手元のデザインは持ち込まない (公開の OSS = 誰の家の物でもない見た目)。
-- 外の font・CDN を読まない (offline で動く)。言葉は日本語と英語 (`navigator.language` で選ぶ・`?lang=` で上書き)。
+- 札 1 枚 = 頭 (口の種・出どころ・残りの秒) / 本文 (何をしようとしているか・問い) / 釦。**大きな板** (`mode=large`) は釦の列・左下に固定の「作業を止める」など・右下に「端末で答える」・右上に計。
+- 大きな板の通常の釦は高さ・幅 **96px 以上** (倍率 1 の CSS px)、間は 24px・端の余白 48px。幅 720px 以下では余白と間を 16px にして縦 1 列・計を隠す。**高さ 760px 以下では**釦の最小を 72px、余白 16px・間 12px にし、本文の枠を最低 140px 保つ。残りの秒は 60 秒を切ったら色を変える。
+- **字の決まり** (以下は `scale=font=1`): 大きな板は釦と本文 28px・頭 36px・問い 32px・釦の説明 22px・本文の巻物と状態の行と帯 24px・計と小さな釦 20px (番号と既定の印は 18px)。小型は本文 16px・頭と問い 18px・出どころと本文の見出し 14px・縦 1 列の釦 20px・その説明 16px。設定などの小さな釦は高さ 44px・キーと click だけで押す。
+- **扇 (OhGi)** (`mode=small`・11/6 に実装済み) = 要を下に、骨が 168 度開く折り扇。左の親骨は固定の位置の釦 (止める側・口ごとの意味は §4.3)、右の親骨は端末で答える。羽根の字は日本語で「一・二・三・四・五・六」と「止・端」の一文字 (英語は `1`〜`6`・`Esc`・`0`)。羽根は 30px の字、字の位置の幅は 84 CSS px 以上・押せる帯の厚みは 100px。選択肢が増えても扇を縮めず大きくし、収まらなければ巻物にする。
+- **地紙は内外 2 段** = 外の帯は押す羽根・内の帯は押せない書の帯。見つめた羽根の全文を内の帯に弧に沿って出し、読むために羽根を離れても消さない (別の羽根への注目や画面の更新で替わる)。読む所を押す所から分けた理由 = **全文を読む視線が他の羽根を押さないため**。キーの焦点と走査でも同じ文を出す。
+- 書の帯 (`fanScript`) は短ければ 28px の 1 行、次に 22px の 1 行、それでも長ければ 20px の 2 行。帯に入らない時だけ末尾を「…」にし、上の欄に全文を 24px で出す。説明は `desc=on` の時に上の欄へ 17px、一覧は 15px。書の帯の字の大きさはこの計算で決め、それ以外の上記の字は `font` 倍、頁全体は `scale` 倍 (§4.2)。小型の ask_board の見出しは「次の一手 (Claude の先回り)」。
+- 扇にするのは補助を除く選択肢が 2〜6 個で、権限の札、または 1 問・単一選択の札 (`fanEligible`)。複数の問い・複数選択・確かめの画面などは縦 1 列に戻す。「断る」「戻る」などの補助の釦は羽根の外に残す (最小幅 96px・高さ 44px)。ask_board も「断る」と「この問い合わせを閉じる」を両方持つ。
+- 小型では本文を独立した枠にし、扇がある時は本文側の枠を最低 96px・その中の本文を最低 48px 保つ。本文と上の説明欄は必要な時に巻物にし、低い窓でも扇のために本文を潰さない。前の札の終了の文は、次の札がある間は出さない。
+- **見つめて本文を送る** (`scrollDirection`) = 本文などの巻物の枠で、上端から 32% 未満を見ると上へ・68% より下を見ると下へ、真ん中は止まる (毎秒 90px)。触る入力・設定の表示中・頁が非表示の間は送らず、pointer が窓の外へ出たら止める。
+- 明暗と高コントラストの配色を選べる (暗い配色の地は夜藍)。`theme=auto` は `prefers-color-scheme` に従い、`prefers-reduced-motion` では点滅と動きを抑える。
+- 扇の羽根・書の帯・一覧の印・朱の印の書体は **佑字 粛 (Yuji Syuku)** (`911304a`)。`board/static/` に WOFF2 と SIL OFL 1.1 の文を同梱し、板自身から配る (`font/woff2`)。外の font・CDN を読まない (offline で動く)。言葉は日本語と英語 (`navigator.language` で選ぶ・`?lang=` で上書き)。
 
 ### 4.2 入力の 5 通り (選択式の問いなら、どれでも同じ仕事)
 
 | 入力 | 動き |
 |---|---|
-| 視線 (滞留) | 釦の上に pointer が留まると縁が満ちていき、**0.8〜1.2 秒** (既定 1.0・`?dwell=`) で押す。揺れの許し 150 ms (外れても 150 ms のうちに戻れば数え続ける)。OS の側の視線の道具が click するなら `?dwell=0` で頁の滞留を止め、click で押す。実装 (11/4): `?dwell=` は 0 (止める) か 0.3〜5 秒に収める (10 を超える値は ms と読む)。**外れていた長さが 150 ms を超えて戻ったら頭から数え直す・こま (描画) の間が 150 ms を超えて空いた時も頭から** (その間 留まっていたか分からない・外部のレビューの BLOCKER を再現して直した) |
-| キー | Tab / Shift+Tab で移る・Space / Enter で押す・数字キー 1〜6 で n 番目の釦・Esc = 固定の位置の釦。猶予のうちは Backspace・Esc = 取り消す |
-| スイッチ 1 鍵 | 走査 = 光る釦が既定 1.5 秒ごと (`?scan=`) に次へ (釦の列 → 固定の位置の釦 → 端末で答える → 頭へ)・1 鍵 (既定 Space・`?key=`) で選ぶ。**猶予のうちは走査を止め、鍵を一度離してからの次の押下 = 取り消す**。実装 (11/4): 走査は `?scan` を付けた時だけ (`?scan` だけ = 1.5 秒・`?scan=N` = 0.5〜10 秒)・1 鍵は走査の間だけスイッチとして扱う (走査なしの Space はキーの行のまま)・焦点を奪わない窓にはキーが届かない = 板に焦点がある時だけ (§1) |
+| 視線 (滞留) | 釦の上に pointer が留まると縁が満ち、既定 1.0 秒で押す (`dwell` = 0.3〜5 秒・0 は click だけ・10 を超える値は ms と読む)。揺れの許しは 150 ms。**外れて 150 ms を超えて戻った時と、描画の間が 150 ms を超えて空いた時は頭から数え直す**。11/6 の `inputActive()` は頁が見えていれば **焦点が無い窓でも滞留を数える** = 端末で作業したまま隅の窓を見て押すため |
+| キー | Tab / Shift+Tab で移る・Space / Enter で押す・数字キー 1〜6 で n 番目の釦・0 = 端末で答える・Esc = 固定の位置の釦。扇の矢印キーは見た目の順に移る。猶予のうちは Backspace・Esc = 取り消す |
+| スイッチ 1 鍵 | `scan` を有効にすると指定の秒で次を光らせる (値なしの `?scan` は 1.5 秒・設定の既定は切)。列では釦の列 → 固定の位置の釦 → 端末、扇では選択肢の羽根 → 止 → 端 → 補助の釦 → 頭へ。1 鍵 (既定 Space・`key`) で選ぶ。**猶予のうちは走査を止め、鍵を一度離してからの次の押下 = 取り消す**。選択中は窓内の pointer の最後の動きから 1.5 秒間、走査の光を止め、その後は頭から再開する (`409703d`・見つめて読む動きを邪魔しない)。焦点が無くても見えていれば走査できるが、キーで選ぶには板に焦点が要る。走査なしの Space はキーの行のまま |
 | 携帯 | 同じ頁 (縦 1 列に並べ替え)・触れたら押す (滞留なし)・猶予のうちは「取り消す」を触る (携帯の場面は提出版の外・§4.4。触れて押す動きと縦 1 列は残る) |
 | マウス | click で押す |
 
 - **表示の世代** (v1.1 の判断): 札の id・設問の番号・札の状態・釦の並びのどれかが変わったら、頁は世代を 1 つ進める。進んだら ①滞留の時計を全部止め、選択 (複数選択の印を含む) を消す ②pointer が一度釦の外へ出て入り直すまで滞留を数えない ③変わった時に押されていた鍵 (キー・スイッチ) は、離すまで数えない ④走査は頭から数え直す。期限切れ・別の画面からの答えで札が替わっても、同じ位置への注視が次の札の釦に移らない。
 - 押した直後も同じ (全部の釦の滞留を止め、pointer の入り直しまで数えない = 見続けて 2 回押さない)。
-- 頁の非表示 (`visibilitychange`) と焦点の喪失 (`blur`) でも滞留を解く = 世代が進んだ時と同じ扱い (時計を止め、pointer の下の釦は一度外へ出て入り直すまで数えない・押したままの鍵は離すまで数えない) (11/4 の実装・上の BLOCKER の直しと同時)。
+- 頁の表示 / 非表示 (`visibilitychange`) と焦点の出入り (`blur` / `focus`) の瞬間には `releaseDwell()` で時計を解き、pointer の下の釦は一度外へ出て入り直すまで数えない。焦点が無い間ずっと止める意味ではない。押したままの鍵は離すまで数えず、`focus` では走査も頭から数え直す (11/6 の実装)。
 - ①で消すのは、いまの画面の選択 (複数選択の印) だけ。**同じ札の中で答えた前の問いの選択は持つ** (確かめの画面に並ぶ・待ちの数や帯で板が更新されても消さない)。札が替われば全部捨てる (11/4 の実装)。
 - 頁は描いた時の `seq` を `/answer` に付ける (§3.3 = 古い画面への押しは `409`)。
-- 設定は URL の引数と頁の歯車 (キー・click だけ)。端末の側の設定 file は作らない。
+- 設定は URL の引数と頁の歯車 (キー・click だけ)。歯車の変更は URL と `localStorage` の `blemma.options` に保つ。端末の側の設定 file は作らない。
+
+**設定の鍵** (11/6・`board_core.js` の `parseOptions`):
+
+| 鍵 | 既定 | 値と役 |
+|---|---|---|
+| `mode` | 頁は `large`・`blemma.py` は `small` | `small` = 「扇 (OhGi)」/ `large` = 「大きな板」 |
+| `dwell` | `1` | 滞留の秒 (0.3〜5)・`0` で止める |
+| `scan` | `off` | 走査の秒 (0.5〜10)・`0` / `off` で止める・値なしの `?scan` は 1.5 秒 |
+| `key` | `Space` | スイッチのキー (`Enter`・英数字・`KeyA` など、実装の許すキー名) |
+| `lang` | `auto` | `auto` (`navigator.language` に従う) / `ja` / `en` |
+| `sound` | `off` | `on` / `off` (合図の音) |
+| `scale` | `1` | 頁全体の倍率 (0.75〜2) |
+| `font` | `1` | 字の倍率 (0.8〜2・書の帯は §4.1 の計算) |
+| `theme` | `auto` | `auto` / `light` / `dark` / `contrast` |
+| `desc` | `on` | `on` / `off` (選択肢の解説) |
+| `trail` | `off` | `on` / `off` (pointer の所に点を重ねる・録画用・押下を遮らない) |
+
+- 優先の順 = **URL > 頁の保存値 > 既定**。不正な値はその鍵の既定に戻す。起こす時は **`--set` (同じ鍵は最後) > `BLEMMA_OPTS`** を URL に載せる。`mode` だけは **`--small` / `--large` > `--set mode=…` > `BLEMMA_OPTS` の mode > `small`**。URL に渡さない鍵には頁の保存値が効く。
+- 窓の **☀ / ☾** は「明るい配色へ」/「暗い配色へ」の釦 (キー・click だけ)。歯車の「配色」と同じ `theme` を替え、URL と頁の保存値に保つ。
 
 ### 4.3 固定の位置の釦・取り消す・端末で答える
-- **固定の位置の釦** = 全部の札の**同じ位置** (左下・Esc でも押せる)。位置は同じで、字と意味は口ごと (v1.1 の判断):
+- **固定の位置の釦** = 全部の札の**同じ位置** (列では左下・扇では左の親骨・Esc でも押せる)。下の字は扇では「止」の羽根の全文として見せる。意味は口ごと (v1.1 の判断):
 
 | 口 | 釦の字 | 返す値 | 効き |
 |---|---|---|---|
@@ -462,12 +498,13 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
   作業全体を止められる範囲 = §5.4。
 - **取り消す** = 押した後の猶予のうちだけ、上の中央に大きく出る (押した釦の上には出さない = 見続けていても誤って取り消さない)。視線・キー・スイッチ・携帯の 4 つとも取り消せる (§4.2)。`/answer` の返りを待たずに取り消せる。取り消すと札は shown へ戻り、確かめの画面がある札 (複数の問い・複数選択) は**確かめの画面に戻る** (答えた選択を持ったまま・頭からではない・頭からは「やり直す」の釦) (11/4 の実装)。
 - **拒否は 2 段** (11/4 の実装) = 権限の札の「拒否 …」を押すと、理由 3 つ (別のやり方でお願いします・いまは要りません・先に説明してください) と「戻る」の画面に替わり、理由を押して送る。
-- **端末で答える** = 右下・96px 以上。押すと (猶予の後に) hook は無出力で終わり、端末の dialog / form が出る (自由記述・板で描けない物・キーで答えたい時の道)。§3.7 (b) の古い札では字を「端末で答えた・閉じる」に替えて同じ動き。→ 実装の判断 (11/4): 板からはどの札が古い (端末で答え済み) か分からない = 字は替えず、釦の下に常に「端末で答えた時も、これで閉じる」を添える。
+- **端末で答える** = 列では右下・扇では右の親骨「端」(寸法は §4.1)。押すと (猶予の後に) hook は無出力で終わり、端末の dialog / form が出る (自由記述・板で描けない物・キーで答えたい時の道)。板からはどの札が端末で答え済みか分からないので、字は替えない。補いの文「端末で答えた時も、これで閉じる」は列では釦の下、扇では `desc=on` で注目した時の上の欄に出す。
 - **自由記述と入力の直しは端末へ** = 視線の利用者には機能の縮小 (打鍵が要る)。縮小を小さくする道:
   - 候補の釦 = Elicitation の string の `default` を釦に (§2.3・**提出版の外** = 11/4 の実装は作っていない)・ask_board はありそうな答えを先に選択肢に入れる (§2.5 の skill の作法)。
   - 端末の打鍵を最小にする公式の道 = screen reader mode (`--ax-screen-reader` など)。"menus you'd normally navigate with the arrow keys, including permission prompts, become numbered lists ... Type the number of the option you want and press Enter." (裏取り §3.5【raw】) = 番号と Enter の 2 打鍵。質問の dialog と form で同じに効くかは確かめていない = README の助言の 1 行に留める。
 
-### 4.4 携帯で見る (server は 127.0.0.1 から広げない・**11/4 = 提出版の外**)
+### 4.4 小窓を常に手前に・携帯で見る
+- **常に手前** (11/6 に実装済み) = `documentPictureInPicture` に対応するブラウザの小型表示で、利用者が「常に手前」をキーか click で押す。同じ頁の表示と入力を Document Picture-in-Picture の窓へ移し、「元の窓へ」か窓を閉じる操作で戻す。非対応なら釦を出さない。app モードだけで常に手前になるわけではなく、位置も頁から固定しない。
 - **11/4 の転換で、携帯の場面と転送は提出版の外** (デモにも入れない・§1・§9)。残る物 = server の `--allow-host` (Host の照合に名を足す)・頁の縦 1 列の見え方 (小窓でも使う)・頁の「携帯で開く」の釦 (`#t=` つきの URL を大きく出す)。携帯から Claude Code に答えたい人には、README で公式の Remote Control を案内する (BLEMMA の頁を携帯へ届ける仕組みではない = 板の札を携帯で答えられるとは約束しない)。下は利用者が自分で転送する時の線 (変えない)。
 - 板の server は LAN にも外にも開かない。携帯で見る時は利用者が自分の転送で 127.0.0.1 へ届ける = Android の USB なら `adb reverse tcp:8765 tcp:8765` (携帯の `http://127.0.0.1:8765/#t=…` がそのまま通る)・`ssh -L`・自分の VPN の転送 (名が `127.0.0.1` / `localhost` でなければ `--allow-host <名>` で照合に足す)。
 - その時は、利用者が設けた転送の先へ札の本文と token が渡る (BLEMMA の保証の外・§3.8)。機外へ一切出さない使い方では携帯を使わない。
@@ -508,6 +545,7 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 - 127.0.0.1 だけ・起動ごとの token (見出しで)・Host の照合・CORS なし (§3.3)。
 - 札ごとの一意の ID と、終わり 4 つ (11/4 = `resolved` は作らない) の排他の確定・期限は表示から数え作成からの上限で抑える・「渡しました」と「許可されました」を分ける (§3.4〜§3.6)。
 - 頁がどこにも開いていない時は札を受けない (見る人の判定・§3.4 = hook は無出力で端末へ・待ちと表示の札は expired・決めた札は猶予を完走)。
+- 「常に手前」は利用者が開く Document Picture-in-Picture (§4.4)。非対応なら釦を隠し、開けなければ「常に手前を開けませんでした」と出す。OS 固有の最前面の保証は足さない。
 - 端末で先に許可の側を答えた権限の札は、hook が止められず遅れた板の答えは効かない = 人が「端末で答える」で閉じる・`--perm-wait` を縮める助言 (§3.7 (b))。
 - 札は 1 件ずつ・出どころを頭に・Bash の command は省かない・「次から訊かない」は対象と保存期間を見せ、モードの切り替えは別の字・`bypassPermissions` へ移す suggestion は出さない (§2.1)。
 - 取り消しは hook へ返す前・4 つの入力とも・表示の世代が変わったら滞留と選択を解く (§3.6・§4.2)。
@@ -536,7 +574,7 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 | ExitPlanMode の調べ | 板に出さないので期間の中では要らない | 公式の不具合が直った後 |
 | 板の text 欄 (自由記述)・視線の文字盤 | 期間の中では作らない (§4.3 の縮小を小さくする道で補う) | 提出の後 |
 | 入力を直して許可 (`updatedInput`) | 直した文の確かめの画面が要る | 元の入力と差分を見て定型の候補から選ぶ形で |
-| Stop の hook で次の一手 (5 本目) | 応答のたびに待ちが入り、キーで使う人の端末を塞ぐ | 提出の後 |
+| Stop の hook で次の一手を問い、続行を指示する | 応答のたびに待ちが入り、キーで使う人の端末を塞ぐ。状態だけを送る Stop は実装済み (§2) | 提出の後 |
 | 携帯の QR・plugin として配る形 | 余りの機能 | 提出の後 (plugin は公式の plugins の頁で確かめてから) |
 
 ---
@@ -556,7 +594,7 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 ### 6.2 BLEMMA の 3 点 (README と動画の頭に・3 つとも動画で実の操作を見せる = §9)
 1. **先回り** = 問いが出る前にエージェントが `ask_board` で選択肢を作る。人は選ぶだけ。
 2. **選択式の問いは同じ板で全部** = 権限・Claude 自身の質問・MCP の問い (elicitation) を 1 枚の板で。
-3. **視線・スイッチ・小窓 (机の全員) の UI** (11/4 の転換で「携帯」→「小窓」) = 滞留で押す 96px 以上の釦・固定の位置の釦・取り消し 3 秒 (1 鍵でも)・1 鍵の走査・同じ頁が小窓 (app モード) でも動く。
+3. **視線・スイッチ・小窓 (机の全員) の UI** (11/4 の転換で「携帯」→「小窓」) = 滞留で押す釦 (寸法は §4.1)・固定の位置の釦・取り消し 3 秒 (1 鍵でも)・1 鍵の走査・同じ頁を大きな板と扇で使う。
 - 3 点の前に置く 1 行 = テーマ 2 の名指し (§1「名乗るテーマ」= 操作の壁を取り払う)。
 
 ### 6.3 代替の道 (BLEMMA が hooks を選ぶ理由)
@@ -574,40 +612,55 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 
 ## 7. 作り
 
-### 7.1 file の木 (repo の根 = `blemma/`・11/4 の時点)
+### 7.1 file の木 (repo の根 = `blemma/`・11/6 の時点)
 ```
 blemma/
   blemma.py                     起こし方の 1 行 = 板を用意 (居れば使い回す)・頁を小窓で開く・設定を生成・claude を起こす (§3.2)
   board/server.py               127.0.0.1 の小さな HTTP・待ち行列・状態の確定・期限・token・Host・取り消し・見る人の判定・記録
   board/README.md               板だけの起こし方・旗・URL の引数・入力・手の確かめ 5 分 (日本語 + 英語の要約)
   board/static/index.html       板の頁 (1 枚)
-  board/static/board_core.js    頁の純粋な計算 (滞留・走査・釦の並び・字・計) = DOM と通信なし・node で読める
-  board/static/board.js         long-poll・入力・世代・取り消し・計の送り (DOM と通信)
-  board/static/board.css        無地・高コントラスト・96px
+  board/static/board_core.js    頁の純粋な計算 (滞留・走査・扇の形と字・設定・状態の優先・計) = DOM と通信なし・node で読める
+  board/static/board.js         long-poll・入力・世代・取り消し・扇・本文送り・常に手前・計の送り (DOM と通信)
+  board/static/board.css        大きな板・折り扇・明暗と高コントラスト・低い窓の本文
+  board/static/YujiSyuku-Regular.woff2  扇の書体 (佑字 粛・板自身から配る)
+  board/static/YujiSyuku-OFL.txt        書体の SIL OFL 1.1
   board/state/                  (git の外) run.json・log-*.jsonl・settings.generated.json・mcp.generated.json
-  hooks/_client.py              4 本の共通 = run.json を読む・POST /ask・GET /wait・総期限・転送を追わない・失敗は全部 None
+  hooks/_client.py              hooks 6 本の共通 = run.json を読む・POST /ask・GET /wait・通知と状態・総期限・転送を追わない
   hooks/permission.py           PermissionRequest → 板 → decision
   hooks/ask.py                  PreToolUse (AskUserQuestion) → 板 → updatedInput
   hooks/elicitation.py          Elicitation → 板 → action / content
   hooks/notify.py               Notification → 板 (光・音)
+  hooks/state.py                UserPromptSubmit / Stop → 状態だけを 1 回送る・無出力・exit 0
   mcp/blemma_mcp.py             MCP server (stdio・JSON-RPC 2.0 を自前で)・道具 ask_board
   skills/board/SKILL.md         作法 (§2.5・日本語 + 英語の要約)
-  examples/settings.blemma.json hooks 4 本 + 許可の 1 行の雛形
+  examples/settings.blemma.json hooks 6 本 + 許可の 1 行の雛形
   examples/mcp.blemma.json      同梱の MCP server の雛形
   examples/README.md            雛形を手で使う 3 手順 (普段は blemma.py で足りる)
-  tests/                        pytest 9 本 = conftest.py + 試験 8 本 (§7.3・試験だけ pytest・成果物は標準ライブラリだけ)
+  tests/                        conftest.py + 試験の Python file 10 本 (§7.3・試験だけ pytest・成果物は標準ライブラリだけ)
+    test_state.py               状態の 2 本・実の板との通信・状態の優先と古さ
+    browser_ohgi.cjs             実の Chromium で扇の描画・入力・縦 1 列・設定を確かめる
+    test_browser_ohgi.py         実ブラウザの試験を隔離して起こす (描画ができなければ skip)
   docs/                         設計・裏取り
+    img/ohgi.png                 扇の画面
   README.md (JA + EN) / LICENSE (MIT)
 ```
 - Python 3.10 以上・標準ライブラリだけ (`json`・`sys`・`os`・`pathlib`・`urllib.request`・`http.server`・`threading`・`secrets`・`time`・`webbrowser`)。Windows / mac / Linux。提出版の handler は command 型だけ。実装 (11/4) で使った物 = 上に加えて `http.client`・`socket`・`select`・`hmac`・`argparse`・`subprocess`・`shutil`・`tempfile`、画面の寸法に `ctypes` (Windows)・`tkinter` (mac / Linux・無い環境では既定のブラウザ)。client の通信は `urllib.request` でなく `http.client` (proxy を通さない・転送を追わない)。
 - hook は `_client.py` を同じ dir から import する (script の dir は `sys.path` の頭)。実装 (11/4): `python -I` / `-P` でも読めるよう、hook は自分の dir を `sys.path` の頭に足す・それでも読めなければ exit 0。
 
-### 7.2 設定の雛形 (11/2 以後に `examples/` に作る・ここでは文書の中だけ → 11/4 に `examples/` に作った・`blemma.py` は同じ形を `board/state/` に生成する)
+### 7.2 設定の雛形 (11/4 に `examples/` に作り、11/6 に hooks 6 本へ・`blemma.py` は同じ形を `board/state/` に生成する)
 `examples/settings.blemma.json` (`<BLEMMA>` = clone した場所の絶対パス・`<PY>` = mac / Linux は `python3`、Windows は `python.exe` の絶対パス):
 ```json
 {
   "permissions": { "allow": ["mcp__blemma__ask_board"] },
   "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "<PY>", "args": ["<BLEMMA>/hooks/state.py"],
+                     "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "<PY>", "args": ["<BLEMMA>/hooks/state.py"],
+                     "timeout": 5 } ] }
+    ],
     "PermissionRequest": [
       { "matcher": ".*",
         "hooks": [ { "type": "command", "command": "<PY>", "args": ["<BLEMMA>/hooks/permission.py"],
@@ -631,7 +684,7 @@ blemma/
   }
 }
 ```
-- 11/4 の実装の通り: `statusMessage` の文は日本語 + 英語 (spinner の行に出る・§2.0)・4 本とも同じ文 (Notification にも付けた)。
+- `statusMessage` の文は日本語 + 英語 (spinner の行に出る・§2.0)・従来の 4 本は同じ文 (Notification にも付けた)。追加の `UserPromptSubmit` と `Stop` は `hooks/state.py` = 状態だけを 1 回送り、無出力・exit 0。matcher と `statusMessage` は付けない。
 `examples/mcp.blemma.json`:
 ```json
 { "mcpServers": { "blemma": { "command": "<PY>", "args": ["<BLEMMA>/mcp/blemma_mcp.py"] } } }
@@ -649,24 +702,27 @@ blemma/
 - 形の出典: 3 段の形・`args`・`timeout`・`statusMessage`・matcher の規則 = hooks.md【断片】(裏取り §1.3)。`.mcp.json` の `mcpServers` の形は公式の mcp 頁 (この裏取りは elicitation の節だけ読んだ = 書き手の知識・初日の確かめ 3 の前提)。
 
 ### 7.3 試験と検収
-- **自動の試験** (偽の Claude Code = stdin に JSON を流す・偽の頁 = HTTP で answer を打つ): hook の入出力の契約 (4 本 × 答え・断り・固定の位置の釦・端末で・期限・板なし・壊れた入力・範囲外の番号 → 公式の JSON か空・exit 0)・server の状態の確定 (§3.5 の全部の遷移・§3.6 の優先の順・§3.4 の数)・token と Host・ask_board の JSON-RPC (initialize・tools/list・tools/call の中の elicitation/create の往復・decline / cancel・capability なし)。自動の試験は pytest (実行の手順は README に書く)。
-- **11/4 の時点の自動の試験 = 346 本** (`python -m pytest tests -q`・試験の file 8 本 + `conftest.py`):
+- **自動の試験**: hook の入出力の契約 (判断を返す 3 本・Notification・状態の 2 本)・server の状態と期限・token と Host・ask_board の JSON-RPC と任意の説明・頁の入力と設定・扇の形。Claude Code の代わりに stdin / JSON-RPC を送り、頁の代わりに HTTP で answer を打つ試験を含む。実ブラウザの描画は別の試験で通す (下)。
+- **11/6 の実行記録 = 403 passed + 1 skipped** (`python -m pytest tests -q`・全 404 件・試験の Python file 10 本 + `conftest.py`)。1 skipped は実ブラウザの試験 = Chromium の描画が要る。node と組み込みの WebSocket も必要で、使えない時は skip する。
 
 | file | 本 | 見る物 |
 |---|---|---|
-| `test_board_core.py` | 44 | 板の server の状態の確定 (§3.4〜§3.6・時計を差し替えて直に・HTTP なし) |
-| `test_server_http.py` | 22 | 板の server の HTTP の口 (token・Host・CORS なし・静的の頁・long-poll・run.json・port の使用中) |
+| `test_board_core.py` | 52 | 板の server の状態の確定 (§3.4〜§3.6・時計を差し替えて直に・HTTP なし)・閉じた頁の long-poll |
+| `test_server_http.py` | 23 | 板の server の HTTP の口 (token・Host・CORS なし・静的の頁・long-poll・run.json・port の使用中・壊れた要求の行) |
 | `test_client.py` | 48 | 共通の client (板なし・接続断・時間切れ・壊れた返り・総期限・転送を追わない・答えと payload の照合) |
-| `test_board_js.py` | 9 | 頁の JS を node で走らせる (`board_core.js` の純粋な計算・`board.js` を DOM の無い vm で・滞留の入り直し・node が無ければ skip) |
+| `test_board_js.py` | 25 | 頁の JS を node で走らせる (純粋な計算・DOM の無い vm・滞留・扇・設定・状態の優先・node が無ければ skip) |
+| `test_browser_ohgi.py` | 1 (skip) | `browser_ohgi.cjs` で実の DOM・描画・当たり判定・入力・HTTP・縦 1 列・設定 (製品の関数は差し替えない) |
 | `test_hooks.py` | 108 | hook 3 本 (permission・ask・elicitation) を別 process で・偽の板・stdin は v2.1.318 の実の形 (値はダミー) |
 | `test_notify.py` | 29 | notify と共通の client を別 process で・偽の板と実の板 (`python -I` でも届いて exit 0) |
-| `test_mcp.py` | 53 | MCP server を別 process の UTF-8 の入出力で (JSON-RPC・elicitation/create の往復・取り消し・時間切れ) |
-| `test_launcher.py` | 33 | 起こし方 (板は実の子 process・claude とブラウザは起こさない) |
+| `test_mcp.py` | 63 | MCP server を別 process の UTF-8 の入出力で (JSON-RPC・説明を実の hook と板へ運ぶ往復・取り消し・時間切れ) |
+| `test_launcher.py` | 40 | 起こし方・設定の優先 (板は実の子 process・claude とブラウザは起こさない) |
+| `test_state.py` | 15 | UserPromptSubmit / Stop の無出力・状態だけの送信・総期限・実の板の認証と状態の古さ |
 
 - **headless のブラウザでの確かめ** (自動の試験の外・11/4): 隔離した設定の Chrome / Edge で実の頁を動かす確かめ 23 件 + 13 件 (全部通った)。
-- **まだ通していない物** (11/4 の時点): ①実の `claude` との往復 = 完成版の hook → 実の server → 実の頁 → Claude Code の続行 (hook の試験の相手は偽の板・MCP の試験の答えは試験が作る = 11/5 の検収 = 下の 6 つ) ②実のブラウザでの滞留の入り直しと頁の非表示 (`visibilitychange`) (node の試験と headless だけ・視線の道具で押せるかは作り手の目で確かめる) ③同時の HTTP の競合 (2 画面の試験は `answer()` を順に 2 回呼ぶだけ) ④mac / Linux (走らせたのは Windows 11 だけ)。
+- **実機の検収** (11/6): 出荷の code と実の Claude Code v2.1.318 で 15 経路中 14 が PASS・残る 1 件は複数行の commit の suggestion の形の問題。異常の経路で勝手に続行した例は 0。検収で直した 4 件・扇を実物で見て直した所 = §16。
+- **自動の試験だけでは通らない経路**: `test_board_js.py` は `init()` と通信を差し替え、`test_pip_uses_visible_window_focus_and_retains_held_keys` も代用品の窓でイベントを渡すだけで、実の `requestWindow()` と描画は通らない。`browser_ohgi.cjs` にも PiP を開く操作は無い。`test_pending_returns_at_once_when_the_viewer_closed` は `alive` を偽の切断判定に差し替え、実の接続の切断検知までは通さない。`test_launcher.py` は `monkeypatch` で Claude Code とブラウザの起動を差し替える。403 件の合格だけで、これらの実機の検収まで済んだとはしない (残りは §10.4)。
 - **皿ごとの検収** (11/3・11/4) は実の `claude` で、完成版の hook の出力を Claude Code に解釈させる (偽の答えで済ませない)。
-- **完成版の異常の経路の実機の検収** (11/5・実の `claude` と実のブラウザ): ①端末先着 (§3.7 の (a) か (b) の通りに閉じる) ②板先着 ③待機中の server 停止 ④2 件同時 (待ち行列と 2 件目の期限) ⑤2 画面からの競合 (PC と携帯で同時に押す → 11/4 の転換で大きな頁と小窓で同時に押す) ⑥スイッチの取り消し (1 鍵で猶予のうちに)。6 つとも §3.5 の表の状態と頁の文になること。
+- **完成版の異常の経路の検収項目** (当初 11/5 の予定・11/6 の記録は §16): ①端末先着 (§3.7 の (a) か (b) の通りに閉じる) ②板先着 ③待機中の server 停止 ④2 件同時 (待ち行列と 2 件目の期限) ⑤2 画面からの競合 (大きな頁と小窓で同時に押す) ⑥スイッチの取り消し (1 鍵で猶予のうちに)。§3.5 の表の状態と頁の文に照らす。
 - **初日の確かめの成功を完成版の検収に代用しない** (初日は使い捨ての試し・§10.1)。
 
 ---
@@ -693,30 +749,35 @@ v1.2 = 締切が 11/8 20:00 (参加者ガイド・10/31) なので v1.1 の 8 �
 
 ---
 
-## 9. 3 分のデモの台本 (v1.2 = すべて日本語・尺 2:50 前後・冒頭 30 秒に 3 点とテーマ)
+## 9. 3 分のデモの台本 (11/6 版・すべて日本語・総尺 2:45)
 
-- **11/4 の転換で直す点** (台本の本文と下の表は v1.2 のまま・直しは 11/6 の皿): 1:30 の場面は携帯でなく PC の板で先回り (`ask_board`) を見せる・小さな窓 (app モードの小窓) を 2:40 の前に入れる・携帯の場面を外す・0:00 の声「目だけで仕事を 1 つ仕上げます」はそのまま。
-- 規約 (参加者ガイド・主催の PDF): 提出資料も含めてすべて日本語 / 動画は 3 分・審査員は制限時間で視聴を止める = 最も重要な点を冒頭に / 期間中に作った機能・コード・実装**のみ**を紹介し、審査員が「イベント中に作られたもの」を判別できないと失格 / スライドの発表は不可・実際に動いている所を中心に / 1080p 以上・全画面・タスクバーを隠す・録る前に通知を止める。
-- 画面 = 左に板の頁 (ブラウザ)・右に端末 (`claude`)・板の右上に計。携帯の画面は場面の時だけ差し込む。作り手の個人の画面・通知・部屋は映さない (v1 の判断)。**画面の隅の札** (v1.2) = 場面ごとに「BLEMMA (期間中に作った物)」「OS の視線入力 (既存)」「Claude Code 本体 (既存)」の 3 種から当たる物を小さく出す = 審査員が期間中の物を判別できる。
-- 仕事 = ダミーの公開 repo (**日本語の README**・v1.2 = 規約の「すべて日本語」) の誤字を直して commit。誤字 2 か所と表記の揺れ 1 つ (候補 = サーバー / サーバ) を**同じ 1 文**に置く (Edit が 1 回で済む)。ダミーの CLAUDE.md に「迷う所は AskUserQuestion か ask_board で訊く」の 1 行 (= Claude の質問が自然に出る)。ダミー repo の README の文案は前に用意してよい (文書)・repo とその設定は 11/5〜11/6 に作る (期間中の物)。訊かれるのを Edit と `git commit` だけにする許可の行 (`git add`・`git status`・`git diff`) は稽古 (11/6) で決める。
-- 冒頭の 1 行 = デスクトップの shortcut (OS の視線クリック 1 回) が `claude --settings … --mcp-config … "README.md の誤字を直して commit して"` を開く。v0 の「板の定型の釦から 1 行」は公式の口が無い (研究版の Channels か 5 本目の Stop の hook が要る・v1 の判断)。字幕で「起動は視線クリック 1 回 (板の計の外)」と書く。
-- 声 = 先に合成した日本語の声 (作り手の手元の TTS・repo の外・**BLEMMA の機能として見せない** = 隅の札にも出さない) を重ねる・**字幕は日本語** (提出資料はすべて日本語 = 英語の字幕は付けない)。録り = 作り手の PC の画面を 1 本 (OBS か ffmpeg の gdigrab・1080p 以上・全画面・タスクバーを隠す・通知を止める)。録りの `claude` は隔離した設定の dir で起こす (作り手の個人の hooks・statusline を映さない = §10.1 の 5)。声の文は案 (11/7 の録りの前に作り手が直す)。
-- 冒頭 30 秒で言う物 = テーマ 2 (操作の壁・§1) と 3 点 (§6.2) = 0:00 の題の 1 行にテーマ 2・0:12〜0:25 の声に 3 点 (外部のレビュー 11/1 の指摘で入れた)。語りの並び (壁の外側の具体的なひとり = 視線の作り手が先 / 携帯・片手・視線の 3 人が先) は台本の精査で決める (割れたら作り手に 1 札) = 下の 0:00〜0:12 の声は v1.1 の案のまま。
+- **語り手** = 作り手の合成の声。作り手は話せないので、代弁者が名乗って語る (三人称)。語り手は期間前からある物で、BLEMMA の機能ではない = 札と末尾に「ナレーション = 既存・提出物の外」。主語は常に BLEMMA か JaH。
+- **絵** = シンプルな字 + 本物の操作。地は夜藍、字は佑字 粛の白、差し色は真鍮 1 色。字は語りの骨 (冒頭・3 つの区切り・締め) だけ = 8 枚・32 秒。**実画面が 80%** (規約 = 実際に動いている所が中心・スライドの発表は不可)。箇条書きと図は置かない。
+- 規約 (参加者ガイド・主催の PDF・11/6 の案内): 3 分以内・日本語・期間中に作った機能だけを紹介・1080p 以上・全画面・タスクバーを隠す・通知を止める。**画面の隅の札** = 場面ごとに「BLEMMA (期間中に作った物)」「OS の視線入力 (既存)」「Claude Code 本体 (既存)」。
+- 仕事 = ダミーの repo (日本語の README の誤字と表記の揺れ)。頼みの文 =「README.md の誤字と表記の揺れを直して commit して」= 質問 → Edit → commit → `ask_board` の順に出る (実測)。録りの repo は設計の文書の外に置く (祖先の CLAUDE.md が読まれるため)。
+- 物語の輪 = 冒頭「代わりに話します」→ 締め「代わりに、話しました」。受賞の組の型 = 人が先・実物がそのまま入力になる・締めは冒頭の人へ戻る (決勝の動画 14 本の分析)。顔は出さず、視線の点を作り手の印にする。
 
-| 秒 | 画面 | 声 (案) |
-|---|---|---|
-| 0:00〜0:12 | 題「BLEMMA — gaze-board」・屋号・一言・テーマ 2 の 1 行・3 点の字幕 (先回り・同じ板・視線とスイッチと携帯)。板と端末を並べた絵 | 「ビュプロです。わたしは視線だけで打ちます。今日は BLEMMA で、目だけで仕事を 1 つ仕上げます」 |
-| 0:12〜0:25 | shortcut を視線で押す (OS の 1 回・隅の札「OS の視線入力 (既存)」) → 端末で Claude Code が README を読む | 「Claude Code に頼むのは、起動の 1 回だけ。問いは先回りの選択肢ごと 1 枚の板に出て、視線・スイッチ・携帯で答えます」 |
-| 0:25〜0:35 | **AskUserQuestion** = 板に「表記を揃えます: サーバー / サーバ」の 2 択 → 視線で「サーバー」(10 秒) | 「Claude の質問も、板に大きな釦で出ます」 |
-| 0:35〜1:05 | Edit の権限 → 視線で「許可 (今回)」→ 取り消しの猶予の数え → 端末で Edit が進む | 「権限の確認は視線 1 回。押し間違えても 3 秒のうちに取り消せます」 |
-| 1:05〜1:30 | Bash (`git commit`) の権限 → **スイッチ 1 鍵の走査**で「次から訊かない: Bash(git commit …) — この project・この機械で恒久」を選ぶ | 「スイッチ 1 つでも同じ板です。次から訊かない、も選べます」 |
-| 1:30〜2:00 | エージェントの `ask_board` の「次の一手」3 択 (PR の本文を書く / 試験を回す / ここで止める) → **携帯の画面**で「ここで止める」に触れる | 「問いが出る前に、エージェントが選択肢を用意します。携帯からも選べます」 |
-| 2:00〜2:15 | 計 =「押し N (視線 a・スイッチ b・触る c)・送った答え M・経過」(録りの実測をそのまま) | 「Claude Code の公式の仕組み、hooks に乗っているだけで、本体は改造していません」 |
-| 2:15〜2:40 | **退化 (別の撮り)** = 板の server を止めた状態で、2 つ目の shortcut が別の頼み (例「README の最後に 1 行足して」= Edit の権限が要る) で `claude` を起こす → 権限の確認が端末のいつもの dialog に出る (隅の札「Claude Code 本体 (既存)」) | 「板が無ければ、いつもの Claude Code のままです」 |
-| 2:40〜2:50 | 締め | 「視線、スイッチ、片手、携帯で使う人へ届けます」 |
+| 秒 | 種 | 画面 | 声 |
+|---|---|---|---|
+| 0:00〜0:08 | 字 | 語り手の名 → 「JaH は話せません」・字幕に冒頭の 1 文 | わたしは (語り手)。作り手 JaH の代わりに話します。JaH は、話せません。 |
+| 0:08〜0:17 | 実 | 端末の確認にズーム。視線の点が細い行の上で揺れ、何も起きない (板なしの撮り) | この点が、JaH の目です。確認は端末の細い一行。矢印キーと Enter が要ります。 |
+| 0:17〜0:24 | 実 | 扇の押しを先出し = 羽根を見つめる → 内の帯に全文 → 金の弧 → 押される → 端末の確認が消える | BLEMMA は、同じ確認を扇に出します。見つめて一秒で、押せます。 |
+| 0:24〜0:27 | 字 | 一 Claude の質問 | (なし) |
+| 0:27〜0:36 | 実 | 視線クリックで起動 → 扇が開く → 頼みの 1 行 → README を読む | 起動は、視線クリック一回。Claude Code に、README の誤字を直す仕事を頼みます。 |
+| 0:36〜0:46 | 実 | 扇に 2 択 → 見つめて押す → 猶予 → 端末が進む (hook PreToolUse) | Claude 自身の質問も、同じ扇に出ます。見つめて一秒。手は、使っていません。 |
+| 0:46〜0:49 | 字 | 二 権限の確認 | (なし) |
+| 0:49〜1:08 | 実 | Edit の札 → 押す → 猶予の間に取り消す → 押し直す → 端末の確認が消える (hook PermissionRequest) | 権限の確認は、視線一回。押した後の三秒は、取り消せます。/ 今、取り消して、押し直しました。/ 端末の確認も、消えました。 |
+| 1:08〜1:30 | 実 | `git commit` の札 → 走査の光 → OS の視線入力で Space を 1 回 → 「次から訊かない」→ commit が通る | スイッチ一つでも、同じ扇です。光が目当てに来たら、一回押すだけ。この Space も、JaH の視線が送っています。/ 次から訊かない、も選べます。commit が通りました。 |
+| 1:30〜1:33 | 字 | 三 次の一手 | (なし) |
+| 1:33〜1:52 | 実 | `ask_board` の行 → 扇に 3〜4 択 → 羽根に触れて帯で全文を読む → 「ここで止める」を押す | 区切りで、Claude が次の一手を差し出します。選択肢は、今この場で Claude が考えた物。読むのは帯、押すのは羽根。今日は、ここで止めます。 |
+| 1:52〜2:05 | 実 | 最後の画面・hooks 6 本 + MCP + skill の字幕 | 公式の hooks と MCP に乗るだけ。本体は、改造していません。設計は、別の LLM にも反証させました。 |
+| 2:05〜2:18 | 実 | 板なしの撮り = 端末のいつもの確認 | 扇が無ければ、いつもの Claude Code です。勝手に許可はしません。人が扇で選んだ時だけ、答えを返します。 |
+| 2:18〜2:30 | 実 | 扇のズームから画面全体へ引く | 端末から目を離して働く人にも、片手の人にも、スイッチの人にも、同じ扇が届きます。 |
+| 2:30〜2:34 | 字 | 本来、誰にでも届くべきものを | (なし) |
+| 2:34〜2:45 | 字 | JaH は明日も、この扇で → BLEMMA — JaH | JaH は、明日もこの扇で仕事をします。JaH の代わりに、(語り手) が話しました。 |
 
-- 計の数は台本に決め打ちしない (録りの実測を出す)。板の計は板の押下だけ。冒頭と退化の撮りの shortcut は OS の側の操作として字幕と隅の札に別に書く。
-- 3 点 (先回り・同じ板・視線とスイッチと携帯) は 3 つとも実の操作で映る。commit の場面の説明は短くした。尺は 2:50 で切り、3:00 までの 10 秒は余白 (審査員が止める前に締めが入る)。
+- 計の数は台本に決め打ちしない (録りの実測を出す)。選択肢の文は Claude がその場で作るので台本に書かない。
+- 撮りは 2 本 = ① 板なし (約 40 秒) → ② 本撮り (約 2 分・最大 3 回)。動画の字幕の「5 打鍵」は実測が変われば外す。
 
 ---
 
@@ -779,9 +840,10 @@ v1.2 = 締切が 11/8 20:00 (参加者ガイド・10/31) なので v1.1 の 8 �
 
 → 11/4 の同期で、発見 1〜3 は §7.2 (旗)、4 は §2.0 (待つ間の端末)、5 は §2.0 (stdin の欄) の本文へ移した。台本 (§9) の直しは 11/6 の皿。
 
-### 10.4 測った物と、まだ検収していない物 (11/4 の時点)
+### 10.4 測った物と、まだ検収していない物 (11/6 の時点)
 - **初日の確かめで測った物** (§10.3・使い捨ての試しの hook と最小の MCP の種・実の `claude`): 4 つの口の公式の出力の効き (allow・deny + message・deny + interrupt・updatedPermissions・updatedInput・accept / decline / cancel・`hookEventName` の要否)・待つ間の端末の見え方・端末の先着の分かれ方・退化 (対話)・起こし方の旗 (`--setting-sources`・`--strict-mcp-config`・`--permission-mode default`)・stdin の欄。= §12 の 12 件のうち 11 件が決まった ((iii) の 4 は試していない・§12)。
-- **完成版でまだ検収していない物** (§7.3): 完成版の hook と実の server と実の頁を実の `claude` で通す往復と、異常の経路 6 つ (11/5)・実のブラウザでの滞留の入り直しと頁の非表示 (作り手の視線の道具で押せるかを含む)・同時の HTTP の競合・mac / Linux・頁の小型の見え方と Picture-in-Picture (未対応・§1)。
+- **完成版で検収した物** (11/6・§16): 実の Claude Code v2.1.318 との 15 経路 (14 PASS・1 件は複数行の commit の suggestion の形の問題)、板なし・時限・見る頁なし・端末先着などで勝手に続行した例は 0。扇の実物で、焦点が無い窓の滞留・本文の領域・字の重なりを見つけて直した。小型の見え方と Document Picture-in-Picture は実装済み。
+- **合格まで確認できていない物**: 現行の実ブラウザの自動試験は 1 skipped (§7.3)。実の Document Picture-in-Picture の開閉と描画、同時の HTTP の競合、mac / Linux の検収結果はこの記録に無い。非表示 / 再表示の滞留の守りも、代用品の窓の試験を実ブラウザの合格には数えない。実装済みと検収済みを分ける。
 
 ---
 
@@ -933,3 +995,38 @@ v1.2 = 締切が 11/8 20:00 (参加者ガイド・10/31) なので v1.1 の 8 �
 - fix: 共通の通信の接続に TCP_NODELAY を戻す (総期限の commit で標準の connect を置き換えた時に落ちていた)
 
 この後に、この設計の同期の commit (節ごと) が続く。
+
+---
+
+## 16. 11/6 の検収と扇の記録 (2026-11-06)
+
+実装の根拠は `git log c7cf6c9..409703d` と同じ範囲の code の差分。検収の集計と外部のレビューの重要度は、作り手から共有された 11/6 の記録による。
+
+**実機の検収** = 出荷の code を実の **Claude Code v2.1.318** に挟み、**15 経路中 14 が PASS**。残る 1 件は、複数行の commit で「次から訊かない」が効かない件 = Claude Code の suggestion の形の問題。板は受けた suggestion を逐語で返す (§2.1)。**どの異常の経路でも勝手に続行した例は 0** (板なし・時限・見る頁なし・端末先着を含む)。
+
+**検収で直した 4 件** (`c25857e`):
+
+| # | 見つかった事 | 直した所 |
+|---|---|---|
+| 1 | 頁を閉じても long-poll が残り、見る頁なしと判るまで最大 55 秒 | `board/server.py` の `pending()` に相手の切断判定を渡し、検知したらすぐ返して見る人の数から外す。30 秒の判定は残す (§3.4) |
+| 2 | 日本語の板に英語の合図が出る | `board_core.js` の `lightText()` で、日本語の既知の合図は定型の日本語を使い、英語だけの通知本文を添えない |
+| 3 | 取り消された MCP の呼び出しに応答し、debug に `unknown message ID` が出る | `mcp/blemma_mcp.py` で取り消された `tools/call` への応答を止める (§2.5) |
+| 4 | `--print-only` でも頁を開く | `blemma.py` で頁を開く処理を通さない (§3.2) |
+
+**外部のレビュー (別の LLM による反証) 3 巡目** = HIGH 1・MEDIUM 3。4 件を次の通り直した (`a9a2463`)。
+
+| # | 指摘 | 直し |
+|---|---|---|
+| 1 | ask_board の「断る」が無く、MCP の断る / 閉じるの両方を選べない | 「断る」を戻し、扇では羽根の外の補助の釦に置く。左の親骨の「この問い合わせを閉じる」と両立する |
+| 2 | pointer が窓の外へ出ても本文送りが続く | `pointerleave` で位置と送りの端数を解き、`gazeScroll()` を止める |
+| 3 | 古い別の会話の「完了」が新しい「作業中」を隠す | `priorityState()` で待ちを最優先し、作業中と完了は古さと更新の新しさで選ぶ |
+| 4 | 実ブラウザの試験の画面の大きさが今の扇に合わない | `tests/browser_ohgi.cjs` の描画領域を 660×700 に揃える。描画ができず skip した結果は合格に数えない (§7.3) |
+
+**扇の形の変化** (作り手の指摘を受けた順):
+
+1. **円環** (`6126bec`) = 同じ板の小型の見え方として放射状の釦を作り、状態・設定・解説・常に手前を足した。
+2. **折り扇** (`c25857e`) = 要・竹の骨・和紙の折り目・骨に沿う縦書き・朱の印へ。左の親骨は止める側、右の親骨は端末で答える側に固定した。既定の窓は 660×700。
+3. **羽根は一文字** (`a9a2463`) = 羽根に全文を詰めず「一〜六」「止」「端」にした。
+4. **内外 2 段** (同 commit) = 外の帯を押し、内の押せない帯で全文を読む。読む視線が他の羽根を押さないため、全文は羽根を離れても残す (§4.1)。画面の記録 = `docs/img/ohgi.png`。
+
+**実物で見つけた入力の誤り** (`597fff2`): 最初は `hasFocus` を見ており、端末で作業したまま隅の窓を見ても滞留が進まなかった。`inputActive()` を「頁が見えていれば受ける」に直した。焦点の出入りの瞬間の数え直しは `blur` / `focus` の `releaseDwell()` が担う。本文の領域・字の重なり・配色も実物で直し、`scrollDirection` による本文送りを足した。実装の判断で入った制限を実物で見つけて直した記録であり、代用品だけの試験で見え方まで確かめたとはしない。
