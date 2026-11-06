@@ -1030,11 +1030,13 @@
       .then(function (r) {
         if (r.status === 200) return;
         giveBack(card.id, sent, batches);
-        /* 「間に合わなかった (答えは渡りました)」と言うのは、答えが実際に渡った時 (板が添える終わり方が answered か released)
-           だけ。ほかの頁が先に取り消した (shown)・まだ渡す途中 (deciding)・時間切れ・接続の終了・終わり方が分からない時は
-           言わず、取り直した表示と終わりの文に任せる = 渡っていない答えを渡ったと読ませない */
-        var end = r.data && r.data.end;
+        /* 「間に合わなかった」と知らせるのは 2 つの時だけ (言い方は分ける)。答えが実際に渡った (板が添える終わり方が answered か
+           released) =「答えは渡りました」。同じ札がまだ頭に居て、猶予が切れて渡している途中 (deciding) =「答えを渡している所です」
+           (まだ渡っていない答えを「渡りました」と読ませない・黙ったまま、取り消せたと取り違えさせない)。ほかの頁が先に取り消した
+           (shown)・時間切れ・接続の終了・終わり方が分からない時は言わず、取り直した表示と終わりの文に任せる */
+        var end = r.data && r.data.end, state = r.data && r.data.state;
         if (r.status === 409 && (end === "answered" || end === "released")) showNotice(L().undo_late);
+        else if (r.status === 409 && state === "deciding") showNotice(L().undo_going);
         kick();
       }, function () {
         giveBack(card.id, sent, batches);
@@ -1307,8 +1309,10 @@
   }
 
   /* 頁を別の窓へ付け替えると、焦点は外れる。付け替える前に焦点の在った釦を覚え、付け替えた後に同じ釦へ戻す (鍵の焦点を
-     先頭の「許可」へ移さない)。戻せない時は、どこにも置かない (refreshView(true)) */
+     先頭の「許可」へ移さない)。戻せない時は、どこにも置かない (refreshView(true))。
+     戻すのは鍵で使っている時だけ = マウスで「常に手前」を押した時は戻さない (焦点が釦に残ると、上の釦の帯が出たままになる) */
   function heldIn(surface) {
+    if (S.lastInput !== "key") return null;
     var a = viewDocument.activeElement;
     return a && a !== viewDocument.body && surface.contains(a) ? a : null;
   }

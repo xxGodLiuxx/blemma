@@ -1036,7 +1036,9 @@ setTimeout(function () {
 
 
 def test_undo_that_came_too_late_says_so(tmp_path, clock):
-    """取り消しが間に合わず、答えが実際に渡った時 (板の 409 が終わり方 answered か released を添える) は、黙らずに知らせる。"""
+    """取り消しが間に合わなかった時は、黙らずに知らせる。答えが実際に渡った (板の 409 が終わり方 answered か released を添える) なら
+    「答えは渡りました」、同じ札がまだ頭に居て渡している途中 (state が deciding = 猶予が切れ、hook が受け取る所) なら
+    「答えを渡している所です」= まだ渡っていない答えを「渡りました」とは言わない。"""
     _, card = _board(clock)
     out = node(tmp_path, (PAGE_SETUP + r"""
 function run(body) {
@@ -1052,16 +1054,20 @@ function run(body) {
   return t;
 }
 const answered = run({ error: "not_undoable", end: "answered" }), released = run({ error: "not_undoable", end: "released" });
-setTimeout(function () { console.log(JSON.stringify({ sent: sent, answered: answered.S.notice || "", released: released.S.notice || "" })); }, 30);
+const going = run({ error: "not_undoable", state: "deciding" });
+setTimeout(function () {
+  console.log(JSON.stringify({ sent: sent, answered: answered.S.notice || "", released: released.S.notice || "", going: going.S.notice || "" }));
+}, 30);
 """).replace("__CARD__", json.dumps(card)))
     late = "取り消しは間に合いませんでした (答えは渡りました)"
-    assert out == {"sent": ["/undo", "/undo"], "answered": late, "released": late}
+    assert out == {"sent": ["/undo", "/undo", "/undo"], "answered": late, "released": late,
+                   "going": "取り消しは間に合いませんでした (答えを渡している所です)"}
 
 
 def test_undo_refused_because_another_page_undid_it_is_not_called_late(tmp_path, clock):
-    """答えが渡っていない 409 では「答えは渡りました」と言わない = ほかの頁が先に取り消した (shown・外部のレビューの再現)・
-    まだ渡す途中 (deciding)・時間切れ (expired)・接続の終了 (disconnected・反証役の再現)・終わり方が分からない (札が替わった後の
-    形と、板が返さない形)。取り直した表示と終わりの文に任せる。"""
+    """答えが渡らない 409 では「間に合わなかった」と言わない = ほかの頁が先に取り消した (shown・外部のレビューの再現)・
+    時間切れ (expired)・接続の終了 (disconnected・反証役の再現)・終わり方が分からない (札が替わった後の形と、板が返さない形)。
+    取り直した表示と終わりの文に任せる。"""
     _, card = _board(clock)
     out = node(tmp_path, (PAGE_SETUP + r"""
 function run(body) {
@@ -1073,7 +1079,7 @@ function run(body) {
   t.press("undo", "key");
   return t;
 }
-const pages = { undone: run({ error: "not_undoable", state: "shown" }), delivering: run({ error: "not_undoable", state: "deciding" }),
+const pages = { undone: run({ error: "not_undoable", state: "shown" }),
                 expired: run({ error: "not_undoable", end: "expired" }), disconnected: run({ error: "not_undoable", end: "disconnected" }),
                 unknown: run({ error: "not_undoable" }), other: run({ error: "too_late" }) };
 setTimeout(function () {
@@ -1082,7 +1088,7 @@ setTimeout(function () {
   console.log(JSON.stringify(out));
 }, 30);
 """).replace("__CARD__", json.dumps(card)))
-    assert out == {"undone": "", "delivering": "", "expired": "", "disconnected": "", "unknown": "", "other": ""}
+    assert out == {"undone": "", "expired": "", "disconnected": "", "unknown": "", "other": ""}
 
 
 def test_a_failed_watch_is_not_kept_as_the_target_of_a_kick(tmp_path):
@@ -1932,6 +1938,28 @@ console.log(JSON.stringify({ inPip: inPip, back: back, closed: closed, nowhere: 
     assert out == {"inPip": {"pip": True, "focus": "pip"}, "back": {"home": True, "focus": "pip"},
                    "closed": {"home": True, "focus": "deny"}, "nowhere": {"pip": True, "focus": "body"},
                    "nowhereBack": "body", "sent": 0}
+
+
+def test_moving_to_the_pip_window_by_mouse_leaves_no_key_focus(tmp_path, clock):
+    """マウスで「常に手前」を押して別の窓へ移る・戻る時は、焦点を釦へ戻さない (戻すと、焦点の在る間、上の釦の帯が出たままに
+    なる)。焦点を元の釦へ戻すのは、鍵で使っている時だけ。どちらの時も、先頭の「許可」へは置かない。"""
+    perm = _card(clock)
+    out = page(tmp_path, r"""
+const c = await P.boot({ query: "?mode=small&lang=ja", pip: true });
+c.show(PERM);
+await c.run(500);
+await c.click(c.$("pip-btn"));                     /* マウスで「常に手前」= 窓が見つからず PiP の窓へ移る */
+await c.run(20);
+const inPip = { pip: c.vwin() !== c.win, focus: c.active() };
+await c.run(600);
+await c.click(c.$("pip-btn"));                     /* マウスで「元の窓へ」 */
+await c.run(20);
+const back = { home: c.vwin() === c.win, focus: c.active() };
+await c.run(600);
+await c.key("Enter", "Enter");                     /* 焦点はどこにも無い = Enter は何も送らない */
+console.log(JSON.stringify({ inPip: inPip, back: back, sent: c.answers().length }));
+""", PERM=perm)
+    assert out == {"inPip": {"pip": True, "focus": "body"}, "back": {"home": True, "focus": "body"}, "sent": 0}
 
 
 def test_the_key_focus_on_a_button_that_goes_away_moves_to_the_first(tmp_path, clock):
