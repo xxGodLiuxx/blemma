@@ -320,7 +320,7 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 
 ### 3.2 起動と在処 (v1 の判断)
 - **起こし方の 1 行** (11/4 の実装・`blemma.py`): `python blemma.py [--demo] [--small|--large] [--port PORT] [--keep-board] [--print-only] [--window-size W,H] [--window-position X,Y] [-- claude の引数]`。
-  1. 板を用意する = `board/state/run.json` の記録が 24 時間以内で、token つきの照会に板が答えれば、その板を使い回す (照会は札を作らず、見る人にも数えない)。居なければ `board/server.py --no-browser --port PORT` を裏で起こす (最長 10 秒待つ)。
+  1. 板を用意する = `board/state/run.json` の記録が 24 時間以内で、token つきの照会に板が答えれば、その板を使い回す (照会は札を作らず、見る人にも数えない)。居なければ `board/server.py --no-browser --port PORT` を裏で起こす (最長 10 秒待つ)。 起動の確認は既存の板の照会から共通の絶対期限 (最長 10 秒) で測り、照会の各送受信と成功を返す直前にも見直す (11/4 の実装・外部のレビュー 2 巡目の MEDIUM)。
   2. 頁を開く = `--small` (既定) は Chrome / Edge の app モードの小窓 (`--window-size` 既定 480,360・`--window-position` 既定 = 画面の作業領域の右下・環境変数 `BLEMMA_WINDOW_SIZE` / `BLEMMA_WINDOW_POSITION` でも)。`--large` か、app モードが使えない環境 (Chrome / Edge が無い・画面の寸法が取れない) は既定のブラウザ。URL に `?mode=small|large` を付ける (頁の側は未対応 = §1)。
   3. 設定を生成する = hooks 4 本と同梱の MCP の設定を `board/state/settings.generated.json`・`mcp.generated.json` に書く (§7.2 の形・路はこの repo の絶対路)。
   4. claude を起こす = `claude --settings <生成> --mcp-config <生成> --permission-mode default` (`--demo` なら `--setting-sources project,local --strict-mcp-config` を足す = 個人の設定と MCP を混ぜない・§10.3 の 5) + `--` の後の引数。`--print-only` か claude が見つからない時は、起動の行を表示するだけ (Windows は PowerShell に貼れる形・板を残すには `--keep-board` も付ける)。
@@ -339,8 +339,8 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 | `GET /wait?id=…` | hook | long-poll (server は最長 15 秒抱える・hook はすぐ呼び直す) | `state` = waiting (+ `card` = 札の状態・`remaining`) / answered (+ `answer`) / released / expired / disconnected。答えを渡し終えた札と終わった札への再照会は closed・知らない id は `404` |
 | `POST /notify` | notify.py | `type`・`from`・`title`・`message` | `204` (待たない) |
 | `GET /pending?seq=N` | 頁 | long-poll (最長 25 秒・seq が進んだら返す) | `seq`・`card` (無ければ null・`id`・`kind`・`from`・`payload`・`state`・`view_seq`・`remaining`、deciding の時は `choice` と `undo_remaining`)・`queue` (待ちの数)・`last` (直前に終わった札の種と終わり)・`light`・`stats`・`undo_ms` |
-| `POST /answer` | 頁 | `id`・`seq` (= 札の `view_seq`)・`choice` (下)・`by` (dwell / key / switch / touch / click)・`presses` (まだ送っていない押しの数・§4.5) | `200` + `undo_ms`・`undo_remaining` / `409` + `ended` (終わった札・終わりの種つき)・`not_current`・`expired`・`not_shown`・`stale` / `400` (`bad_choice`) |
-| `POST /undo` | 頁 | `id`・`by`・`presses` (猶予のうちだけ) | `200` + `state` (shown・期限の後なら expired) / `409` (`not_undoable`) |
+| `POST /answer` | 頁 | `id`・`seq` (= 札の `view_seq`)・`choice` (下)・`by` (dwell / key / switch / touch / click)・`presses` (まだ送っていない押しの数・§4.5)・`press_batches` (束の ID つきの押しの数・任意・同じ ID は二度数えない・§4.5) | `200` + `undo_ms`・`undo_remaining` / `409` + `ended` (終わった札・終わりの種つき)・`not_current`・`expired`・`not_shown`・`stale` / `400` (`bad_choice`) |
+| `POST /undo` | 頁 | `id`・`by`・`presses`・`press_batches` (猶予のうちだけ) | `200` + `state` (shown・期限の後なら expired) / `409` (`not_undoable`) |
 | `POST /stats/reset` | 頁 | 空の object (11/4 の実装) | `204` (計を 0 に・§4.5) |
 | `POST /resolve` | 観察の hook (`PostToolUse`・`PermissionDenied`・**提出版では登録しない**) | `session`・`event` (post_tool_use / permission_denied)・`key` (要求と 1 対 1 に結べる照合の鍵) | **提出版では作らない** (11/4・§10.3 = 1 対 1 の鍵が無い) = 他の知らない口と同じ `404`。作るなら `200` + `closed` (id か null)・`reason` (none / ambiguous / no_key) |
 | `GET /`・`/static/…` | 頁 | 板の頁 (data を持たない) | token なしで返す (自分の file だけを許す CSP・`X-Frame-Options: DENY`) |
@@ -478,7 +478,7 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 - **数える物 = この頁の押下イベント** (滞留が満ちた・キーで釦を押した・スイッチで選んだ・触った・click した。取り消しも 1 と数える)。**送った答えの数** (answered と released) とは別に出す。
 - 表示 = 「押し N (視線 a・キー b・スイッチ c・触る d)・送った答え M・経過 mm:ss」。札ごとに「出てから決まるまでの秒」。実装 (11/4): 手段は click を含む 5 つ (クリックは 1 回以上の時だけ出す)・札ごとの秒は直近の 5 枚。
 - 頁は札ごとの押した数と手段を `/answer` と `/undo` の `presses`・`by` で server へ渡し、記録は数だけ (§3.8)。
-- **計に入るのは `/answer` と `/undo` と一緒に送った押しだけ** (11/4 の実装・外部のレビューの MEDIUM を再現して直した): 押しの数は要求ごとに切り離し (送る分を取り出し、次は 0 から)、返りが 200 でなければ同じ札の間だけ未送へ戻す = `/answer` の返りより先に取り消しても、同じ押しを 2 回送らない。送らずに終わった札 (期限・見る人なし・端末で先に終わった) の押し (拒否の理由の画面への行き来など) は入らない = 計は少なめに出る。
+- **計に入るのは `/answer` と `/undo` と一緒に送った押しだけ** (11/4 の実装・外部のレビューの MEDIUM を再現して直した): 押しの数は要求ごとに切り離し (送る分を取り出し、次は 0 から)、返りが 200 でなければ同じ札の間だけ未送へ戻す = `/answer` の返りより先に取り消しても、同じ押しを 2 回送らない。送らずに終わった札 (期限・見る人なし・端末で先に終わった) の押し (拒否の理由の画面への行き来など) は入らない = 計は少なめに出る。 押しは ID つきの束 (`press_batches`) で送り、server は札の間だけ受けた ID を覚えて同じ束を二度数えない = 応答が失われて頁が再送しても計は増えない (外部のレビュー 2 巡目の MEDIUM を再現して直した)。
 - 板の外の打鍵 (端末) は数えない (未計測)。OS の側の起動の 1 回は板の計に入れず、別に書く。
 - 計を 0 に戻す = 頁の [計を 0 に] (キー・click だけ = 視線で誤って消さない・`POST /stats/reset`)。
 
