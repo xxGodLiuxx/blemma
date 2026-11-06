@@ -443,7 +443,7 @@
   function fanMark(index, key, lang) {
     if (lang === "ja") {
       if (key === "fixed") return "止";
-      if (key === "terminal") return "端";
+      if (key === "terminal") return "戻";
       return "一二三四五六".charAt(index);
     }
     if (key === "fixed") return "Esc";

@@ -322,11 +322,6 @@ body.small.glow { box-shadow: inset 0 0 0 2px var(--rib); }
 .fan-bones .seam { fill: none; stroke: var(--rib); stroke-width: 1px; opacity: .3; }
 .fan-bones .pivot { fill: var(--pivot); stroke: var(--rib); stroke-width: 2px; }
 .fan-script { fill: var(--sec-fg); font-family: var(--face); font-weight: 500; letter-spacing: .04em; }
-.fan-seal {
-  position: absolute; left: 6px; bottom: 4px; width: 30px; height: 30px; display: grid; place-items: center;
-  background: var(--seal); color: #fff; border-radius: 4px; pointer-events: none;
-  font-family: "Yuji Syuku", "Yu Mincho", "Hiragino Mincho ProN", serif; font-weight: 700; font-size: 18px;
-}
 .fan-aux { position: absolute; right: 0; bottom: 0; display: flex; gap: 6px; }
 .small .fan-aux .btn { min-width: 96px; min-height: 44px; padding: 4px 12px; font-size: calc(16px * var(--font, 1)); background: transparent; border-width: 1px; border-radius: 6px; }
 .small .fan-aux .btn .num, .small .fan-aux .btn .desc { display: none; }

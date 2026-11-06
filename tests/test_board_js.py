@@ -424,7 +424,7 @@ console.log(JSON.stringify({
   en: [core.fanMark(0, 'option', 'en'), core.fanMark(undefined, 'fixed', 'en'), core.fanMark(undefined, 'terminal', 'en')],
 }));
 """)
-    assert out == {"ja": ["一", "二", "六"], "fixed": ["止", "端"], "en": ["1", "Esc", "0"]}
+    assert out == {"ja": ["一", "二", "六"], "fixed": ["止", "戻"], "en": ["1", "Esc", "0"]}
 
 
 def test_fan_script_fits_the_band_and_never_loses_the_full_text_silently(tmp_path):

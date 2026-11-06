@@ -380,7 +380,6 @@
     $("undo-btn").style.clipPath = layout.scriptBand;
     fan.appendChild(undoZone);
     fan.appendChild(fanBones(layout));
-    fan.appendChild(el("span", "fan-seal", "扇"));
     var aux = m.options.filter(function (o) { return o.aux; });
     if (aux.length) {
       var box = el("div", "fan-aux");
@@ -461,7 +460,7 @@
       var side = (window.outerWidth - window.innerWidth) / 2, wide = window.innerWidth / window.innerHeight >= 1.5;
       var below = $("fan-scroll").getBoundingClientRect().bottom;       /* 縦向き = 扇の下は和紙 */
       var rects = wide ? [[0, 0, r.left - 6, window.innerHeight]] : [[0, below, window.innerWidth, window.innerHeight - below]];
-      Array.prototype.forEach.call(fan.querySelectorAll(".fan-seal, .fan-aux"), function (e) {
+      Array.prototype.forEach.call(fan.querySelectorAll(".fan-aux"), function (e) {
         var b = e.getBoundingClientRect();
         rects.push([b.left - 2, b.top - 2, b.width + 4, b.height + 4]);
       });
