@@ -36,6 +36,31 @@ def free_port():
     raise RuntimeError("No isolated test port is free")
 
 
+def serve(app):
+    """The server binds exclusively on Windows, so a port in TIME_WAIT passes free_port but not this."""
+    for port in range(18770, 18970):
+        try:
+            return S.make_server(app, port)
+        except OSError:
+            pass
+    raise RuntimeError("No isolated test port is free")
+
+
+def close_browser(node, opener, port):
+    """On Windows chrome.exe hands off to another process and exits with 0, so stopping the
+    process we started leaves the real browser running. Close it over the debugging port."""
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
+            url = json.load(response)["webSocketDebuggerUrl"]
+    except (OSError, ValueError, KeyError):
+        return
+    script = ("const s=new WebSocket(process.argv[1]);"
+              "s.onopen=()=>s.send(JSON.stringify({id:1,method:'Browser.close'}));"
+              "s.onmessage=s.onclose=s.onerror=()=>process.exit(0);"
+              "setTimeout(()=>process.exit(0),3000);")
+    subprocess.run([node, "-e", script, url], capture_output=True, timeout=6)
+
+
 def test_real_browser_fan_inputs_and_fallback(tmp_path):
     browser, node = chromium(), shutil.which("node")
     if not browser or not node:
@@ -45,7 +70,7 @@ def test_real_browser_fan_inputs_and_fallback(tmp_path):
         pytest.skip("The optional browser harness needs node with built-in WebSocket support")
     app = S.App(replace(S.Limits(), pending_hold=.15, wait_hold=.1, disconnect=120, undo_ms=1000,
                         viewer=None), "ohgi-browser-test", static_dir=ROOT / "board" / "static")
-    httpd = S.make_server(app, free_port())
+    httpd = serve(app)
     thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": .02}, daemon=True)
     thread.start()
     S.start_ticker(app.board)
@@ -53,6 +78,7 @@ def test_real_browser_fan_inputs_and_fallback(tmp_path):
     flags = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     process = None
     browser_log = (tmp_path / "chromium.log").open("w", encoding="utf-8")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         process = subprocess.Popen([browser, "--headless=new", "--disable-gpu", "--in-process-gpu", "--no-first-run", "--no-default-browser-check",
                                     "--disable-background-networking", "--disable-extensions",
@@ -60,10 +86,9 @@ def test_real_browser_fan_inputs_and_fallback(tmp_path):
                                     f"--remote-debugging-port={port}", f"--user-data-dir={tmp_path / 'chromium'}",
                                     "about:blank"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=browser_log, **flags)
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         endpoint = None
         deadline = time.monotonic() + 12
-        while time.monotonic() < deadline and process.poll() is None:
+        while time.monotonic() < deadline:   # The process we started may exit at once: see close_browser.
             try:
                 with opener.open(f"http://127.0.0.1:{port}/json", timeout=.5) as response:
                     targets = json.load(response)
@@ -86,6 +111,7 @@ def test_real_browser_fan_inputs_and_fallback(tmp_path):
         assert result.returncode == 0, result.stderr + result.stdout + (tmp_path / "chromium.log").read_text(encoding="utf-8", errors="replace")[-3000:]
         assert "browser checks passed" in result.stdout
     finally:
+        close_browser(node, opener, port)
         if process and process.poll() is None:
             process.terminate()
             try:

@@ -47,8 +47,8 @@ async function key(key, code = key) {
 }
 async function point(selector) {
   return evaluate(`(() => { const b=document.querySelector(${JSON.stringify(selector)}), r=b.getBoundingClientRect(), s=getComputedStyle(b);
-    return b.closest('#fan') ? {x:r.x+parseFloat(s.getPropertyValue('--lx')), y:r.y+parseFloat(s.getPropertyValue('--ly'))} :
-      {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+    const lx=parseFloat(s.getPropertyValue('--lx')), ly=parseFloat(s.getPropertyValue('--ly'));
+    return Number.isFinite(lx) ? {x:r.x+lx, y:r.y+ly} : {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
 }
 async function mouse(p, type='mouseMoved') { await call('Input.dispatchMouseEvent', {type, ...p, ...(type==='mouseMoved'?{}:{button:'left',clickCount:1})}); }
 async function click(selector) { const p=await point(selector); await mouse(p,'mousePressed'); await mouse(p,'mouseReleased'); }
@@ -102,16 +102,42 @@ async function closeCard(id) {
       return document.elementFromPoint(r.x+parseFloat(s.getPropertyValue('--lx')),r.y+parseFloat(s.getPropertyValue('--ly')))?.closest('button')===b;})`);
     assert(hits,'Actual clip-path hit targets must agree with labels');
     await screenshot('ohgi-'+n);
+    // A notification arrives about 6 seconds after the card: it must not move the blade under the gaze.
+    const before=await evaluate(`JSON.stringify(document.querySelector('#fan').getBoundingClientRect())`);
+    await api('/notify',{type:'permission_prompt',message:'m'});
+    await sleep(400);
+    assert(await evaluate(`document.querySelector('#band').hidden && !document.body.classList.contains('glow')`),'The card is the notice: no band or edge while it is shown');
+    assert.equal(await evaluate(`JSON.stringify(document.querySelector('#fan').getBoundingClientRect())`),before,'A notification must not move the fan');
     await key('1','Digit1');
     await until(`!document.querySelector('#undo-zone').hidden`);
-    const regions=await evaluate(`({undo:document.querySelector('#undo-btn').getBoundingClientRect().toJSON(),fan:document.querySelector('#fan').getBoundingClientRect().toJSON()})`);
-    assert(regions.undo.height>=96,'Undo is the inner band of the fan: a large target that is not the pressed blade');
+    const undoHit=await evaluate(`(() => { const r=document.querySelector('#undo-btn').getBoundingClientRect();
+      return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('button')?.id; })()`);
+    assert.equal(undoHit,'undo-btn','Undo is the inner band of the fan: a large target');
+    const blade=await point('#fan [data-key="opt:0"]');
+    assert.notEqual(await evaluate(`document.elementFromPoint(${blade.x},${blade.y})?.closest('button')?.id`),'undo-btn','Undo is never on top of the pressed blade');
     if (n===2) await screenshot('ohgi-undo');
     await key('Escape');
     await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan > .btn').disabled`);
     await closeCard(id);
+    await until(`!document.querySelector('#band').hidden`);   // The notice really arrived: it shows once no card is out.
     await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
   }
+  // The default small window is landscape: the whole fan stays inside it, even when a notification arrives.
+  await call('Emulation.setDeviceMetricsOverride',{width:940,height:370,deviceScaleFactor:1,mobile:false});
+  for (const n of [2,6]) {
+    const wide=await card(n);
+    await until(`document.querySelectorAll('#fan > .btn').length === ${n+2}`);
+    await api('/notify',{type:'permission_prompt',message:'m'});
+    await sleep(400);
+    const box=await evaluate(`(() => { const r=document.querySelector('#fan').getBoundingClientRect(), c=document.querySelector('#card').getBoundingClientRect(), e=document.documentElement;
+      return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,cardRight:c.right,w:innerWidth,h:innerHeight,sw:e.scrollWidth,sh:e.scrollHeight}; })()`);
+    assert(box.left>=0 && box.right<=box.w && box.top>=0 && box.bottom<=box.h,'The fan is cut off in the landscape window: '+JSON.stringify(box));
+    assert(box.cardRight<=box.left,'The question and the fan must sit side by side: '+JSON.stringify(box));
+    assert(box.sw<=box.w && box.sh<=box.h,'The landscape window must not scroll: '+JSON.stringify(box));
+    if (n===6) await screenshot('ohgi-landscape');
+    await closeCard(wide);
+  }
+  await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
   const multi=await card(3,true);
   assert(await evaluate(`document.querySelector('#fan-scroll').hidden`));
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('#opts')).gridTemplateColumns.split(' ').length`),1);

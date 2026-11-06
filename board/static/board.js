@@ -507,7 +507,9 @@
     else if (S.endText && now < S.endUntil && !S.card) st = S.endText;
     setText($("status"), st);
     var band = $("band");
-    var lightOn = !!(S.snap && S.snap.light) && now < S.lightUntil;
+    /* 小型の窓では札そのものが知らせ = 札の間は縁も帯も出さない。
+       通知は札の約 6 秒後に来るので、帯が割り込むと見つめている羽根がずれる */
+    var lightOn = !!(S.snap && S.snap.light) && now < S.lightUntil && !(S.mode === "small" && S.card);
     if (lightOn) {
       setText(band, C.lightText(S.snap.light, S.lang));
       band.hidden = false;
@@ -520,7 +522,7 @@
     updateUndo(now);
   }
 
-  /* 取り消す = 押した後の猶予のうちだけ、上の中央に大きく (押した釦の上には出さない・§4.3) */
+  /* 取り消す = 押した後の猶予のうちだけ、上の中央に大きく。扇では内の帯そのもの (押した羽根の上には出さない・§4.3) */
   function updateUndo(now) {
     var T = L();
     var z = $("undo-zone");
@@ -571,7 +573,7 @@
   function onNewLight() {
     if (S.sound) beep();
     var c = $("card");
-    if (!reduced && S.card) {
+    if (!reduced && S.card && S.mode !== "small") {
       c.classList.remove("blink");
       void c.offsetWidth;
       c.classList.add("blink");
