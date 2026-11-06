@@ -18,7 +18,7 @@
   --band-bg: #000000;
   --band-fg: #ffffff;
   --glow: #0047b3;
-  --sec-bg: #eef0f3; --sec-fg: #000; --sec-go-bg: #d9e6ff; --sec-go-fg: #0a357f; --sec-stop-bg: #fde4e1; --sec-stop-fg: #8b0000; --sec-term-bg: #f7f7f7; --sec-term-fg: #333; --arc: #ffd400;
+  --sec-bg: #f7f0df; --sec-bg2: #e8dcc0; --sec-fg: #1c1a17; --sec-go-bg: #dfe7f6; --sec-go-bg2: #c2d0ec; --sec-go-fg: #12306b; --sec-stop-bg: #f8dcd4; --sec-stop-bg2: #efc0b4; --sec-stop-fg: #8b1a10; --sec-term-bg: #f1eee7; --sec-term-bg2: #e0dbcf; --sec-term-fg: #3a362f; --sec-on-bg: #24344f; --sec-on-bg2: #16233a; --sec-on-fg: #fff; --rib: #6b4423; --pivot: #b8912b; --seal: #b3261e; --arc: #e8b92e;
   --pad: 48px;
   --gap: 24px;
   --btn-min: 96px;
@@ -45,7 +45,7 @@
     --band-bg: #ffffff;
     --band-fg: #000000;
     --glow: #ffd400;
-    --sec-bg: #262a2f; --sec-fg: #fff; --sec-go-bg: #12335f; --sec-go-fg: #dbe8ff; --sec-stop-bg: #4d120d; --sec-stop-fg: #ffd7d2; --sec-term-bg: #1b1d20; --sec-term-fg: #d6d6d6; --arc: #0047b3;
+    --sec-bg: #1d2740; --sec-bg2: #141c30; --sec-fg: #eef1f8; --sec-go-bg: #1f3f75; --sec-go-bg2: #173059; --sec-go-fg: #e6eeff; --sec-stop-bg: #5a1c14; --sec-stop-bg2: #43130d; --sec-stop-fg: #ffdcd6; --sec-term-bg: #232833; --sec-term-bg2: #191d26; --sec-term-fg: #dcdfe6; --sec-on-bg: #f2e6c8; --sec-on-bg2: #dcc99c; --sec-on-fg: #1c1a17; --rib: #c9a227; --pivot: #e0bc6a; --seal: #d9483b; --arc: #1f5fc4;
   }
 }
 
@@ -285,27 +285,42 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
 .small .fan-scroll { overflow: auto; flex: none; }
 .fan { position: relative; margin: 0 auto; }
 .small .fan .btn {
-  position: absolute; inset: 0; width: 100%; height: 100%; padding: 0;
-  border: 0; border-radius: 0; background: var(--sec-bg); color: var(--sec-fg); text-align: center;
+  --p1: var(--sec-bg); --p2: var(--sec-bg2);
+  position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 0; padding: 0;
+  border: 0; border-radius: 0; color: var(--sec-fg); text-align: center;
+  background: conic-gradient(from var(--a0) at var(--cx) var(--cy),
+    var(--p1) 0deg, var(--p2) calc(var(--half) - .01deg), var(--p1) var(--half),
+    var(--p2) calc(var(--full) - .01deg), var(--p1) var(--full));
 }
-.small .fan .btn[data-key="allow_once"] { background: var(--sec-go-bg); color: var(--sec-go-fg); }
-.small .fan .btn.fixed { background: var(--sec-stop-bg); color: var(--sec-stop-fg); }
-.small .fan .btn.term { background: var(--sec-term-bg); color: var(--sec-term-fg); }
-.small .fan .btn:is(:hover, :focus-visible, .scan) { background: var(--scan-bg); color: var(--scan-fg); outline: none; }
-.small .fan .btn.fixed:is(:hover, :focus-visible, .scan) { background: var(--sec-stop-fg); color: var(--btn-bg); }
+.small .fan .btn[data-key="allow_once"] { --p1: var(--sec-go-bg); --p2: var(--sec-go-bg2); color: var(--sec-go-fg); }
+.small .fan .btn.fixed { --p1: var(--sec-stop-bg); --p2: var(--sec-stop-bg2); color: var(--sec-stop-fg); }
+.small .fan .btn.term { --p1: var(--sec-term-bg); --p2: var(--sec-term-bg2); color: var(--sec-term-fg); }
+.small .fan .btn:is(:hover, :focus-visible, .scan) { --p1: var(--sec-on-bg); --p2: var(--sec-on-bg2); color: var(--sec-on-fg); outline: none; }
 .small .fan .btn .fill, .small .fan .btn .desc, .small .fan .btn .def { display: none; }
 .small .fan .btn .fan-text {
-  position: absolute; left: var(--lx); top: var(--ly); transform: translate(-50%, -50%);
-  width: var(--lw, 110px); display: flex; flex-direction: column; align-items: center; gap: 1px;
+  position: absolute; left: var(--lx); top: var(--ly); transform: translate(-50%, -50%) rotate(var(--rot));
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif;
 }
 .small .fan .btn .label {
-  font-size: calc(16px * var(--font, 1)); line-height: 1.25; display: -webkit-box;
-  -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
+  writing-mode: vertical-rl; text-orientation: mixed; max-height: 110px; max-width: 64px; overflow: hidden;
+  font-size: calc(17px * var(--font, 1)); line-height: 1.25; letter-spacing: .04em;
 }
-.small .fan .btn .num { position: static; font-size: calc(20px * var(--font, 1)); line-height: 1.1; font-weight: 700; opacity: 1; }
+.small .fan .btn .num { position: static; font-size: calc(17px * var(--font, 1)); line-height: 1.1; font-weight: 700; opacity: 1; }
 .small .fan .btn .dwell-arc { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .dwell-arc path { fill: none; stroke: var(--arc); stroke-width: 14px; stroke-dasharray: 1; stroke-dashoffset: calc(1 - var(--p)); }
-.fan-time { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: calc(22px * var(--font, 1)); font-weight: 700; font-variant-numeric: tabular-nums; pointer-events: none; }
+.fan-bones { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.fan-bones .rib { stroke: var(--rib); stroke-width: 3px; stroke-linecap: round; }
+.fan-bones .rib.main { stroke-width: 8px; }
+.fan-bones .fold { stroke: var(--rib); stroke-width: 1px; opacity: .35; }
+.fan-bones .edge { fill: none; stroke: var(--rib); stroke-width: 2px; }
+.fan-bones .pivot { fill: var(--pivot); stroke: var(--rib); stroke-width: 2px; }
+.fan-seal {
+  position: absolute; left: 6px; bottom: 4px; width: 30px; height: 30px; display: grid; place-items: center;
+  background: var(--seal); color: #fff; border-radius: 4px; pointer-events: none;
+  font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif; font-weight: 700; font-size: 18px;
+}
+.fan-time { position: absolute; left: 50%; top: calc(var(--cy, 50%) - 62px); transform: translate(-50%, -50%); padding: 0 8px; background: var(--bg); border-radius: 6px; z-index: 1; font-size: calc(22px * var(--font, 1)); font-weight: 700; font-variant-numeric: tabular-nums; pointer-events: none; }
 .small .undo-zone { top: 64px; padding: 6px; width: calc(100vw - 20px); max-height: 152px; overflow: auto; }
 .small .undo-label { font-size: calc(16px * var(--font, 1)); margin: 0 0 4px; max-height: 32px; overflow: auto; }
 .small .btn.undo { min-height: 96px; font-size: calc(28px * var(--font, 1)); }
@@ -324,14 +339,14 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
   --btn-bg: #fff; --aux-bg: #f0f0f0; --fill-color: #ffd400; --mark-bg: #000; --mark-fg: #fff;
   --scan-bg: #000; --scan-fg: #fff; --focus: #0047b3; --low-bg: #8b0000; --low-fg: #fff;
   --band-bg: #000; --band-fg: #fff; --glow: #0047b3;
-  --sec-bg: #eef0f3; --sec-fg: #000; --sec-go-bg: #d9e6ff; --sec-go-fg: #0a357f; --sec-stop-bg: #fde4e1; --sec-stop-fg: #8b0000; --sec-term-bg: #f7f7f7; --sec-term-fg: #333; --arc: #ffd400;
+  --sec-bg: #f7f0df; --sec-bg2: #e8dcc0; --sec-fg: #1c1a17; --sec-go-bg: #dfe7f6; --sec-go-bg2: #c2d0ec; --sec-go-fg: #12306b; --sec-stop-bg: #f8dcd4; --sec-stop-bg2: #efc0b4; --sec-stop-fg: #8b1a10; --sec-term-bg: #f1eee7; --sec-term-bg2: #e0dbcf; --sec-term-fg: #3a362f; --sec-on-bg: #24344f; --sec-on-bg2: #16233a; --sec-on-fg: #fff; --rib: #6b4423; --pivot: #b8912b; --seal: #b3261e; --arc: #e8b92e;
 }
 :root[data-theme="dark"], :root[data-theme="contrast"] {
   color-scheme: dark; --bg: #000; --fg: #fff; --muted: #d6d6d6; --line: #fff;
   --btn-bg: #000; --aux-bg: #262626; --fill-color: #5c4a00; --mark-bg: #fff; --mark-fg: #000;
   --scan-bg: #fff; --scan-fg: #000; --focus: #ffd400; --low-bg: #ffb3b3; --low-fg: #000;
   --band-bg: #fff; --band-fg: #000; --glow: #ffd400;
-  --sec-bg: #262a2f; --sec-fg: #fff; --sec-go-bg: #12335f; --sec-go-fg: #dbe8ff; --sec-stop-bg: #4d120d; --sec-stop-fg: #ffd7d2; --sec-term-bg: #1b1d20; --sec-term-fg: #d6d6d6; --arc: #0047b3;
+  --sec-bg: #1d2740; --sec-bg2: #141c30; --sec-fg: #eef1f8; --sec-go-bg: #1f3f75; --sec-go-bg2: #173059; --sec-go-fg: #e6eeff; --sec-stop-bg: #5a1c14; --sec-stop-bg2: #43130d; --sec-stop-fg: #ffdcd6; --sec-term-bg: #232833; --sec-term-bg2: #191d26; --sec-term-fg: #dcdfe6; --sec-on-bg: #f2e6c8; --sec-on-bg2: #dcc99c; --sec-on-fg: #1c1a17; --rib: #c9a227; --pivot: #e0bc6a; --seal: #d9483b; --arc: #1f5fc4;
 }
 :root[data-theme="contrast"] { --fg: #ffff00; --line: #ffff00; --muted: #fff; --aux-bg: #000; --scan-bg: #ffff00; }
 .trail { pointer-events: none; }

@@ -508,3 +508,16 @@ def test_viewer_gone_expires_the_shown_card(clock):
     clock.advance(3)                                  # 31 秒
     keepalive(b, a)
     assert card_of(b, a).state == "expired"
+
+
+def test_pending_returns_at_once_when_the_viewer_closed(clock):
+    """閉じた頁の long-poll を抱え続けない = 見る人の数が残って端末へ戻るのが遅れない (実機の検収 11/6)。"""
+    b = new_board(clock)
+    b.lim = replace(b.lim, pending_hold=60)
+    calls = []
+    def closed():
+        calls.append(1)
+        return False
+    b.pending(b.seq, alive=closed)
+    assert calls and b.viewers_open == 0
+

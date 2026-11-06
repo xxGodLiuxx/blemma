@@ -11,7 +11,7 @@
 
   var S = {
     token: "", lang: "ja", dwellMs: 1000, scanMs: 0, switchKey: "Space", sound: false,
-    mode: "large", desc: true, fan: false, firstPointer: true,
+    mode: "large", desc: true, fan: false, fanVisual: [], firstPointer: true,
     seq: -1, snap: null, snapAt: 0, card: null, ui: C.newUi(null), key: "", gen: 0,
     btns: {}, optionKeys: [], scanList: [], scanEl: null, fillEl: null,
     delta: C.zeroPresses(), answering: false, undoing: false, sentKey: null,
@@ -251,6 +251,36 @@
     setText($("spot-desc"), S.desc ? b.dataset.description || "" : "");
   }
 
+  var SVG_NS = "http://www.w3.org/2000/svg";
+
+  /* 扇の骨 = 竹の骨・折り目・地紙の縁・要。押す物ではない (pointer-events: none) */
+  function fanBones(layout) {
+    var svg = viewDocument.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + layout.width + " " + layout.height);
+    svg.setAttribute("aria-hidden", "true");
+    svg.classList.add("fan-bones");
+    function line(from, to, cls) {
+      var l = viewDocument.createElementNS(SVG_NS, "line");
+      l.setAttribute("x1", from[0]); l.setAttribute("y1", from[1]);
+      l.setAttribute("x2", to[0]); l.setAttribute("y2", to[1]);
+      l.setAttribute("class", cls);
+      svg.appendChild(l);
+    }
+    layout.folds.forEach(function (f) { line(f.from, f.to, "fold"); });
+    layout.ribs.forEach(function (r) { line(r.from, r.to, r.main ? "rib main" : "rib"); });
+    layout.edges.forEach(function (d) {
+      var p = viewDocument.createElementNS(SVG_NS, "path");
+      p.setAttribute("d", d);
+      p.setAttribute("class", "edge");
+      svg.appendChild(p);
+    });
+    var c = viewDocument.createElementNS(SVG_NS, "circle");
+    c.setAttribute("cx", layout.cx); c.setAttribute("cy", layout.cy); c.setAttribute("r", 9);
+    c.setAttribute("class", "pivot");
+    svg.appendChild(c);
+    return svg;
+  }
+
   function renderFan(m) {
     var fan = $("fan"), clock = $("fan-time");
     fan.replaceChildren(clock);
@@ -258,8 +288,10 @@
     $("spotlight").hidden = !S.fan;
     if (!S.fan) return;
     var layout = C.fanLayout(m.options.length);
-    fan.style.width = layout.size + "px";
-    fan.style.height = layout.size + "px";
+    fan.style.width = layout.width + "px";
+    fan.style.height = layout.height + "px";
+    fan.style.setProperty("--cx", layout.cx + "px");
+    fan.style.setProperty("--cy", layout.cy + "px");
     S.scanList = [];
     layout.parts.forEach(function (p) {
       var key = p.key === "option" ? S.optionKeys[p.index] : p.key;
@@ -267,18 +299,23 @@
       b.style.clipPath = p.polygon;
       b.style.setProperty("--lx", p.label[0] + "px");
       b.style.setProperty("--ly", p.label[1] + "px");
+      b.style.setProperty("--rot", p.angle + "deg");
+      b.style.setProperty("--a0", p.start + "deg");
+      b.style.setProperty("--half", layout.step / 2 + "deg");
+      b.style.setProperty("--full", layout.step + "deg");
       b.setAttribute("aria-label", b.dataset.label);
       b.title = b.dataset.label;
       var text = el("span", "fan-text");
+      var label = b.querySelector(".label");
+      label.textContent = C.fanLabel(b.dataset.label, S.card.kind, p.key);
       text.appendChild(b.querySelector(".num") || el("span", "num", p.key === "fixed" ? "Esc" : "0"));
-      text.appendChild(b.querySelector(".label"));
+      text.appendChild(label);
       b.appendChild(text);
-      b.style.setProperty("--lw", Math.round(p.labelWidth) + "px");
-      var svg = viewDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
-      svg.setAttribute("viewBox", "0 0 " + layout.size + " " + layout.size);
+      var svg = viewDocument.createElementNS(SVG_NS, "svg");
+      svg.setAttribute("viewBox", "0 0 " + layout.width + " " + layout.height);
       svg.setAttribute("aria-hidden", "true");
       svg.classList.add("dwell-arc");
-      var path = viewDocument.createElementNS("http://www.w3.org/2000/svg", "path");
+      var path = viewDocument.createElementNS(SVG_NS, "path");
       path.setAttribute("d", p.arc);
       path.setAttribute("pathLength", "1");
       svg.appendChild(path);
@@ -286,6 +323,11 @@
       fan.appendChild(b);
       if (!b.disabled) S.scanList.push(b);
     });
+    S.fanVisual = layout.visual.map(function (p) {
+      return S.btns[p.key === "option" ? S.optionKeys[p.index] : p.key];
+    }).filter(function (b) { return !b.disabled; });
+    fan.appendChild(fanBones(layout));
+    fan.appendChild(el("span", "fan-seal", "扇"));
     spotlight(S.btns[S.optionKeys[0]]);
   }
 
@@ -623,9 +665,9 @@
     if (e.key === "0") { e.preventDefault(); press("terminal", "key"); return; }
     if (S.fan && /^Arrow(Left|Right|Up|Down)$/.test(e.key)) {
       e.preventDefault();
-      var at = S.scanList.indexOf(active), n = S.scanList.length;
+      var at = S.fanVisual.indexOf(active), n = S.fanVisual.length;
       var dir = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
-      if (n) S.scanList[at < 0 ? 0 : (at + dir + n) % n].focus({ preventScroll: true });
+      if (n) S.fanVisual[at < 0 ? 1 : (at + dir + n) % n].focus({ preventScroll: true });
       return;
     }
     if (/^[1-6]$/.test(e.key)) {
@@ -742,7 +784,7 @@
     if (!window.documentPictureInPicture || S.pipOpening) return;
     S.pipOpening = true;
     var width = S.fan ? Math.max(420, parseFloat($("fan").style.width) * S.options.scale + 20) : 420;
-    var height = Math.max(640, width + 240);
+    var height = S.fan ? Math.max(640, parseFloat($("fan").style.height) * S.options.scale + 380) : 640;
     window.documentPictureInPicture.requestWindow({ width: width, height: height }).then(function (w) {
       var surface = $("surface");
       w.addEventListener("pagehide", function () {

@@ -203,7 +203,9 @@ class Server:
             elif method == "tools/list":
                 self.reply(rid, {"tools": [ASK_BOARD_TOOL]})
             elif method == "tools/call":
-                self.reply(rid, self.call_tool(params, pending))
+                result = self.call_tool(params, pending)
+                if pending is None or not pending.cancelled:   # 取り消された要求には応答しない (MCP の決まり)
+                    self.reply(rid, result)
             else:
                 self.error(rid, -32601, "Method not found")
         except Exception as e:  # 1 つの要求の失敗で server を落とさない

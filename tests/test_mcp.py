@@ -2,6 +2,7 @@
 """実際の MCP 処理を別プロセスの UTF-8 の入出力で検証する。"""
 
 import json
+import time
 import os
 import queue
 import subprocess
@@ -231,6 +232,17 @@ def test_descriptions_through_real_elicitation_hook_and_board(client, live, drop
         process.stderr.close()
 
 
+def assert_no_reply(client, rid):
+    """取り消された要求には応答しない (MCP の決まり) = 後の ping より先に rid の返りが来ない。"""
+    time.sleep(0.2)
+    ping = client.request("ping", {})
+    while True:
+        msg = client.receive()
+        assert msg.get("id") != rid
+        if msg.get("id") == ping:
+            return
+
+
 @pytest.mark.parametrize("action", ["accept", "decline", "cancel", "cancelled"])
 def test_response_table(client, action):
     rid = client.call()
@@ -247,6 +259,8 @@ def test_response_table(client, action):
     if action == "cancelled":
         client.cancel(rid)
         client.child_cancel(elicit)
+        assert_no_reply(client, rid)
+        return
     else:
         reply = {"action": action}
         if action == "accept":
@@ -359,7 +373,7 @@ def test_pending_calls_are_independent_and_ping_still_works(client):
     assert client.result(ping_id) == {}
     client.cancel(first_id)
     client.child_cancel(first)
-    assert text_result(client.result(first_id)).endswith(CANCELLED)
+    assert_no_reply(client, first_id)
     client.answer(first, {"action": "accept", "content": {"choice": "1"}})
     client.cancel(first_id)
     client.answer(second, {"action": "accept", "content": {"choice": "2"}})
@@ -369,12 +383,7 @@ def test_pending_calls_are_independent_and_ping_still_works(client):
 def test_cancellation_immediately_after_call_is_not_lost(client):
     rid = client.call()
     client.cancel(rid)
-    while True:
-        msg = client.receive()
-        if msg.get("id") == rid:
-            assert text_result(msg["result"]).endswith(CANCELLED)
-            break
-        assert msg.get("method") in ("elicitation/create", "notifications/cancelled")
+    assert_no_reply(client, rid)
 
 
 @pytest.mark.parametrize("waiting", [False, True])

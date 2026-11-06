@@ -654,8 +654,9 @@ class Board:
         }
 
     @_flushing
-    def pending(self, seen: Any) -> dict:
-        """頁の long-poll。seq が seen と違えばすぐ、同じなら変わるまで (最長 pending_hold) 待つ。"""
+    def pending(self, seen: Any, alive: Callable[[], bool] = lambda: True) -> dict:
+        """頁の long-poll。seq が seen と違えばすぐ、同じなら変わるまで (最長 pending_hold) 待つ。
+        相手が閉じたらすぐ返す = 閉じた頁を見る人に数え続けない (端末へ戻るのが遅れる)。"""
         with self.cond:
             self.viewers_open += 1
             self.viewer_seen = self.clock()
@@ -664,7 +665,7 @@ class Board:
                 while True:
                     now = self.clock()
                     self._advance(now)
-                    if seen != self.seq or now >= until or self.closed:
+                    if seen != self.seq or now >= until or self.closed or not alive():
                         return self._snapshot(now)
                     self.cond.wait(max(0.0, min(1.0, until - now)))
             finally:
@@ -817,7 +818,7 @@ class Handler(BaseHTTPRequestHandler):
                 seen = int((q.get("seq") or ["-1"])[0])
             except ValueError:
                 seen = -1
-            self._json(200, board.pending(seen))
+            self._json(200, board.pending(seen, alive=lambda: _peer_alive(self.connection)))
             return
         if method != "POST":
             self._json(404, {"error": "not_found"})

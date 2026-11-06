@@ -309,16 +309,18 @@ def test_fan_geometry_fixed_exits_numbering_and_minimum_width(tmp_path, n):
     out = node(tmp_path, f"console.log(JSON.stringify(core.fanLayout({n}))); ")
     parts = out["parts"]
     assert len(parts) == n + 2
-    assert next(p for p in parts if p["key"] == "fixed")["angle"] == 225
-    assert next(p for p in parts if p["key"] == "terminal")["angle"] == 135
-    numbered = [p for p in parts if p["key"] == "option"]
-    assert [p["index"] for p in numbered] == list(range(n))
-    assert numbered[0]["angle"] <= 56.25
-    assert all(p["width"] >= 90 for p in parts)
-    assert out["depth"] >= 90 and out["size"] >= 340
-    radius = (out["inner"] + out["outer"]) / 2
-    assert all(abs(((p["label"][0] - out["outer"]) ** 2 +
-                    (p["label"][1] - out["outer"]) ** 2) ** .5 - radius) < .001 for p in parts)
+    by_angle = sorted(parts, key=lambda p: p["angle"])
+    assert by_angle[0]["key"] == "fixed" and by_angle[-1]["key"] == "terminal"    # 親骨の左右で動かない
+    assert by_angle[0]["angle"] < -60 and by_angle[-1]["angle"] > 60
+    numbered = [p for p in by_angle if p["key"] == "option"]
+    assert [p["index"] for p in numbered] == list(range(n))                        # 左から右へ 1 番から
+    assert [p["key"] for p in parts][-2:] == ["fixed", "terminal"]                 # 走査は選択肢が先
+    assert all(p["width"] >= 84 for p in parts)
+    assert out["depth"] >= 90
+    assert all(p["start"] >= -84 and p["end"] <= 84.0001 for p in parts)           # 要の下へ回り込まない = 円にならない
+    assert all(abs(((p["label"][0] - out["cx"]) ** 2 +
+                    (p["label"][1] - out["cy"]) ** 2) ** .5 - out["middle"]) < .001 for p in parts)
+    assert len(out["ribs"]) == n + 3
 
 
 def test_fan_falls_back_without_losing_complex_actions(tmp_path):
@@ -394,3 +396,20 @@ console.log(JSON.stringify({before,active,stopped,blocked,unfocused,inactive,hel
 """)
     assert out == {"before": "allow_once", "active": True, "stopped": None,
                    "blocked": "allow_once", "unfocused": True, "inactive": False, "held": True, "released": True}
+
+
+def test_light_text_keeps_the_japanese_board_japanese(tmp_path):
+    """Claude Code の合図の文は英語で来る = 日本語の板に英語を混ぜない (実機の検収 11/6)。"""
+    out = node(tmp_path, r"""
+console.log(JSON.stringify({
+  perm: core.lightText({type:'permission_prompt', message:'Claude needs your permission'}, 'ja'),
+  idle: core.lightText({type:'idle_prompt', message:'Claude is waiting for your input'}, 'ja'),
+  ja: core.lightText({type:'idle_prompt', message:'日本語の補足'}, 'ja'),
+  en: core.lightText({type:'permission_prompt', message:'Claude needs your permission'}, 'en'),
+}));
+""")
+    assert out["perm"] == "権限の確認が届いています"
+    assert out["idle"] == "Claude が次の指示を待っています (端末へ)"
+    assert out["ja"].endswith("日本語の補足")
+    assert out["en"] == "Claude needs your permission"
+

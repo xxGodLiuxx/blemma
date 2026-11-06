@@ -109,9 +109,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="板と設定を用意し、Claude の起動行だけ表示 (板を残すには --keep-board)\n"
                              "Prepare the board/configs and print the Claude command (--keep-board retains the board)")
     parser.add_argument("--window-size", type=size_value,
-                        default=os.environ.get("BLEMMA_WINDOW_SIZE", "520,760"), metavar="W,H",
-                        help="小窓の幅,高さ (BLEMMA_WINDOW_SIZE・既定 520,760)\n"
-                             "Window size (BLEMMA_WINDOW_SIZE; default: 520,760)")
+                        default=os.environ.get("BLEMMA_WINDOW_SIZE", "660,700"), metavar="W,H",
+                        help="小窓の幅,高さ (BLEMMA_WINDOW_SIZE・既定 660,700)\n"
+                             "Window size (BLEMMA_WINDOW_SIZE; default: 660,700)")
     parser.add_argument("--window-position", type=position_value,
                         default=os.environ.get("BLEMMA_WINDOW_POSITION", "bottom-right"), metavar="X,Y",
                         help="小窓の位置 (BLEMMA_WINDOW_POSITION・既定 右下)\n"
@@ -430,8 +430,9 @@ def launch(args: argparse.Namespace, root: Path) -> int:
     session = ensure_board(root, args.port)
     completed = False
     try:
-        open_board(session.info, args.mode, args.window_size, args.window_position, **(
-            {"options": args.page_options} if args.page_options else {}))
+        if not args.print_only:
+            open_board(session.info, args.mode, args.window_size, args.window_position, **(
+                {"options": args.page_options} if args.page_options else {}))
         paths = write_configs(root)
         executable = find_claude()
         command = claude_command(executable, paths, args)

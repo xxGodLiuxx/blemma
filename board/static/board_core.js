@@ -38,6 +38,9 @@
       bad_token: "token が違います。server を起こし直した時は、新しい URL で開いてください",
       offline: "板の server に繋がりません (繋ぎ直しています)",
       stale: "画面が古くなっていました。もう一度選んでください",
+      light_permission_prompt: "権限の確認が届いています",
+      light_elicitation_dialog: "問いが届いています",
+      light_agent_needs_input: "Claude があなたの入力を待っています",
       light_idle_prompt: "Claude が次の指示を待っています (端末へ)",
       light_elicitation_url_dialog: "端末でリンクを開くか決めてください",
       light_default: "Claude Code からの合図",
@@ -333,49 +336,65 @@
     return screen.options.length >= 2 && screen.options.length <= 6;
   }
 
-  /* Angles run clockwise from noon. The two exits never move. Minimum inner
-   * chord AND radial depth are 90 CSS px at scale=1; larger fans scroll rather
-   * than silently shrinking targets. Polygon coordinates include the centre hole. */
+  /* 折り扇 = 要 (かなめ) を下に置き、骨が左から右へ開く。左端 = 止める・右端 = 端末で答える (どの n でも動かない)。
+   * 間に 1 番から左から右へ。半径の中ほどの幅を 84 CSS px 以上に保つ (足りない時は小さくせず扇を大きくする)。 */
   function fanLayout(n) {
     if (!Number.isInteger(n) || n < 2 || n > 6) return null;
-    var angles = [];
-    for (var i = 0; i < n; i++) angles.push(-112.5 + (i + 0.5) * 225 / n);
-    var first = angles.reduce(function (best, a, i) {
-      return Math.abs(a) < Math.abs(angles[best]) ||
-        (Math.abs(a) === Math.abs(angles[best]) && a > angles[best]) ? i : best;
-    }, 0);
-    var parts = angles.map(function (a, i) {
-      return { key: "option", index: (i - first + n) % n, angle: (a + 360) % 360 };
-    });
-    parts.push({ key: "fixed", angle: 225 }, { key: "terminal", angle: 135 });
-    parts.sort(function (a, b) { return a.angle - b.angle; });
-    parts.forEach(function (p, i) {
-      var prev = parts[(i + parts.length - 1) % parts.length].angle;
-      var next = parts[(i + 1) % parts.length].angle;
-      p.start = p.angle - ((p.angle - prev + 360) % 360) / 2 + 1;
-      p.end = p.angle + ((next - p.angle + 360) % 360) / 2 - 1;
-    });
-    var narrowest = Math.min.apply(null, parts.map(function (p) { return p.end - p.start; }));
-    var inner = Math.ceil(90 / (2 * Math.sin(narrowest * Math.PI / 360)));
-    var outer = Math.max(180, inner + 90), size = 2 * outer;
+    var total = n + 2, spread = 168, step = spread / total, first = -spread / 2;
+    var depth = 150, middle = Math.max(190, Math.ceil(84 / (2 * Math.sin(step * Math.PI / 360))));
+    var inner = middle - depth / 2, outer = inner + depth;
+    var width = 2 * (outer + 10), height = outer + 40, cx = width / 2, cy = height - 28;
     function point(r, a) {
-      return [outer + r * Math.sin(a * Math.PI / 180), outer - r * Math.cos(a * Math.PI / 180)];
+      return [cx + r * Math.sin(a * Math.PI / 180), cy - r * Math.cos(a * Math.PI / 180)];
+    }
+    function ring(r, a0, a1) {
+      var p0 = point(r, a0), p1 = point(r, a1);
+      return "M " + p0.join(" ") + " A " + r + " " + r + " 0 0 1 " + p1.join(" ");
+    }
+    var parts = [];
+    for (var i = 0; i < total; i++) {
+      var start = first + i * step;
+      var part = { key: i === 0 ? "fixed" : i === total - 1 ? "terminal" : "option",
+                   start: start, end: start + step, angle: start + step / 2 };
+      if (part.key === "option") part.index = i - 1;
+      parts.push(part);
     }
     parts.forEach(function (p) {
-      var points = [], count = Math.ceil((p.end - p.start) / 3);
-      for (var j = 0; j <= count; j++) points.push(point(outer, p.start + (p.end - p.start) * j / count));
-      for (var k = count; k >= 0; k--) points.push(point(inner, p.start + (p.end - p.start) * k / count));
+      var points = [], count = Math.ceil(step / 3);
+      for (var j = 0; j <= count; j++) points.push(point(outer, p.start + step * j / count));
+      for (var k = count; k >= 0; k--) points.push(point(inner, p.start + step * k / count));
       p.polygon = "polygon(" + points.map(function (v) {
-        return (v[0] / size * 100).toFixed(4) + "% " + (v[1] / size * 100).toFixed(4) + "%";
+        return (v[0] / width * 100).toFixed(4) + "% " + (v[1] / height * 100).toFixed(4) + "%";
       }).join(",") + ")";
-      p.label = point((inner + outer) / 2, p.angle);
-      p.width = 2 * inner * Math.sin((p.end - p.start) * Math.PI / 360);
-      var arcWidth = (p.end - p.start) * Math.PI / 180 * (inner + outer) / 2 * 0.82, depthWidth = (outer - inner) * 0.92;
-      p.labelWidth = depthWidth + Math.max(0, arcWidth - depthWidth) * Math.pow(Math.cos(p.angle * Math.PI / 180), 2);
-      var a = point(outer - 7, p.start + 1), b = point(outer - 7, p.end - 1);
-      p.arc = "M " + a.join(" ") + " A " + (outer - 7) + " " + (outer - 7) + " 0 0 1 " + b.join(" ");
+      p.label = point(middle, p.angle);
+      p.width = 2 * middle * Math.sin(step * Math.PI / 360);
+      p.arc = ring(outer - 7, p.start + 0.8, p.end - 0.8);
     });
-    return { size: size, inner: inner, outer: outer, depth: outer - inner, parts: parts };
+    var ribs = [];
+    for (var r = 0; r <= total; r++) {
+      var a = first + r * step, main = r === 0 || r === total;
+      ribs.push({ main: main, from: point(main ? 8 : 12, a), to: point(main ? outer + 8 : inner, a) });
+    }
+    var folds = [];
+    for (var f = 0; f < total * 2 + 1; f++) {
+      folds.push({ from: point(inner, first + f * step / 2), to: point(outer, first + f * step / 2) });
+    }
+    /* 左から右の順は visual で持つ。走査の順は option → 止める → 端末 (今の板と同じ) */
+    var visual = parts.slice();
+    parts.sort(function (x, y) {
+      var rank = function (q) { return q.key === "option" ? q.index : q.key === "fixed" ? 100 : 101; };
+      return rank(x) - rank(y);
+    });
+    return { width: width, height: height, cx: cx, cy: cy, inner: inner, outer: outer, middle: middle,
+             depth: depth, step: step, parts: parts, visual: visual, ribs: ribs, folds: folds,
+             edges: [ring(outer, first, first + spread), ring(inner, first, first + spread)] };
+  }
+
+  /* 扇片の字 = 骨に沿った縦書きに入る長さへ切る (全文は上に出る) */
+  function fanLabel(text, kind, key) {
+    if (key === "fixed") return kind === "permission" ? "作業を止める" : kind === "question" ? "答えない" : "閉じる";
+    var t = String(text || "");
+    return t.length > 11 ? t.slice(0, 10) + "…" : t;
   }
 
   /* 見つめて本文を送る向き = 枠の下寄りで下へ・上寄りで上へ・真ん中は止まる (視線の人は巻物を回せない) */
@@ -610,7 +629,8 @@
     if (!light) return "";
     var fixed = L["light_" + light.type];
     var msg = light.message || light.title || "";
-    if (fixed) return msg ? fixed + " — " + msg : fixed;
+    /* Claude Code の合図の文は英語で来る = 日本語の板では定型の字だけにする */
+    if (fixed) return msg && !(lang === "ja" && /^[\x00-\x7f]*$/.test(msg)) ? fixed + " — " + msg : fixed;
     return msg || L.light_default;
   }
 
@@ -657,7 +677,7 @@
     parseDwell: parseDwell, parseScan: parseScan, mmss: mmss, Dwell: Dwell, Scan: Scan,
     reasonsOf: reasonsOf, visibleSuggestions: visibleSuggestions, suggestionLabel: suggestionLabel,
     steps: steps, needConfirm: needConfirm, newUi: newUi, uiAfterUndo: uiAfterUndo,
-    fanEligible: fanEligible, fanLayout: fanLayout, scrollDirection: scrollDirection, actionDescription: actionDescription,
+    fanEligible: fanEligible, fanLayout: fanLayout, fanLabel: fanLabel, scrollDirection: scrollDirection, actionDescription: actionDescription,
     priorityState: priorityState,
     parseOptions: parseOptions, OPTION_DEFAULTS: OPTION_DEFAULTS,
     buildScreen: buildScreen, pressKey: pressKey, choiceLabel: choiceLabel, viewKey: viewKey,
