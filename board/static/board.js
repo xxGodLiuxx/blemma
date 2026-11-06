@@ -106,6 +106,7 @@
     var now = performance.now();
     var prev = S.card;
     var card = snap.card;
+    var undone = false;
     S.seq = snap.seq;
     S.snap = snap;
     S.snapAt = now;
@@ -119,6 +120,7 @@
       forgetSends();
     } else if (prev && prev.id === card.id && prev.state === "deciding" && card.state === "shown") {
       S.ui = C.uiAfterUndo(card, S.ui);          /* 取り消した = 確かめの画面か頭へ */
+      undone = true;
     }
     S.card = card;
     S.deadlineAt = card && typeof card.remaining === "number" ? now + card.remaining * 1000 : null;
@@ -141,16 +143,20 @@
       S.lightUntil = 0;
       S.lightKey = "";
     }
-    refreshView();
+    refreshView(undone);                         /* 取り消して選ぶ画面へ戻った = 焦点を先頭 (許可) へ置かない */
   }
 
-  function refreshView() {
+  /* leaveFocus = 替わった後に、鍵の焦点を先頭へ置かない (取り消して戻った時・窓を移った時) */
+  function refreshView(leaveFocus) {
     var k = C.viewKey(S.card, S.ui, S.lang);
     if (k !== S.key) {
       S.ui.marks = [];
       S.key = k;
       render();
-      bumpGen(true);
+      /* 取り消しの枠と「▼ 続き」を先に出し入れする = この後に消える物を pointer の下 (滞留の守り) と焦点の在処に数えない */
+      updateSide(performance.now());
+      bumpGen(true, leaveFocus);
+      return;
     }
     updateSide(performance.now());
   }
@@ -204,6 +210,12 @@
     fitWindow();                      /* 先に窓の大きさ。形 (透過) は寸法が揃ってから送る */
     var focusedKey = viewDocument.activeElement && viewDocument.activeElement.dataset
       ? viewDocument.activeElement.dataset.key : null;
+    /* 鍵の焦点を同じ釦へ付け直すのは、同じ画面の描き直し (印を付けただけ・配色や設定・言葉の変更・窓の移り) だけ。
+       札が替わった・札の中で次の画面へ進んだ時は付け直さない = 前の画面と同じ位置の釦 (次の札の「次から訊かない」・
+       次の設問の同じ番号) へ焦点を持ち越さない。付け直さなかった焦点は bumpGen の決まりに任せる */
+    var screen = card ? [card.id, S.ui.step, S.ui.sub || ""].join("|") : "";
+    var sameScreen = screen === S.drawnScreen;
+    S.drawnScreen = screen;
     viewDocument.documentElement.lang = lang;
     $("kind").textContent = card ? T["kind_" + card.kind] : "";
     if (S.mode === "small" && card && card.kind === "elicitation" && card.payload.head === "blemma") {
@@ -262,7 +274,7 @@
     renderFan(m);
     S.scanEl = null;
     S.fillEl = null;
-    if (focusedKey && S.btns[focusedKey] && !S.btns[focusedKey].disabled) {
+    if (sameScreen && focusedKey && S.btns[focusedKey] && !S.btns[focusedKey].disabled) {
       S.btns[focusedKey].focus({ preventScroll: true });
     }
   }
@@ -616,12 +628,15 @@
   }
 
   /* 表示の世代を進める = 滞留を止めて選択を解き、pointer の下の釦は入り直すまで数えない・走査は頭から (§4.2) */
-  /* fromBoard = 板から来た替わり (新しい札・状態の変化・取り消しで戻った)。この時だけ、押しを数えない間を置く (press の SETTLE_MS)。
-     札の中で人が画面を進めた時 (拒否 → 理由・次の設問) は置かない = 鍵で続けて打つ人の 2 打目を捨てない */
-  function bumpGen(fromBoard) {
+  /* settle = 押しを数えない間 (press の SETTLE_MS) と走査の静かな 1 こまを置く。置くのは、板から来た替わり (新しい札・状態の
+     変化・取り消しで戻った・設定の変更) と、位置や焦点で行き先が決まる押し (焦点の上の Enter / Space・click・触る・支援技術の
+     押し・スイッチ) で札の中を進めた時 = ばたつきや押し直しの 2 打目が、進んだ先 (戻った画面の「許可」・見ていない次の設問・
+     確かめの画面の「送る」) に当たらない (線 3)。数字の鍵 (行き先を名指しする押し) と滞留で進めた時は置かない。
+     leaveFocus = 鍵の焦点を先頭へ置かない (取り消して戻った時・窓を移った時) */
+  function bumpGen(settle, leaveFocus) {
     var now = performance.now();
     S.gen += 1;
-    if (fromBoard) {
+    if (settle) {
       S.genAt = now;
       setSettling(true);
     }
@@ -629,18 +644,25 @@
     if (S.lastX < 0) S.firstPointer = true;
     S.overMore = false;               /* 「▼ 続き」も同じ = 動かさないままの pointer で、新しい札の和紙を送らない */
     releaseDwell();
-    S.scan.restart(fromBoard ? now + scanQuiet() : now);   /* 板から替わった後は、1 こまぶん何も光らせない */
+    S.scan.restart(settle ? now + scanQuiet() : now);   /* 間を置いた後は、1 こまぶん何も光らせない */
     if (S.scanEl) { S.scanEl.classList.remove("scan"); S.scanEl = null; }
-    if (S.card && S.card.state === "shown" && S.lastInput === "key" && !S.overlay && S.scanMs <= 0) {
+    if (!leaveFocus && keyFocusWanted()) {
       /* 鍵で使う人のために先頭の釦へ焦点を置く。ただし、人が自分で置いた焦点 (配色・設定・コピーなどの釦) は奪わない =
          配色の釦を鍵で 2 回押した 2 回目が、焦点の移った先頭の羽根 (許可) に当たらない (線 3)。
-         奪ってよいのは、焦点がどこにも無い時と、描き直しで消えた釦に在った時だけ */
+         奪ってよいのは、焦点がどこにも無い時と、焦点の在った釦が消えた・隠れた・押せなくなった時だけ
+         (入れ物を隠した釦と押せなくした釦は、ブラウザが焦点を外すまで activeElement に残る) */
       var held = viewDocument.activeElement;
       var kept = held && held !== viewDocument.body && held !== viewDocument.documentElement &&
-        (!viewDocument.contains || viewDocument.contains(held));
+        (!viewDocument.contains || viewDocument.contains(held)) &&
+        !held.disabled && !(held.closest && held.closest("[hidden]"));
       var first = S.fan ? S.scanList[0] : viewDocument.querySelector("#opts .btn:not(:disabled)");
       if (first && !kept) first.focus({ preventScroll: true });
     }
+  }
+
+  /* 鍵の焦点を頁が置く場面 = 押せる札があり、鍵で使っていて (走査は切)、設定の板が閉じている */
+  function keyFocusWanted() {
+    return !!S.card && S.card.state === "shown" && S.lastInput === "key" && !S.overlay && S.scanMs <= 0;
   }
 
   /* 板から札が替わった後、走査が最初の光を出すまでの間 = 走査の 1 こまぶん (0.4〜1.5 秒)。押すのが遅い人の、前の札へ向けた
@@ -845,13 +867,15 @@
 
   /* ---- 押す ---- */
   var SETTLE_MS = 400;                /* 表示が替わってから、押しを数え始めるまで */
-  /* 取り消しは、猶予の短い板 (--undo-ms が 0.8 秒より短い) では猶予の半分まで = 許された猶予なら、その間に必ず押せる時間が残る
-     (0.4 秒のままだと、猶予 0.4 秒以下の板では取り消しが 1 度も押せない) */
+  /* 取り消しは、猶予の短い板 (--undo-ms が 0.8 秒より短い) では、数えない間を板の猶予の半分までにする (0.4 秒のままだと、
+     猶予 0.4 秒以下の板では取り消しが 1 度も押せない)。数えない間は板の猶予 (undo_ms) から、猶予の終わりは写しを受けた時の
+     残りから測る = 猶予の半分を過ぎてから写しが届いた時は、押せる間が残らない事がある */
   function settleFor(key) {
     var undoMs = key === "undo" && S.snap ? S.snap.undo_ms : 0;
     return undoMs > 0 ? Math.min(SETTLE_MS, undoMs / 2) : SETTLE_MS;
   }
-  function press(key, by) {
+  /* named = 行き先を名指しする押し (数字の鍵)。札の中を進めても、続けて打つ次の押しを捨てない */
+  function press(key, by, named) {
     if (key === "reset" || key === "phone" || key === "gear" || key === "pip" || key === "theme" || key === "copy") {
       if (by !== "key" && by !== "click") return;          /* 視線では押さない (§4.5) */
       if (key === "reset") api("POST", "/stats/reset", {}).catch(lostCall);
@@ -894,17 +918,17 @@
     if (r.send) { sendAnswer(r.send, by); return; }
     S.ui = r.ui;
     var k = C.viewKey(card, S.ui, S.lang);
-    if (r.gen || k !== S.key) {
-      S.key = k;
-      render();
-      /* 札の中で人が画面を進めた (拒否 → 理由・前の画面へ・次の設問)。スイッチの時だけ、板から替わった時と同じ間を置く =
-         ばたつきや震えの 2 打目が、進んだ先の先頭 (戻った画面の「許可」・見ていない次の設問) に当たらない (線 3)。
-         鍵で続けて打つ人の 2 打目は捨てない (進んだ先を知って打っている) */
-      bumpGen(by === "switch");
-    } else {
-      render();                                            /* 印を付けただけ = 世代は進めない */
-    }
+    var moved = r.gen || k !== S.key;                      /* 印を付けただけ = 世代は進めない */
+    S.key = k;
+    render();
     updateSide(performance.now());
+    if (!moved) return;
+    /* 「前の画面へ」で戻った = 鍵の焦点は先頭 (許可) でなく、来た元の「拒否 …」へ (押し直しが許可に当たらない) */
+    if (key === "back" && keyFocusWanted() && S.btns.deny && !S.btns.deny.disabled) S.btns.deny.focus({ preventScroll: true });
+    /* 札の中で人が画面を進めた (拒否 → 理由・前の画面へ・次の設問・確かめの画面)。位置や焦点で行き先が決まる押しの時は、
+       板から替わった時と同じ間を置く = ばたつき・押し直し・ダブルクリックの 2 打目が、進んだ先に当たらない (線 3)。
+       数字の鍵 (名指し) と滞留 (入り直すまで数えない守りが別に在る) の時は置かない */
+    bumpGen(by !== "dwell" && !named);
   }
 
   /* 新しい押しは要求ごとに切り離す (§4.5)。応答の喪失では受理されたか分からないため、
@@ -1099,7 +1123,7 @@
     }
     if (/^[1-6]$/.test(e.key)) {
       var k = S.optionKeys[parseInt(e.key, 10) - 1];
-      if (k) { e.preventDefault(); press(k, "key"); }
+      if (k) { e.preventDefault(); press(k, "key", true); }   /* 数字 = 行き先を名指しする押し */
       return;
     }
     if ((e.key === "Enter" || e.key === " ") && active && active.dataset.dwell) {
@@ -1263,6 +1287,17 @@
     d.addEventListener("focusin", active(function (e) { spotlight(e.target); }));
   }
 
+  /* 頁を別の窓へ付け替えると、焦点は外れる。付け替える前に焦点の在った釦を覚え、付け替えた後に同じ釦へ戻す (鍵の焦点を
+     先頭の「許可」へ移さない)。戻せない時は、どこにも置かない (refreshView(true)) */
+  function heldIn(surface) {
+    var a = viewDocument.activeElement;
+    return a && a !== viewDocument.body && surface.contains(a) ? a : null;
+  }
+
+  function keepFocus(held) {
+    if (held && viewDocument.contains(held)) held.focus({ preventScroll: true });
+  }
+
   function openPip() {
     if (viewWindow !== window) { viewWindow.close(); return; }
     if (!window.documentPictureInPicture || S.pipOpening) return;
@@ -1273,19 +1308,21 @@
       var surface = $("surface");
       w.addEventListener("pagehide", function () {
         if (viewWindow !== w) return;
+        var held = heldIn(surface);
         homeDocument.body.appendChild(surface);
         viewWindow = window; viewDocument = homeDocument;
         S.lastX = -1; S.over = null;
-        setChrome(); S.key = ""; refreshView(); restartFrames();
+        setChrome(); keepFocus(held); S.key = ""; refreshView(true); restartFrames();
       }, { once: true });
       var link = w.document.createElement("link");
       link.rel = "stylesheet"; link.href = location.origin + "/static/board.css";
       w.document.head.appendChild(link);
+      var held = heldIn(surface);
       w.document.body.appendChild(surface);
       viewWindow = w; viewDocument = w.document;
       bindInputs(w);
       S.lastX = -1; S.over = null;
-      setChrome(); S.key = ""; refreshView(); restartFrames();
+      setChrome(); keepFocus(held); S.key = ""; refreshView(true); restartFrames();
     }).catch(function () {
       if (viewWindow !== window) viewWindow.close();
       showNotice(L().pip_error);

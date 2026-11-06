@@ -357,8 +357,8 @@ async function closeCard(id) {
   await until(`document.querySelector('#undo-zone').hidden`);
   assert.equal((await api('/pending')).card.state,'shown','The same key undoes once the moment is over');
   await closeCard(bounce);
-  // Inside one card the person moves on by pressing (Deny, then a reason): those two presses can follow each other
-  // at once. The quiet moment is only for a view that changed from the board's side.
+  // Inside one card the person moves on by pressing (Deny, then a reason). Typed by number, a press that names where it
+  // goes, those two presses can follow each other at once.
   const quick=(await api('/ask',{kind:'permission',from:{cwd:'repo'},payload:{head:'Bash',text:'ls',blocks:[{label:'command',text:'ls',mono:true}]}})).id;
   await until(`document.querySelectorAll('.btn[data-key="deny"]').length === 1`);
   await key('2','Digit2');                       // Deny… opens the reasons (waits for the quiet moment of the new card).
@@ -368,6 +368,26 @@ async function closeCard(id) {
   assert.equal((await api('/pending')).card.state,'deciding','Two quick presses inside one card both count');
   await sleep(1050); await api('/wait?id='+quick);
   await until(`document.body.classList.contains('idle')`);
+  // Enter on the focused button is different: where it goes depends on what has the focus. Deny… then Back by Enter, and
+  // a second Enter 30 ms behind it (a bounce, or a press made again). Back puts the focus where the person came from
+  // (Deny…), and a press right behind a step inside the card is not counted: it must not send the Allow of the first screen.
+  const enter={key:'Enter',code:'Enter',windowsVirtualKeyCode:13};
+  const twice=(await api('/ask',{kind:'permission',from:{cwd:'repo'},payload:{head:'Bash',text:'ls',blocks:[{label:'command',text:'ls',mono:true}]}})).id;
+  await until(`document.querySelectorAll('.btn[data-key="deny"]').length === 1`);
+  await key('2','Digit2');                       // Deny… opens the reasons.
+  await until(`document.querySelectorAll('[data-key="back"]').length === 1`);
+  await evaluate(`document.querySelector('[data-key="back"]').focus()`);
+  await call('Input.dispatchKeyEvent',{type:'keyDown',...enter}); await call('Input.dispatchKeyEvent',{type:'keyUp',...enter});   // Back.
+  await sleep(30);
+  await call('Input.dispatchKeyEvent',{type:'keyDown',...enter}); await call('Input.dispatchKeyEvent',{type:'keyUp',...enter});   // The second Enter.
+  await sleep(300);
+  assert.equal((await api('/pending')).card.state,'shown','An Enter right behind Back does not land on Allow');
+  assert.equal(await evaluate(`document.querySelectorAll('[data-key="back"]').length`),0,'Back returned to the first screen');
+  assert.equal(await evaluate(`document.activeElement.dataset.key`),'deny','Back puts the focus on Deny…, where the person came from');
+  await key('Enter');                            // Later (key() waits for the quiet moment), Enter on Deny… opens the reasons again.
+  await until(`document.querySelectorAll('[data-key="back"]').length === 1`);
+  assert.equal((await api('/pending')).card.state,'shown','Enter on Deny… only opens the reasons');
+  await closeCard(twice);
   // From a switch the same two presses are different: the second is a bounce, not a choice on a screen the person has
   // seen. Deny… then Back, and a press 50 ms behind it, must not land on Allow, the first blade of the screen they return to.
   const space={key:' ',code:'Space',windowsVirtualKeyCode:32};
