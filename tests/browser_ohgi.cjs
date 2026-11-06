@@ -212,6 +212,14 @@ async function closeCard(id) {
   await mouse({x:hub.x+80,y:hub.y+20});
   assert.equal(await evaluate(`window.__moved`),null,'The drag ends with the button');
   assert.equal((await api('/pending')).card.state,'shown','Dragging never answers');
+  // The copy button copies the whole text and never answers.
+  await evaluate(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:t=>{window.__copied=t;return Promise.resolve();}}})`);
+  await click('#copy-btn');
+  await until(`document.querySelector('#copy-btn').textContent==='コピーしました'`);
+  const copied=await evaluate(`window.__copied`);
+  assert(copied.includes('old_string: ローカル') && copied.includes('new_string: ローカル') && !copied.includes('→'),'The whole text is copied');
+  await key('c','KeyC');
+  assert.equal((await api('/pending')).card.state,'shown','Copying never answers');
   const blade=await point('#fan [data-key="allow_once"]');
   await mouse(blade); await mouse(blade,'mousePressed'); await mouse(blade,'mouseReleased');
   await sleep(150);

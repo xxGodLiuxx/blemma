@@ -709,12 +709,13 @@
 
   /* ---- 押す ---- */
   function press(key, by) {
-    if (key === "reset" || key === "phone" || key === "gear" || key === "pip" || key === "theme") {
+    if (key === "reset" || key === "phone" || key === "gear" || key === "pip" || key === "theme" || key === "copy") {
       if (by !== "key" && by !== "click") return;          /* 視線では押さない (§4.5) */
       if (key === "reset") api("POST", "/stats/reset", {}).catch(function () { S.offline = true; });
       if (key === "phone") openPhone();
       if (key === "gear") openGear();
       if (key === "pip") togglePin();
+      if (key === "copy") copyCard();
       if (key === "theme") toggleTheme();
       return;
     }
@@ -864,7 +865,7 @@
     var active = viewDocument.activeElement && viewDocument.activeElement.closest
       ? viewDocument.activeElement.closest("[data-key]") : null;
     if (!sw && active && (e.key === "Enter" || e.key === " ") &&
-        ["reset", "phone", "gear", "pip", "theme"].indexOf(active.dataset.key) >= 0) {
+        ["reset", "phone", "gear", "pip", "theme", "copy"].indexOf(active.dataset.key) >= 0) {
       e.preventDefault();
       press(active.dataset.key, "key");
       return;
@@ -887,6 +888,7 @@
     }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.key === "Escape") { e.preventDefault(); press("fixed", "key"); return; }
+    if (e.key === "c" || e.key === "C") { e.preventDefault(); press("copy", "key"); return; }
     if (/^(ArrowDown|ArrowUp|PageDown|PageUp)$/.test(e.key) && !$("more").hidden) {
       e.preventDefault();
       copyPage(e.key === "ArrowDown" || e.key === "PageDown" ? 1 : -1);
@@ -1109,6 +1111,33 @@
     c.scrollTop = dir > 0 && c.scrollTop >= end - 2 ? 0 : c.scrollTop + dir * step;
   }
 
+  /* 和紙の文章をそのままコピーする。「変更」の行は本文の写しなので入れない */
+  function copyCard() {
+    if (!S.card || S.mode !== "small") return;
+    var m = C.buildScreen(S.card, S.ui, S.lang), T = L(), btn = $("copy-btn");
+    var lines = [m.head, m.text].filter(Boolean);
+    m.blocks.forEach(function (b) { if (!b.change) lines.push((b.label ? b.label + ": " : "") + b.text); });
+    if (m.question) lines.push(m.question);
+    var text = lines.join("\n");
+    function done(ok) {
+      setText(btn, ok ? T.copied : T.copy_failed);
+      setTimeout(function () { setText(btn, L().copy); }, 1500);
+    }
+    function byHand() {
+      var area = el("textarea");
+      area.value = text;
+      $("surface").appendChild(area);
+      area.select();
+      var ok = false;
+      try { ok = viewDocument.execCommand("copy"); } catch (e) { ok = false; }
+      area.remove();
+      done(ok);
+    }
+    var board = viewWindow.navigator.clipboard;
+    if (board && board.writeText) board.writeText(text).then(function () { done(true); }, byHand);
+    else byHand();
+  }
+
   /* 「▼ 続き」にポインタを載せている間は 1 画面ずつ送る。最後まで来たら止まり、載せ直すと先頭へ戻る */
   function hoverMore(now) {
     if ($("more").hidden || now < S.moreNext) return;
@@ -1242,6 +1271,7 @@
     $("phone-btn").textContent = T.phone;
     $("gear-btn").textContent = T.settings;
     $("panel-close").textContent = T.close;
+    setText($("copy-btn"), T.copy);
     $("gear-btn").textContent = S.mode === "small" ? "⚙" : T.settings;
     $("gear-btn").setAttribute("aria-label", T.settings);
     $("theme-btn").textContent = isDark() ? "☀" : "☾";
