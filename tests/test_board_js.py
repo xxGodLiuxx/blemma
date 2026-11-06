@@ -2009,8 +2009,9 @@ console.log(JSON.stringify({ answered: answered, undoAfterAnswer: undoAfterAnswe
 def test_closing_the_settings_does_not_press_what_waits_under_the_pointer(tmp_path, clock):
     """設定の板を閉じた直後、板の裏で置いたままの pointer の下に居た釦は、入り直すまで滞留で押さない (反証役の再現 =
     閉じた後のこまが pointer の知らせより先に来ると守りが解け、止まったマウスが 1 px 動いた後に約 1 秒で押された)。
-    Esc でも「閉じる」でも、板を開いている間に札が替わっていても同じ。閉じた後に最初に届いた pointer の下の釦も、入り直すまで
-    数えない (板が開いていた間の位置と、その下の物は信じない)。"""
+    Esc でも「閉じる」でも、板を開いている間に札が替わっていても、閉じた後に pointer が一度も動かなくても (止まったマウスは
+    知らせを出さない) 同じ。閉じた後に最初に届いた pointer の下の釦も、入り直すまで数えない (板が開いていた間の位置と、
+    その下の物は信じない)。"""
     a = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("git status")))
     b = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("npm test")))
     out = page(tmp_path, r"""
@@ -2033,18 +2034,20 @@ async function scene(how, swap, first) {
   if (how === "esc") await c.key("Escape", "Escape");
   else await c.click(c.$("panel-close"));
   await c.run(500);                                /* 閉じた後のこまが先 (pointer は止まったまま) */
-  c.pointer(first[0], first[1]);                   /* 0.5 秒後に最初の知らせ */
+  if (first) c.pointer(first[0], first[1]);        /* 0.5 秒後に最初の知らせ (無し = 止まったマウスは知らせを出さない) */
   await c.run(2500);
   const resting = c.answers().length;
+  const back = first || [40, 40];
   await c.run(300, function () { c.pointer(400, 400); });
-  await c.run(1300, function () { c.pointer(first[0] + 1, first[1]); });   /* 入り直す */
+  await c.run(1300, function () { c.pointer(back[0] + 1, back[1]); });     /* 入り直す */
   return { resting: resting, open: !c.$("overlay").hidden, reentered: c.answers().length };
 }
 console.log(JSON.stringify({ esc: await scene("esc", false, [41, 40]), close: await scene("close", false, [41, 40]),
-                             swapped: await scene("esc", true, [41, 40]), movedAway: await scene("esc", false, [240, 40]) }));
+                             swapped: await scene("esc", true, [41, 40]), movedAway: await scene("esc", false, [240, 40]),
+                             still: await scene("esc", false, null) }));
 """, A=a, B=b)
     want = {"resting": 0, "open": False, "reentered": 1}
-    assert out == {"esc": want, "close": want, "swapped": want, "movedAway": want}
+    assert out == {"esc": want, "close": want, "swapped": want, "movedAway": want, "still": want}
 
 
 def test_scrolling_only_the_text_does_not_hold_back_the_next_dwell(tmp_path, clock):
