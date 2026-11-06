@@ -283,6 +283,64 @@ def test_refused_undo_says_how_an_ended_card_ended(clock):
     assert card_of(b, a).state == "disconnected"
 
 
+def test_the_board_says_which_page_sent_the_answer_it_delivered(clock, tmp_path):
+    """板は、渡った答えを送った頁の名札 (viewer = 頁ごとの乱数) を、「直前に終わった札」(last.answered_by) に添える = 頁は
+    「自分の答えが渡って札が終わった」を、板の返りと写しの順に左右されずに読める (外部のレビューの所見 = 頁の側の推し量り
+    では、ほかの頁の答えが先に通った時を見分けられなかった)。取り消して答え直した時は、渡った答えの頁の名札。答えが渡らずに
+    終わった札 (時間切れ・渡す前に hook が居なくなった) には添えない。形の違う名札 (長すぎる・字が違う・文字列でない) は、
+    名札なしで受ける。名札は、札の写し・hook への返り・記録の file には載せない。"""
+    def deliver(board, cid):
+        clock.advance(3.01)
+        _, body, taken = board.wait(cid)
+        board.delivered(taken, True)
+        return body
+
+    b = new_board(clock, tmp_path)
+    a = ask(b)
+    card = b.pending(-1)["card"]
+    assert b.answer(a, card["view_seq"], {"type": "allow_once"}, "key", 1, None, "page-1")[0] == 200
+    assert "page-1" not in json.dumps(b.pending(-1)["card"])             # 猶予の札の写しには載せない
+    assert b.undo(a, "key", 1)[0] == 200
+    card = b.pending(-1)["card"]
+    assert b.answer(a, card["view_seq"], {"type": "deny", "reason": 0}, "click", 1, None, "page-2")[0] == 200   # ほかの頁が答え直す
+    body = deliver(b, a)
+    last = b.pending(-1)["last"]
+    assert (last["id"], last["end"], last["answered_by"]) == (a, "answered", "page-2")   # 渡ったのは、答え直した頁の答え
+    assert "page-" not in json.dumps(body)                                # hook へ渡す返りに、名札は載らない
+    a = ask(b)                                                            # 「端末で答える」が渡って終わった札にも添える
+    seq = b.pending(-1)["card"]["view_seq"]
+    assert b.answer(a, seq, {"type": "terminal"}, "key", 1, None, "page-3")[0] == 200
+    deliver(b, a)
+    last = b.pending(-1)["last"]
+    assert (last["id"], last["end"], last["answered_by"]) == (a, "released", "page-3")
+    logs = "".join(f.read_text(encoding="utf-8") for f in tmp_path.glob("log-*.jsonl"))
+    assert logs and "page-" not in logs                                   # 記録の file にも載らない
+    for bad in ("x" * 65, "page 1", "頁", "", 7, None, ["page-1"]):       # 形の違う名札 = 名札なしで受ける
+        b = new_board(clock)
+        a = ask(b)
+        seq = b.pending(-1)["card"]["view_seq"]
+        assert b.answer(a, seq, {"type": "allow_once"}, "key", 1, None, bad)[0] == 200
+        deliver(b, a)
+        last = b.pending(-1)["last"]
+        assert (last["id"], last["end"], last["answered_by"]) == (a, "answered", None), bad
+    b = new_board(clock)                                                  # 時間切れで終わった札には添えない
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    clock.advance(301.0)
+    assert b.answer(a, seq, {"type": "allow_once"}, "key", 1, None, "page-1")[0] == 409
+    last = b.pending(-1)["last"]
+    assert (last["id"], last["end"], last["answered_by"]) == (a, "expired", None)
+    b = new_board(clock)                                                  # 答えを受けた後、渡す前に hook が居なくなった札にも添えない
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    keepalive(b, a)
+    clock.advance(4.0)
+    assert b.answer(a, seq, {"type": "allow_once"}, "key", 1, None, "page-1")[0] == 200
+    clock.advance(1.5)                                                    # 最後の /wait から 5.5 秒 (接続の終了は 5 秒)
+    last = b.pending(-1)["last"]
+    assert (last["id"], last["end"], last["answered_by"]) == (a, "disconnected", None)
+
+
 def test_answer_at_deadline_is_expired_and_409(clock):
     b = new_board(clock)
     a = ask(b)

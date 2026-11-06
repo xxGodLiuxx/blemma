@@ -209,7 +209,8 @@ class Element {
     const doc = this.ownerDocument;
     if (!this.focusable() || doc.activeElement === this) return;
     doc.activeElement = this;
-    doc.listeners.fire("focusin", { target: this });
+    /* silentFocus = 窓が背面に居る (実のブラウザは、背面の窓へは焦点の知らせを送らない・前面へ戻った時に送る) */
+    if (!doc.silentFocus) doc.listeners.fire("focusin", { target: this });
   }
   blur() { if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = this.ownerDocument.body; }
 }
@@ -311,7 +312,8 @@ function buildFromHtml(doc, html) {
 const EXPORT = "\n  window.__t = { S: S, apply: apply, press: press, bumpGen: bumpGen," +
   " view: function () { return { doc: viewDocument, win: viewWindow }; } };\n  init();$1";
 
-/* 頁を起こす。opt = { query: "?mode=small&…", undoMs: 3000, pip: true (PiP の窓を開ける), reply: (path, body) → {status, data} } */
+/* 頁を起こす。opt = { query: "?mode=small&…", undoMs: 3000, pip: true (PiP の窓を開ける),
+   reply: (path, body) → {status, data} か {later: fn(send)} (返りを後で送る) } */
 async function boot(opt) {
   opt = opt || {};
   const clock = makeClock(opt.start);
@@ -340,6 +342,8 @@ async function boot(opt) {
       const body = o.body ? JSON.parse(o.body) : {};
       c.sent.push({ path: p, body: body, at: clock.now });
       const r = c.reply && c.reply(p, body);
+      /* later = 返りを後で送る (写しが返りより先に届く順を作る)。later(send) の send(status, data) を、筋書きが好きな時に呼ぶ */
+      if (r && typeof r.later === "function") return r.later(function (status, data) { resolve(respond(status, data)); });
       if (r) return resolve(respond(r.status, r.data));
       if (p === "/answer") return resolve(respond(200, { undo_ms: c.undoMs, undo_remaining: c.undoMs / 1000 }));
       if (p === "/undo") return resolve(respond(200, { state: "shown" }));
@@ -363,6 +367,9 @@ async function boot(opt) {
   /* 見えている釦 (data-key) */
   c.btn = function (key) { return c.doc().querySelectorAll("[data-key]").filter(function (b) { return b.dataset.key === key && b.shown(); })[0] || null; };
   c.active = function () { const d = c.doc(), a = d.activeElement; return !a || a === d.body ? "body" : (a.dataset.key || a.id || a.localName); };
+  /* この頁の名札 (頁が /answer に添える viewer)。実の板は、受けた答えの名札を写しに添える = 筋書きは、猶予の写しと
+     「直前に終わった札」に、誰の答えかを自分で書く (deciding(…, by)・ended(card, by)) */
+  c.me = function () { return c.S.pressLedger.source; };
   c.answers = function () { return c.sent.filter(function (s) { return s.path === "/answer"; }); };
   c.posts = function () { return c.sent.filter(function (s) { return s.path === "/answer" || s.path === "/undo"; }).map(function (s) { return s.path; }); };
   /* 板の写しを当てる (= 見張りが返った時と同じ入口) */

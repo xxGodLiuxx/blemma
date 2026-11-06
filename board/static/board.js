@@ -107,12 +107,17 @@
     var prev = S.card;
     var card = snap.card;
     var undone = false;
-    /* 札がこの頁の画面から替わる・消える・押せなくなる時に、鍵の焦点が前の札の釦に在った = 頁がその焦点を消す。消した後は、
-       人が自分で焦点を置くまで、次の札の先頭 (許可) へ焦点を置かない (前の札の釦へ向けた遅れた Enter が、次の札の許可に
-       当たらない・線 3)。この頁の人が自分の押しで答えた札 (S.ownAnswer) は別 = 人が自分で進めた (次の札の先頭へ置く・
-       猶予の写しを受けないまま次の札へ替わっても同じ)。ほかの頁が答えた・時間切れ・接続の終了で替わった時だけ印を立てる */
-    var leaves = prev && (!card || card.id !== prev.id || (prev.state === "shown" && card.state !== "shown"));
-    if (leaves && S.ownAnswer !== prev.id && heldOnCard()) S.focusTaken = true;
+    /* 鍵の焦点の決まり (§4.2): 焦点がどこかに来た事を覚えておき (S.focusSeen)、その焦点が、人の自分の押し (答える・札の中を
+       進める・設定を閉じる) で使われないまま消えた後は、次の札の先頭 (許可) へ焦点を置かない (bumpGen) = 前の札へ向けた
+       Enter が、次の札の許可に当たらない (線 3)。
+       ここで数えるのは「この頁の人の答えが渡って、札が終わった」時だけ = 押した時に在った焦点 (S.sentFocus) は、その答えで
+       使われた。誰の答えが渡ったかは、板が「直前に終わった札」に添える名札 (answered_by) で読む = 頁の側で推し量らない
+       (送った答えが通るとは限らない・板の返りと写しの順は決まっていない)。猶予に入っただけでは数えない = 取り消された答え・
+       ほかの頁が答え直した札は、最初から数に入らない。押した後に来た焦点 (置き直した焦点・取り消しへ置いた焦点) は、
+       使われていない (focusGen が進んでいる) */
+    var gone = snap.last, sent = S.sentFocus;
+    if (prev && gone && gone.id === prev.id && gone.answered_by === S.pressLedger.source &&
+        sent && sent.usable && sent.gen === S.focusGen) S.focusSeen = false;
     S.seq = snap.seq;
     S.snap = snap;
     S.snapAt = now;
@@ -131,7 +136,6 @@
          (止める・拒否を送って取り消された人の次の Enter が、前に焦点を置いていた「次から訊かない」に当たらない・線 3) */
       S.ui = C.uiAfterUndo(card, S.ui);
       S.drawnScreen = null;
-      S.ownAnswer = null;                        /* 答えていない札に戻った */
       undone = true;
     }
     S.card = card;
@@ -287,7 +291,7 @@
     S.scanEl = null;
     S.fillEl = null;
     if (sameScreen && focusedKey && S.btns[focusedKey] && !S.btns[focusedKey].disabled) {
-      S.btns[focusedKey].focus({ preventScroll: true });
+      focusOn(S.btns[focusedKey]);
     }
   }
 
@@ -670,19 +674,15 @@
     releaseDwell();
     S.scan.restart(settle ? now + scanQuiet() : now);   /* 間を置いた後は、1 こまぶん何も光らせない */
     if (S.scanEl) { S.scanEl.classList.remove("scan"); S.scanEl = null; }
-    if (!leaveFocus && !S.focusTaken && keyFocusWanted()) {
-      /* 鍵で使う人のために先頭の釦へ焦点を置く = 焦点がどこにも無い所へ札 (画面) が出た時と、人が自分の押しで札の中を
-         進めた時。頁が人の焦点を消した後 (S.focusTaken) は、人が自分で焦点を置くまで置かない。
-         人が自分で置いた焦点 (配色・設定・コピーなどの釦) は奪わない =
-         配色の釦を鍵で 2 回押した 2 回目が、焦点の移った先頭の羽根 (許可) に当たらない (線 3)。
-         奪ってよいのは、焦点がどこにも無い時と、焦点の在った釦が消えた・隠れた・押せなくなった時だけ
-         (入れ物を隠した釦と押せなくした釦は、ブラウザが焦点を外すまで activeElement に残る) */
-      var held = viewDocument.activeElement;
-      var kept = held && held !== viewDocument.body && held !== viewDocument.documentElement &&
-        (!viewDocument.contains || viewDocument.contains(held)) &&
-        !held.disabled && !(held.closest && held.closest("[hidden]"));
+    if (!leaveFocus && keyFocusWanted()) {
+      /* 鍵で使う人のために先頭の釦へ焦点を置く = 焦点がどこにも無い所へ札 (画面) が出た時と、人が自分の押しで札に答えた・
+         札の中を進めた時。人が自分で置いた焦点 (配色・設定・コピーなどの釦) は奪わない = 配色の釦を鍵で 2 回押した
+         2 回目が、焦点の移った先頭の羽根 (許可) に当たらない (線 3)。
+         前に来た焦点が、人の押しで使われないまま消えている時 (S.focusSeen) は置かない = 頁が消した焦点 (札が替わった・
+         取り消しや「▼ 続き」や上の釦が隠れた・釦が押せなくなった) の行き先を、頁が許可へ変えない。人が自分で答えるか
+         札の中を進めると (focusUsed)、また置く */
       var first = S.fan ? S.scanList[0] : viewDocument.querySelector("#opts .btn:not(:disabled)");
-      if (first && !kept) first.focus({ preventScroll: true });
+      if (first && focusNowhere() && !S.focusSeen) focusOn(first);
     }
   }
 
@@ -691,17 +691,38 @@
     return !!S.card && S.card.state === "shown" && S.lastInput === "key" && !S.overlay && S.scanMs <= 0;
   }
 
-  /* 鍵の焦点が、札の釦の区域 (選択肢・止・戻・扇・「▼ 続き」・取り消し) の中に在るか */
+  /* 頁が自分で焦点を置く所は、全部ここを通す。窓が背面に居る間は、置いても焦点の知らせ (focusin) が来ない (窓が前面に
+     戻った時に来る) = 置いた事を、知らせを待たずに覚える */
+  function focusOn(el) {
+    el.focus({ preventScroll: true });
+    if (viewDocument.activeElement === el) focusCame();
+  }
+
+  /* 鍵の焦点がどこかに来た。focusGen = 来た数 (答えを押した後に来た焦点を、押した時の焦点と見分ける) */
+  function focusCame() {
+    S.focusSeen = true;
+    S.focusGen = (S.focusGen || 0) + 1;
+  }
+
+  /* 鍵の焦点がどこにも無いか。入れ物を隠した釦と押せなくした釦は、ブラウザが焦点を外すまで activeElement に残るので、
+     在るとは数えない */
+  function focusNowhere() {
+    var a = viewDocument.activeElement;
+    return !a || a === viewDocument.body || a === viewDocument.documentElement ||
+      !!(viewDocument.contains && !viewDocument.contains(a)) || !!a.disabled || !!(a.closest && a.closest("[hidden]"));
+  }
+
+  /* 鍵の焦点が、札の釦の区域 (選択肢・止・戻・扇) の中に在るか */
   function heldOnCard() {
     var a = viewDocument.activeElement;
     return !!(a && a !== viewDocument.body && a.closest && a.closest("#opts, #fixed-zone, #term-zone, #fan"));
   }
 
-  /* 頁が自分で隠す・押せなくする釦 (取り消し・「▼ 続き」) に、鍵の焦点が在った = 頁がその焦点を消す (S.focusTaken)。印は、
-     人が自分で焦点を動かす (Tab・扇の矢印) か、行き先を自分で指した押し (数字・Esc・0・click・触る) が数えられるまで残り、
-     その間は次の札の先頭へ焦点を置かない = 押しそびれた「取り消す」へ向けた遅れた Enter が、次の札の許可に当たらない (線 3) */
-  function takeFocusFrom(el) {
-    if (viewDocument.activeElement === el) S.focusTaken = true;
+  /* 人が自分の押しで札に答えた・札の中を進めた = 札の釦に在った焦点は、その押しで使われた (この後に釦が消えるのは、人が
+     進めた結果)。焦点がどこにも無い時も同じ (消えた焦点の事は、この押しで済んだ)。「▼ 続き」や上の釦に在る生きた焦点は
+     使われていない = それが後で隠れたら、次の札の先頭へは置かない */
+  function focusUsed() {
+    if (focusNowhere() || heldOnCard()) S.focusSeen = false;
   }
 
   /* 板から札が替わった後、走査が最初の光を出すまでの間 = 走査の 1 こまぶん (0.4〜1.5 秒)。押すのが遅い人の、前の札へ向けた
@@ -715,9 +736,9 @@
      名指しの鍵は数える) */
   function setSettling(on) {
     var b = viewDocument.body;
-    if (S.settling === on) return;
-    S.settling = on;
+    /* 値が同じでも、今の文書の印は揃える (印を付けた後に PiP の窓へ移ると、移った先の文書には印が無い) */
     if (b && b.classList) b.classList.toggle("settling", on);
+    S.settling = on;
     /* 印を付けた後に頁が PiP の窓へ移った (戻った) 時 = 元の文書の印も消す (残ると、外の道具が「まだ押せない」と読み続ける) */
     var home = homeDocument && homeDocument.body;
     if (!on && home && home !== b && home.classList) home.classList.remove("settling");
@@ -832,7 +853,6 @@
     var card = S.card;
     var btn = $("undo-btn");
     if (!card || card.state !== "deciding") {
-      takeFocusFrom(btn);
       if (!z.hidden) z.hidden = true;
       btn.disabled = true;
       return;
@@ -849,7 +869,6 @@
       if (S.fan) fanNote(T.undo + " (" + Math.ceil(left) + ")", label);
     } else {
       setText($("undo-label"), T.delivering + " " + label);
-      takeFocusFrom(btn);                                   /* 猶予が切れた = 押しそびれた取り消しの焦点を頁が消す */
       btn.hidden = true;
       btn.disabled = true;
       if (S.fan) fanNote(label, "");
@@ -938,10 +957,6 @@
     /* 名指しの押し (数字の鍵) で札の中を進めた直後 = 続く名指しの押しは数えるが、焦点や位置で行き先が決まる押し (癖の Enter・
        ダブルクリック) は数えない (見ていない次の設問の先頭に当たらない)。取り消しは別 (猶予の内の、自分の間を持つ) */
     if (by !== "dwell" && !named && key !== "undo" && performance.now() - (S.stepAt || -1e9) < SETTLE_MS) return;
-    /* 数えた押しのうち、行き先を自分で指した物 (名指しの鍵・click・触る) = 人がこの画面を見て押した → 頁が焦点を消した印を解く。
-       焦点の上の Enter / Space・スイッチ・滞留では解かない。数えない間の内の押し (前の札へ向けた遅れた 1 押しかも知れない) も、
-       ここへ来ないので解かない */
-    if (named || by === "click" || by === "touch") S.focusTaken = false;
     if (key === "more") {                                  /* 和紙の続きを 1 画面分送る。最後まで読んだら先頭へ */
       copyPage(1);
       S.moreNext = performance.now() + 1500;
@@ -970,13 +985,14 @@
     var k = C.viewKey(card, S.ui, S.lang);
     var moved = r.gen || k !== S.key;                      /* 印を付けただけ = 世代は進めない */
     S.key = k;
+    if (moved) focusUsed();                                /* 自分の押しで札の中を進めた = 札の釦に在った焦点は使われた */
     render();
     updateSide(performance.now());
     if (!moved) return;
     S.stepAt = performance.now();                          /* 札の中を進めた時刻 (名指しで進めた直後の、焦点任せの押しを数えない) */
     setSettling(true);                                     /* その間も頁の印を付ける (外の道具が「もう押せる」を読み違えない) */
     /* 「前の画面へ」で戻った = 鍵の焦点は先頭 (許可) でなく、来た元の「拒否 …」へ (押し直しが許可に当たらない) */
-    if (key === "back" && keyFocusWanted() && S.btns.deny && !S.btns.deny.disabled) S.btns.deny.focus({ preventScroll: true });
+    if (key === "back" && keyFocusWanted() && S.btns.deny && !S.btns.deny.disabled) focusOn(S.btns.deny);
     /* 札の中で人が画面を進めた (拒否 → 理由・前の画面へ・次の設問・確かめの画面)。位置や焦点で行き先が決まる押しの時は、
        板から替わった時と同じ間を置く = ばたつき・押し直し・ダブルクリックの 2 打目が、進んだ先に当たらない (線 3)。
        数字の鍵 (名指し) と滞留 (入り直すまで数えない守りが別に在る) の時は置かない */
@@ -1027,20 +1043,21 @@
     var card = S.card;
     var mine = S.answerId = (S.answerId || 0) + 1;
     function settle() { if (S.answerId === mine) S.answering = false; }
-    /* 板が受けなかった・届いたか分からない答えは、自分で答えた札に数えない (その札が後で替わった時は、焦点を消した印を立てる) */
-    function notMine() { if (S.ownAnswer === card.id) S.ownAnswer = null; }
     S.answering = true;
-    S.ownAnswer = card.id;                       /* この頁の人が、自分の押しでこの札に答えた (apply の焦点の決まりが読む) */
+    /* 押した時の焦点 = この答えが渡った時に「使われた」事にできる焦点 (札の釦の上か、どこにも無い時だけ)。gen = その時までに
+       来た焦点の数 (この後に焦点が来たら、それは別の焦点 = この答えでは使われていない) */
+    S.sentFocus = { gen: S.focusGen, usable: focusNowhere() || heldOnCard() };
     var sentKey = S.key;
     var batches = takePressBatches(), sent = C.sumPressBatches(batches);
+    /* viewer = この頁の名札 (頁ごとの乱数)。板は、渡った答えの名札を「直前に終わった札」に添える = 頁は「自分の答えが
+       渡った」を、推し量らずに読める (apply) */
     send("/answer", { id: card.id, seq: card.view_seq, choice: choice, by: by,
-                      presses: sent, press_batches: batches }, SEND_MS)
+                      presses: sent, press_batches: batches, viewer: S.pressLedger.source }, SEND_MS)
       .then(function (r) {
         if (r.status === 200) {
           S.sentKey = sentKey;
           return;
         }
-        notMine();
         giveBack(card.id, sent, batches);
         if (r.status === 401) {
           S.problem = L().bad_token;
@@ -1049,7 +1066,6 @@
           kick();
         }
       }, function () {
-        notMine();
         giveBack(card.id, sent, batches);
         lostCall();
       })
@@ -1136,9 +1152,6 @@
     }
     S.held[code] = true;
     S.lastInput = "key";
-    /* Tab = 人が自分で焦点を動かす鍵 → 頁が焦点を消した印を解く (扇の矢印は下の枝・行き先を自分で指した押しは press が、
-       数えた時に解く)。Enter / Space は焦点任せの鍵なので解かない */
-    if (e.key === "Tab") S.focusTaken = false;
     if (S.overlay) {
       /* 板の中の選択や入力の Enter / Space には触らない。焦点が「閉じる」に在る時だけ、Enter / Space で閉じる
          (ブラウザが鍵から起こす click は、直前に鍵が動いたので onClick が数えない) */
@@ -1183,10 +1196,7 @@
       e.preventDefault();
       var at = S.fanVisual.indexOf(active), n = S.fanVisual.length;
       var dir = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
-      if (n) {
-        S.focusTaken = false;                              /* 矢印で、人が自分で羽根へ焦点を置いた */
-        S.fanVisual[at < 0 ? 1 : (at + dir + n) % n].focus({ preventScroll: true });
-      }
+      if (n) focusOn(S.fanVisual[at < 0 ? 1 : (at + dir + n) % n]);
       return;
     }
     if (/^[1-6]$/.test(e.key)) {
@@ -1213,8 +1223,9 @@
     if (!assist && S.fan && S.options.click !== "single" && (b.parentNode === $("fan") || b.closest(".fan-aux"))) {
       var at = performance.now();
       /* 表示が替わった直後の click は、選ぶ 1 回目にも数えない (press の SETTLE_MS と同じ線 3)。数えると、前の札へ向けた
-         2 回押しの 2 回目が新しい札の羽根を選び、人が見てから押す click は 1 回で決まってしまう */
-      if (at - S.genAt < SETTLE_MS) return;
+         2 回押しの 2 回目が新しい札の羽根を選び、人が見てから押す click は 1 回で決まってしまう。名指しの鍵や滞留で
+         札の中を進めた直後も同じ (0.4 秒をまたぐ 2 回の click が、見ていない画面の羽根を決めない) */
+      if (at - S.genAt < SETTLE_MS || at - (S.stepAt || -1e9) < SETTLE_MS) return;
       var step = C.armStep(S.armKey ? { key: S.armKey, at: S.armAt } : null, b.dataset.key, at, ARM_MS);
       if (!step.confirm) { armChoice(b, at); return; }
       disarm();
@@ -1356,7 +1367,8 @@
     d.addEventListener("keydown", active(onKeyDown));
     d.addEventListener("keyup", active(function (e) { S.keyAt = performance.now(); delete S.held[e.code || e.key]; }));
     d.addEventListener("click", active(onClick));
-    d.addEventListener("focusin", active(function (e) { spotlight(e.target); }));
+    /* 鍵の焦点がどこかに来た (人が置いても、頁が置いても) = 覚えておく。使われないまま消えたら、次の札の先頭へ置かない (bumpGen) */
+    d.addEventListener("focusin", active(function (e) { focusCame(); spotlight(e.target); }));
   }
 
   /* 頁を別の窓へ付け替えると、焦点は外れる。付け替える前に焦点の在った釦を覚え、付け替えた後に同じ釦へ戻す (鍵の焦点を
@@ -1372,7 +1384,7 @@
      取り消しの枠) に在った焦点を戻す (作り直された釦は、もう文書に無いので何もしない) */
   function keepFocus(held) {
     if (held && viewDocument.contains(held) && !held.disabled && !(held.closest && held.closest("[hidden]"))) {
-      held.focus({ preventScroll: true });
+      focusOn(held);
     }
   }
 
@@ -1415,13 +1427,17 @@
     body.replaceChildren();
     fill(body);
     $("overlay").hidden = false;
-    $("panel-close").focus({ preventScroll: true });
+    focusOn($("panel-close"));
     S.dwell.reset();
     setFill(null, 0);
     fitWindow();
   }
 
   function closeOverlay() {
+    /* 設定の板を閉じるのは人の操作 = 板の中に在る焦点 (「閉じる」・選択) は、その操作で使われた (次の札の先頭へ置いてよい)。
+       焦点がどこにも無い時は何もしない (板の外で消えた焦点の記録まで、閉じる操作で済ませない) */
+    var a = viewDocument.activeElement;
+    if (a && a.closest && a.closest("#overlay")) S.focusSeen = false;
     S.overlay = null;
     $("overlay").hidden = true;
     /* 板の裏で置いたままの pointer の下に居た釦は、入り直すまで数えない (板を開いている間に札が替わっていても同じ)。
@@ -1532,7 +1548,6 @@
   function updateMore() {
     var more = $("more"), c = $("copy");
     var show = S.mode === "small" && !!S.card && S.card.state === "shown" && c.scrollHeight > c.clientHeight + 2;
-    if (!show && !more.hidden) takeFocusFrom(more);
     if (more.hidden === show) more.hidden = !show;
     if (show) setText(more, c.scrollTop >= c.scrollHeight - c.clientHeight - 2 ? L().more_top : L().more);
     var at = S.scanList.indexOf(more);

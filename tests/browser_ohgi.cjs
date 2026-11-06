@@ -446,6 +446,51 @@ async function closeCard(id) {
   assert.equal((await api('/pending')).card.state,'shown','A late Enter meant as Undo does not land on the Allow of the next card');
   await key('Tab');
   await closeCard(undo2);
+  // In the fan every redraw puts the Undo target back into the fan, which drops its focus before the page could see it
+  // there. Another page takes the answer back while the key focus rests on Undo: the focus that went away with the
+  // redraw must not turn up on the first blade of the card that follows.
+  const [re1,re2]=await twoCards();
+  await until(shows('A-card'));
+  await key('1','Digit1');                       // Allow, by number.
+  await until(`!document.querySelector('#undo-zone').hidden && !document.querySelector('#undo-btn').disabled`);
+  await evaluate(`document.querySelector('#undo-btn').focus()`);
+  await api('/undo',{id:re1,by:'click'});        // Not from this page.
+  await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('.btn[data-key="deny"]').disabled && ${READY}`);
+  assert.equal(await focused(),'body','Undo by another page leaves the key focus nowhere');
+  const seq2=(await api('/pending')).card.view_seq;
+  await api('/answer',{id:re1,seq:seq2,choice:{type:'allow_once'},by:'click'});   // …and answers the card again.
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  await sleep(1050); await api('/wait?id='+re1);
+  await until(shows('B-card'));
+  await sleep(600);
+  assert.equal(await focused(),'body','The focus a redraw took from Undo does not move to the next card');
+  await call('Input.dispatchKeyEvent',{type:'keyDown',...enter}); await call('Input.dispatchKeyEvent',{type:'keyUp',...enter});
+  await sleep(300);
+  assert.equal((await api('/pending')).card.state,'shown','A late Enter does not land on the Allow of the next card after a redraw took the focus');
+  await key('Tab');
+  await closeCard(re2);
+  // The top buttons (theme, always on top) are hidden by CSS while the small window waits. A key focus resting on one of
+  // them goes away with the last card: it must not turn up on the first blade of the card that comes next.
+  const top1=(await api('/ask',perm('A-card'))).id;
+  await until(shows('A-card'));
+  await key('Tab');
+  await evaluate(`document.querySelector('#theme-btn').focus()`);
+  assert.equal(await focused(),'theme','The theme button takes the key focus');
+  const seq3=(await api('/pending')).card.view_seq;
+  await api('/answer',{id:top1,seq:seq3,choice:{type:'allow_once'},by:'click'});   // Answered elsewhere.
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  await sleep(1050); await api('/wait?id='+top1);
+  await until(`document.body.classList.contains('idle')`);
+  await sleep(100);
+  assert.equal(await focused(),'body','The waiting window hides the top buttons, and the focus on one of them goes away');
+  const top2=(await api('/ask',perm('B-card'))).id;
+  await until(shows('B-card'));
+  await sleep(600);
+  assert.equal(await focused(),'body','A focus hidden with the waiting window does not move to the next card');
+  await call('Input.dispatchKeyEvent',{type:'keyDown',...enter}); await call('Input.dispatchKeyEvent',{type:'keyUp',...enter});
+  await sleep(300);
+  assert.equal((await api('/pending')).card.state,'shown','An Enter meant for a hidden top button does not land on the Allow of the next card');
+  await closeCard(top2);
   // From a switch the same two presses are different: the second is a bounce, not a choice on a screen the person has
   // seen. Deny… then Back, and a press 50 ms behind it, must not land on Allow, the first blade of the screen they return to.
   const space={key:' ',code:'Space',windowsVirtualKeyCode:32};

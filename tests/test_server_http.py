@@ -117,10 +117,11 @@ def test_page_flow_answer_undo_answer_and_hook_gets_it(live):
     assert card["payload"]["blocks"][0]["text"] == "echo 日本語 && ls" and card["payload"]["text"] == "一覧を出す"
     st, body, _, _ = srv.request("POST", "/answer", {"id": cid, "seq": card["view_seq"],
                                                      "choice": {"type": "allow_once"}, "by": "dwell",
-                                                     "presses": 1})
+                                                     "presses": 1, "viewer": "page-1"})
     assert st == 200 and body["undo_ms"] == 200
     snap = srv.pending()
     assert snap["card"]["state"] == "deciding" and snap["card"]["choice"] == {"type": "allow_once"}
+    assert "page-1" not in json.dumps(snap["card"])        # 頁の名札は、猶予の札の写しには載せない
     assert srv.request("POST", "/undo", {"id": cid, "by": "switch", "presses": 1})[0] == 200
     card2 = srv.pending()["card"]
     assert card2["state"] == "shown" and card2["view_seq"] != card["view_seq"]
@@ -128,17 +129,18 @@ def test_page_flow_answer_undo_answer_and_hook_gets_it(live):
                                                      "choice": {"type": "stop"}, "by": "key", "presses": 1})
     assert st == 409 and body["error"] == "stale"
     assert srv.request("POST", "/answer", {"id": cid, "seq": card2["view_seq"], "choice": {"type": "stop"},
-                                           "by": "key", "presses": 1})[0] == 200
+                                           "by": "key", "presses": 1, "viewer": "page-2"})[0] == 200
     t0 = time.monotonic()
     while True:
         st, body, _, _ = srv.request("GET", f"/wait?id={cid}")
         if body["state"] != "waiting":
             break
         assert time.monotonic() - t0 < 3
-    assert body == {"state": "answered", "answer": {"type": "stop"}}
+    assert body == {"state": "answered", "answer": {"type": "stop"}}   # hook への返りに、頁の名札は載らない
     time.sleep(0.05)
     snap = srv.pending()
     assert snap["card"] is None and snap["last"]["end"] == "answered"
+    assert snap["last"]["answered_by"] == "page-2"     # 渡ったのは、答え直した頁の答え (HTTP の口から名札が届く)
     assert snap["stats"]["presses"] == {"dwell": 1, "key": 1, "switch": 1, "touch": 0, "click": 0}
     assert snap["stats"]["answers"] == 1
 
