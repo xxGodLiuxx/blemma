@@ -175,6 +175,13 @@ def test_notify_is_204(live):
     assert st == 204 and raw == b""
 
 
+def test_window_answers_and_needs_token(live):
+    srv = live()
+    reply = srv.request("POST", "/window", {})
+    assert reply[0] == 200 and "found" in reply[1]
+    assert srv.request("POST", "/window", {}, token=None)[0] == 401
+
+
 def test_stats_reset_needs_token(live):
     srv = live()
     assert srv.request("POST", "/stats/reset", {}, token=None)[0] == 401

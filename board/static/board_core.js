@@ -34,7 +34,9 @@
       set_lang: "言葉", set_sound: "音", off: "切", on: "入", auto: "自動",
       set_mode: "表示", set_scale: "全体の倍率", set_font: "文字の大きさ", set_theme: "配色", set_desc: "解説",
       set_key: "スイッチのキー", set_trail: "視線の点", set_face: "字体", face_yuji: "佑字 粛", face_mincho: "明朝", face_gothic: "ゴシック",
-      size_s: "小", size_m: "標準", size_l: "やや大", size_xl: "大", size_xxl: "特大", small: "扇 (OhGi)", large: "大きな板",
+      size_s: "小", size_m: "標準", size_l: "やや大", size_xl: "大", size_xxl: "特大",
+      set_pos: "窓の位置", pos_keep: "そのまま", pos_br: "右下", pos_bl: "左下", pos_tr: "右上", pos_tl: "左上",
+      set_clear: "扇の周りを透かす (Windows)", pip_off: "固定を外す", small: "扇 (OhGi)", large: "大きな板",
       to_light: "明るい配色へ", to_dark: "暗い配色へ", light: "明るい", dark: "暗い", contrast: "高コントラスト", pip: "常に手前", pip_back: "元の窓へ",
       pip_error: "常に手前を開けませんでした", idle_line: "Claude が訊くと、ここに表示します",
       no_token: "token がありません。server.py の端末に出た URL (#t= つき) で開いてください",
@@ -86,7 +88,9 @@
       set_lang: "Language", set_sound: "Sound", off: "off", on: "on", auto: "auto",
       set_mode: "View", set_scale: "Overall scale", set_font: "Text size", set_theme: "Theme", set_desc: "Descriptions",
       set_key: "Switch key", set_trail: "Pointer trail", set_face: "Typeface", face_yuji: "Yuji Syuku", face_mincho: "Serif", face_gothic: "Sans serif",
-      size_s: "Small", size_m: "Normal", size_l: "Large", size_xl: "Larger", size_xxl: "Largest", small: "OhGi", large: "Large board",
+      size_s: "Small", size_m: "Normal", size_l: "Large", size_xl: "Larger", size_xxl: "Largest",
+      set_pos: "Window position", pos_keep: "Keep", pos_br: "Bottom right", pos_bl: "Bottom left", pos_tr: "Top right", pos_tl: "Top left",
+      set_clear: "See through around the fan (Windows)", pip_off: "Unpin", small: "OhGi", large: "Large board",
       to_light: "Switch to light", to_dark: "Switch to dark", light: "Light", dark: "Dark", contrast: "High contrast", pip: "Always on top", pip_back: "Return to window",
       pip_error: "Could not open always on top", idle_line: "Questions from Claude appear here",
       no_token: "No token. Open the URL (with #t=) printed by server.py",
@@ -156,7 +160,7 @@
   }
 
   var OPTION_DEFAULTS = { dwell: "0", scan: "off", key: "Space", lang: "auto", sound: "off",
-    mode: "large", scale: 1, font: 1, theme: "auto", desc: "on", trail: "off", click: "double", face: "yuji" };
+    mode: "large", scale: 1, font: 1, theme: "auto", desc: "on", trail: "off", click: "double", face: "yuji", pos: "keep", clear: "off" };
 
   function parseOptions(query, saved) {
     var q = new URLSearchParams(query), out = {};
@@ -165,9 +169,9 @@
       var fallback = OPTION_DEFAULTS[key];
       var v = q.has(key) ? q.get(key) : Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : fallback;
       var s = typeof v === "string" || typeof v === "number" ? String(v) : "!invalid";
-      var enums = {click: ["double", "single"], face: ["yuji", "mincho", "gothic"], mode: ["small", "large"], lang: ["auto", "ja", "en"], theme: ["auto", "light", "dark", "contrast"]};
+      var enums = {pos: ["keep", "br", "bl", "tr", "tl"], click: ["double", "single"], face: ["yuji", "mincho", "gothic"], mode: ["small", "large"], lang: ["auto", "ja", "en"], theme: ["auto", "light", "dark", "contrast"]};
       if (enums[key]) out[key] = enums[key].indexOf(s) >= 0 ? s : fallback;
-      else if (["sound", "desc", "trail"].indexOf(key) >= 0) {
+      else if (["sound", "desc", "trail", "clear"].indexOf(key) >= 0) {
         out[key] = ["on", "true", "1", ""].indexOf(s) >= 0 ? "on" :
           ["off", "false", "0"].indexOf(s) >= 0 ? "off" : fallback;
       } else if (key === "key") {
@@ -347,6 +351,14 @@
    * 地紙は内外 2 段。外の帯 = 押す羽根 (一文字)・内の帯 = 押せない書の帯 (見つめた羽根の全文が弧に沿って出る)。
    * 全文を押せる所に書くと、読む視線が他の羽根を押す = 読む所と押す所を分ける。
    * 羽根の字の位置で幅 84 CSS px 以上を保つ (足りない時は小さくせず扇を大きくする)。 */
+  /* 透かす時に残す扇の形 = 外の弧と、親骨の先から要の下まで */
+  function outlineOf(point, r, first, spread, cx, cy) {
+    var out = [];
+    for (var i = 0; i <= 40; i++) out.push(point(r, first - 2 + (spread + 4) * i / 40));
+    out.push([cx, cy + 16]);
+    return out;
+  }
+
   function fanLayout(n) {
     if (!Number.isInteger(n) || n < 2 || n > 6) return null;
     var total = n + 2, spread = 168, step = spread / total, first = -spread / 2;
@@ -405,6 +417,7 @@
              scriptBand: band2(inner, press, first, first + spread),
              edges: [ring(outer, first, first + spread), ring(inner, first, first + spread)],
              seam: ring(press, first, first + spread),
+             outline: outlineOf(point, outer + 4, first, spread, cx, cy),
              arcs: radii.map(function (q) { return ring(q, -78, 78); }),
              arcLengths: radii.map(function (q) { return q * 156 * Math.PI / 180; }) };
   }

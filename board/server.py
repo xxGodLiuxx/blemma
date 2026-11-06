@@ -38,6 +38,15 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:                # python -I で起こされても隣の file を読む
+    sys.path.insert(0, _HERE)
+
+try:
+    import window_win  # noqa: E402
+except ImportError:                      # 窓の最前面と透過が無くても板は動く
+    window_win = None  # type: ignore[assignment]
 from urllib.parse import parse_qs, urlsplit
 
 # ---------------------------------------------------------------------------
@@ -847,6 +856,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/stats/reset":
             board.reset_stats()
             self._json(204, None)
+        elif path == "/window":
+            self._json(200, window_win.apply(data) if window_win else {"found": False})
         else:
             # /resolve は提出版では作らない (1 対 1 の照合の鍵が見つかった時だけ・§3.7)
             self._json(404, {"error": "not_found"})

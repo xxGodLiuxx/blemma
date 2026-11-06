@@ -42,6 +42,7 @@
     S.desc = o.desc === "on";
     S.dwell = new C.Dwell(S.dwellMs, 150);
     S.scan = new C.Scan(S.scanMs);
+    if (S.shapeSig === undefined) S.shapeSig = "null";     /* 切っていない窓に元へ戻す知らせを送らない */
   }
 
   function readToken() {
@@ -346,6 +347,7 @@
     fan.style.setProperty("--a0", layout.first + "deg");
     fan.style.setProperty("--fold", layout.step + "deg");
     S.fanArcs = layout.arcLengths;
+    S.fanOutline = layout.outline;
     var paper = el("div", "fan-paper");
     paper.style.clipPath = layout.paper;
     fan.appendChild(paper);
@@ -431,6 +433,54 @@
       fit = Math.max(0.85, Math.min(1.4, k));
     }
     root.style.setProperty("--font", String(S.options.font * fit));
+    pushShape();
+  }
+
+  /* 最前面と透過 = Windows の小窓は server が窓に当てる。当たらない時は何も変わらない */
+  function windowCall(body) {
+    return api("POST", "/window", body).then(function (r) {
+      var found = !!(r.status === 200 && r.data && r.data.found);
+      S.windowOk = found;
+      if (found) S.pinned = !!r.data.pin;
+      setChrome();
+      return found;
+    }, function () { return false; });
+  }
+
+  function togglePin() {
+    if (viewWindow !== window) { viewWindow.close(); return; }
+    windowCall({ pin: !S.pinned }).then(function (found) { if (!found) openPip(); });
+  }
+
+  /* 扇の周りを透かす = 題の帯と和紙は四角のまま、扇の外の角だけを窓から切る */
+  function pushShape() {
+    if (S.mode !== "small" || viewWindow !== window) return;
+    var shape = null;
+    if (S.options.clear === "on" && S.fan && !S.overlay && S.options.scale === 1 && S.fanOutline) {
+      var fan = $("fan"), r = fan.getBoundingClientRect(), k = r.width / parseFloat(fan.style.width);
+      var side = (window.outerWidth - window.innerWidth) / 2, wide = window.innerWidth / window.innerHeight >= 1.5;
+      var rects = wide ? [[0, 0, r.left - 6, window.innerHeight]] : [];
+      Array.prototype.forEach.call(fan.querySelectorAll(".fan-seal, .fan-aux"), function (e) {
+        var b = e.getBoundingClientRect();
+        rects.push([b.left - 2, b.top - 2, b.width + 4, b.height + 4]);
+      });
+      shape = { dpr: window.devicePixelRatio, left: side, top: window.outerHeight - window.innerHeight - side,
+                keep: wide ? 0 : $("fan-scroll").getBoundingClientRect().top, rects: rects,
+                polygon: S.fanOutline.map(function (p) { return [r.left + p[0] * k, r.top + p[1] * k]; }) };
+    }
+    var sig = JSON.stringify(shape);
+    if (sig === S.shapeSig) return;
+    S.shapeSig = sig;
+    windowCall({ shape: shape });
+  }
+
+  /* 窓の位置 = 画面の 4 隅へ動かす (app の窓だけ動く。普通のタブでは何も起きない) */
+  function placeWindow() {
+    var pos = S.options.pos, s = window.screen;
+    if (pos === "keep" || viewWindow !== window) return;
+    var x = pos.charAt(1) === "r" ? s.availLeft + s.availWidth - window.outerWidth : s.availLeft;
+    var y = pos.charAt(0) === "b" ? s.availTop + s.availHeight - window.outerHeight : s.availTop;
+    window.moveTo(x, y);
   }
 
   function releaseDwell() {
@@ -511,6 +561,7 @@
       setText($("fan-time"), "");
     }
     updateMore();
+    pushShape();
     var qn = S.snap ? S.snap.queue : 0;
     setText($("queue"), qn > 0 ? C.fmt(T.queue, { n: qn }) : "");
     if (S.snap && S.snap.stats) {
@@ -621,7 +672,7 @@
       if (key === "reset") api("POST", "/stats/reset", {}).catch(function () { S.offline = true; });
       if (key === "phone") openPhone();
       if (key === "gear") openGear();
-      if (key === "pip") openPip();
+      if (key === "pip") togglePin();
       if (key === "theme") toggleTheme();
       return;
     }
@@ -930,9 +981,9 @@
     if (viewWindow !== window) { viewWindow.close(); return; }
     if (!window.documentPictureInPicture || S.pipOpening) return;
     S.pipOpening = true;
-    var width = Math.max(640, S.fan ? parseFloat($("fan").style.width) * S.options.scale + 20 : 0);
-    var height = Math.max(720, S.fan ? parseFloat($("fan").style.height) * S.options.scale + 380 : 0);
-    window.documentPictureInPicture.requestWindow({ width: width, height: height }).then(function (w) {
+    /* 前の位置を引きずると画面からはみ出す = 毎回 既定の位置に、画面に収まる大きさで開く */
+    var width = Math.min(640, window.screen.availWidth - 40), height = Math.min(720, window.screen.availHeight - 60);
+    window.documentPictureInPicture.requestWindow({ width: width, height: height, preferInitialWindowPlacement: true }).then(function (w) {
       var surface = $("surface");
       w.addEventListener("pagehide", function () {
         if (viewWindow !== w) return;
@@ -1057,6 +1108,8 @@
       addSelect(body, T.set_click, "click", [["double", T.click_double], ["single", T.click_single]], o.click);
       addSelect(body, T.set_font, "font", [["0.85", T.size_s], ["1", T.size_m], ["1.15", T.size_l], ["1.3", T.size_xl], ["1.5", T.size_xxl]], o.font);
       addSelect(body, T.set_face, "face", [["yuji", T.face_yuji], ["mincho", T.face_mincho], ["gothic", T.face_gothic]], o.face);
+      addSelect(body, T.set_pos, "pos", [["keep", T.pos_keep], ["br", T.pos_br], ["bl", T.pos_bl], ["tr", T.pos_tr], ["tl", T.pos_tl]], o.pos);
+      addSelect(body, T.set_clear, "clear", [["off", T.off], ["on", T.on]], o.clear);
       addSelect(body, T.set_theme, "theme", [["auto", T.auto], ["light", T.light], ["dark", T.dark], ["contrast", T.contrast]], o.theme);
       addSelect(body, T.set_lang, "lang", [["auto", T.auto], ["ja", "日本語"], ["en", "English"]], o.lang);
       addSelect(body, T.set_sound, "sound", [["off", T.off], ["on", T.on]], S.sound ? "on" : "off");
@@ -1090,6 +1143,7 @@
     refreshView();
     var title = $("panel-title");
     if (S.overlay) title.textContent = L().settings;
+    if (name === "pos") placeWindow();
   }
 
   /* 明るい / 暗いの切り替え = 歯車の「配色」と同じ鍵 (theme) を 1 回で替える */
@@ -1117,8 +1171,8 @@
     $("theme-btn").textContent = isDark() ? "☀" : "☾";
     $("theme-btn").setAttribute("aria-label", isDark() ? T.to_light : T.to_dark);
     $("theme-btn").title = isDark() ? T.to_light : T.to_dark;
-    $("pip-btn").hidden = S.mode !== "small" || !window.documentPictureInPicture;
-    $("pip-btn").textContent = viewWindow === window ? T.pip : T.pip_back;
+    $("pip-btn").hidden = S.mode !== "small" || !(window.documentPictureInPicture || S.windowOk);
+    $("pip-btn").textContent = viewWindow !== window ? T.pip_back : S.pinned ? T.pip_off : T.pip;
     $("trail").hidden = S.options.trail !== "on";
   }
 
@@ -1144,6 +1198,7 @@
     restartFrames();
     if (!S.token) { S.problem = L().no_token; updateSide(performance.now()); return; }
     poll();
+    if (S.mode === "small") { windowCall({}); placeWindow(); }
   }
 
   init();
