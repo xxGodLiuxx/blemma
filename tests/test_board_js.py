@@ -2122,6 +2122,48 @@ console.log(JSON.stringify({ early: early, confirm: !!c.btn("send"), sent: c.ans
     assert out == {"early": {"confirm": False, "focus": "opt:0"}, "confirm": True, "sent": 0}, out
 
 
+def test_the_mark_of_uncounted_presses_covers_a_step_made_by_a_named_key(tmp_path, clock):
+    """数字の鍵で札の中を進めた直後も、頁の印 (body.settling) を 0.4 秒付ける = 外の道具や試験が「もう押せる」と読んで押した
+    焦点任せの押し (Enter・click) が、黙って捨てられない (実ブラウザの筋書きで見つけた食い違い)。"""
+    q = _card(clock, "question", TWO_QUESTIONS)
+    out = page(tmp_path, r"""
+const c = await P.boot({ query: "?mode=small&lang=ja" });
+c.show(Q);
+await c.run(500);
+const before = c.doc().body.classList.contains("settling");
+await c.key("1", "Digit1");                        /* 数字で次の設問へ */
+await c.run(20);
+const right = c.doc().body.classList.contains("settling");
+await c.run(450);
+console.log(JSON.stringify({ before: before, right: right, later: c.doc().body.classList.contains("settling") }));
+""", Q=q)
+    assert out == {"before": False, "right": True, "later": False}, out
+
+
+def test_undo_right_behind_a_named_step_is_not_held_back(tmp_path, clock):
+    """数字で札の中を進めて (拒否 … → 理由)、すぐ数字で答えた後の取り消しは、札の中を進めた直後の間 (0.4 秒) に巻き込まない
+    (巻き込むと、猶予の短い板では取り消しの押せる間がその分だけ削られる)。取り消しの間は、猶予の写しから測る物だけ。"""
+    perm = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const key of ["Backspace", "Enter"]) {
+  const c = await P.boot({ query: "?mode=large&lang=ja", undoMs: 400 });
+  c.show(PERM);
+  await c.run(500);
+  await c.key("2", "Digit2");                      /* 拒否 … → 理由の画面 (札の中を進めた) */
+  await c.key("1", "Digit1");                      /* すぐ理由 1 で答える */
+  c.show(deciding(PERM, { type: "deny", reason: 0 }, 0.4));
+  await c.run(250);                                /* 猶予 0.4 秒の板 = 取り消しは 0.2 秒から押せる */
+  if (key === "Enter") c.$("undo-btn").focus();
+  await c.key(key, key);
+  await c.run(20);
+  out[key] = c.posts();
+}
+console.log(JSON.stringify(out));
+""", PERM=perm)
+    assert out == {"Backspace": ["/answer", "/undo"], "Enter": ["/answer", "/undo"]}, out
+
+
 def test_moving_on_inside_a_card_puts_the_key_focus_on_the_first_of_the_next_screen(tmp_path, clock):
     """札の中を自分の押しで進めた時は、進んだ先の先頭へ焦点を置く (2 問目の同じ番号へ持ち越さない)。同じ画面の描き直し
     (複数選択の印を付けただけ) では、焦点を押した釦のまま残す。"""

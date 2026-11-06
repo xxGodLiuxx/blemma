@@ -45,7 +45,7 @@ async function api(route, body) {
 const READY=`!document.body.classList.contains('settling')`;
 async function key(key, code = key) {
   await until(READY);
-  const virtual = {Enter:13, Escape:27, Backspace:8, ArrowRight:39, ArrowLeft:37, ' ':32}[key] || key.charCodeAt(0);
+  const virtual = {Enter:13, Escape:27, Backspace:8, Tab:9, ArrowRight:39, ArrowLeft:37, ' ':32}[key] || key.charCodeAt(0);
   await call('Input.dispatchKeyEvent', {type:'keyDown', key, code, windowsVirtualKeyCode:virtual});
   await call('Input.dispatchKeyEvent', {type:'keyUp', key, code, windowsVirtualKeyCode:virtual});
 }
@@ -377,6 +377,7 @@ async function closeCard(id) {
   await key('2','Digit2');                       // Deny… opens the reasons.
   await until(`document.querySelectorAll('[data-key="back"]').length === 1`);
   await evaluate(`document.querySelector('[data-key="back"]').focus()`);
+  await until(READY);                            // A press that goes by the focus is not counted right behind a step made by number.
   await call('Input.dispatchKeyEvent',{type:'keyDown',...enter}); await call('Input.dispatchKeyEvent',{type:'keyUp',...enter});   // Back.
   await sleep(30);
   await call('Input.dispatchKeyEvent',{type:'keyDown',...enter}); await call('Input.dispatchKeyEvent',{type:'keyUp',...enter});   // The second Enter.
@@ -388,6 +389,63 @@ async function closeCard(id) {
   await until(`document.querySelectorAll('[data-key="back"]').length === 1`);
   assert.equal((await api('/pending')).card.state,'shown','Enter on Deny… only opens the reasons');
   await closeCard(twice);
+  // Where the key focus goes when a card gives way to the next one. Answering card after card by Enter is unchanged:
+  // the person answered by their own press, so the page puts the focus on the first blade of the next card as before.
+  const perm=text=>({kind:'permission',from:{cwd:'repo'},payload:{head:'Bash',text,blocks:[{label:'command',text,mono:true}]}});
+  const shows=text=>`document.querySelector('#text').textContent===${JSON.stringify(text)} && document.querySelectorAll('.btn[data-key="deny"]').length===1 && ${READY}`;
+  const focusOn=key=>evaluate(`document.querySelector('#fan [data-key="${key}"]').focus()`);
+  const focused=()=>evaluate(`document.activeElement===document.body ? 'body' : (document.activeElement.dataset.key||document.activeElement.id||document.activeElement.localName)`);
+  const twoCards=async()=>[(await api('/ask',perm('A-card'))).id,(await api('/ask',perm('B-card'))).id];
+  const [own1,own2]=await twoCards();
+  await until(shows('A-card'));
+  await key('Tab');                              // The person uses the keys.
+  await focusOn('allow_once');
+  await key('Enter');                            // Answers the first card.
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  await sleep(1050);
+  assert.deepEqual((await api('/wait?id='+own1)).answer,{type:'allow_once'},'The first card is answered by Enter');
+  await until(shows('B-card'));
+  assert.equal(await focused(),'allow_once','After the person\'s own answer the next card gets the key focus on its first blade');
+  await key('Enter');                            // The same key answers the second card too.
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  await sleep(1050);
+  assert.deepEqual((await api('/wait?id='+own2)).answer,{type:'allow_once'},'Enter answers card after card');
+  await until(`document.body.classList.contains('idle')`);
+  // Another page answers the card while the key focus rests on its Deny…: this page takes that focus away, so it must
+  // not put it on the first blade (Allow) of the next card. An Enter meant for the Deny… of the card before sends nothing.
+  const [other1,other2]=await twoCards();
+  await until(shows('A-card'));
+  await key('Tab');
+  await focusOn('deny');
+  const seq=(await api('/pending')).card.view_seq;
+  await api('/answer',{id:other1,seq,choice:{type:'allow_once'},by:'click'});   // Not from this page.
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  await sleep(1050); await api('/wait?id='+other1);
+  await until(shows('B-card'));
+  await sleep(600);
+  assert.equal(await focused(),'body','A card answered elsewhere leaves the key focus nowhere on the next card');
+  await call('Input.dispatchKeyEvent',{type:'keyDown',...enter}); await call('Input.dispatchKeyEvent',{type:'keyUp',...enter});   // The late Enter.
+  await sleep(300);
+  assert.equal((await api('/pending')).card.state,'shown','A late Enter does not land on the Allow of the next card');
+  await key('Tab');                              // Moving the focus by Tab is the person's own doing again.
+  await closeCard(other2);
+  // Undo left unpressed: the key focus rests on Undo, the grace runs out and the page hides the button. The focus the
+  // page took away does not turn up on the first blade of the next card, and a late Enter (meant as Undo) sends nothing.
+  const [undo1,undo2]=await twoCards();
+  await until(shows('A-card'));
+  await key('1','Digit1');                       // Allow, by number.
+  await until(`!document.querySelector('#undo-zone').hidden && !document.querySelector('#undo-btn').disabled`);
+  await evaluate(`document.querySelector('#undo-btn').focus()`);
+  assert.equal(await focused(),'undo','The Undo target takes the key focus');
+  await sleep(1050); await api('/wait?id='+undo1);
+  await until(shows('B-card'));
+  await sleep(600);
+  assert.equal(await focused(),'body','The focus the page took from Undo does not move to the next card');
+  await call('Input.dispatchKeyEvent',{type:'keyDown',...enter}); await call('Input.dispatchKeyEvent',{type:'keyUp',...enter});
+  await sleep(300);
+  assert.equal((await api('/pending')).card.state,'shown','A late Enter meant as Undo does not land on the Allow of the next card');
+  await key('Tab');
+  await closeCard(undo2);
   // From a switch the same two presses are different: the second is a bounce, not a choice on a screen the person has
   // seen. Deny… then Back, and a press 50 ms behind it, must not land on Allow, the first blade of the screen they return to.
   const space={key:' ',code:'Space',windowsVirtualKeyCode:32};

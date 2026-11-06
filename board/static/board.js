@@ -710,7 +710,9 @@
     return Math.max(SETTLE_MS, Math.min(S.scanMs || 0, 1500));
   }
 
-  /* 押しを数えない間は、頁に印を付ける (body.settling)。見た目は変えない = 試験と外の道具が「もう押せる」を読める */
+  /* 押しを数えない間は、頁に印を付ける (body.settling)。見た目は変えない = 試験と外の道具が「もう押せる」を読める。
+     印が付く間 = 表示が替わった直後 (どの押しも数えない) と、札の中を進めた直後 (焦点や位置で行き先が決まる押しを数えない。
+     名指しの鍵は数える) */
   function setSettling(on) {
     var b = viewDocument.body;
     if (S.settling === on) return;
@@ -934,8 +936,8 @@
        (ここで滞留の押しを捨てると、捨てた釦は入り直すまで数えなくなり、見続けている人が押せなくなる) */
     if (by !== "dwell" && performance.now() - S.genAt < settleFor(key)) return;
     /* 名指しの押し (数字の鍵) で札の中を進めた直後 = 続く名指しの押しは数えるが、焦点や位置で行き先が決まる押し (癖の Enter・
-       ダブルクリック) は数えない (見ていない次の設問の先頭に当たらない) */
-    if (by !== "dwell" && !named && performance.now() - (S.stepAt || -1e9) < SETTLE_MS) return;
+       ダブルクリック) は数えない (見ていない次の設問の先頭に当たらない)。取り消しは別 (猶予の内の、自分の間を持つ) */
+    if (by !== "dwell" && !named && key !== "undo" && performance.now() - (S.stepAt || -1e9) < SETTLE_MS) return;
     /* 数えた押しのうち、行き先を自分で指した物 (名指しの鍵・click・触る) = 人がこの画面を見て押した → 頁が焦点を消した印を解く。
        焦点の上の Enter / Space・スイッチ・滞留では解かない。数えない間の内の押し (前の札へ向けた遅れた 1 押しかも知れない) も、
        ここへ来ないので解かない */
@@ -972,6 +974,7 @@
     updateSide(performance.now());
     if (!moved) return;
     S.stepAt = performance.now();                          /* 札の中を進めた時刻 (名指しで進めた直後の、焦点任せの押しを数えない) */
+    setSettling(true);                                     /* その間も頁の印を付ける (外の道具が「もう押せる」を読み違えない) */
     /* 「前の画面へ」で戻った = 鍵の焦点は先頭 (許可) でなく、来た元の「拒否 …」へ (押し直しが許可に当たらない) */
     if (key === "back" && keyFocusWanted() && S.btns.deny && !S.btns.deny.disabled) S.btns.deny.focus({ preventScroll: true });
     /* 札の中で人が画面を進めた (拒否 → 理由・前の画面へ・次の設問・確かめの画面)。位置や焦点で行き先が決まる押しの時は、
@@ -1249,7 +1252,7 @@
         }
       }
     }
-    if (S.settling && now - S.genAt >= SETTLE_MS) setSettling(false);
+    if (S.settling && now - S.genAt >= SETTLE_MS && now - (S.stepAt || -1e9) >= SETTLE_MS) setSettling(false);
     if (S.armKey && now - S.armAt > ARM_MS) { disarm(); if (S.spotBtn) spotlight(S.spotBtn); }
     if (S.overMore) hoverMore(now);
     if (S.scanMs > 0) {
@@ -1365,7 +1368,7 @@
     return a && a !== viewDocument.body && surface.contains(a) ? a : null;
   }
 
-  /* 描き直しの前と後の 2 回呼ぶ。前 = 描き直しが同じ画面の同じ釦へ付け直せる様に。後 = 描き直しが付け替えた物 (扇の
+  /* 描き直しの前と後の 2 回呼ぶ。前 = 描き直しが同じ画面の同じ釦へ付け直せるように。後 = 描き直しが付け替えた物 (扇の
      取り消しの枠) に在った焦点を戻す (作り直された釦は、もう文書に無いので何もしない) */
   function keepFocus(held) {
     if (held && viewDocument.contains(held) && !held.disabled && !(held.closest && held.closest("[hidden]"))) {
