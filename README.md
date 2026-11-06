@@ -2,9 +2,9 @@
 
 このプロジェクト「BLEMMA」は、Claude Code を使う人の「確認に戻る手間」を、一瞥で選べる扇 (OhGi) に変える道具です。
 
-Claude は作業の区切りで、次の一手を選択肢にして差し出します。権限の確認 (この操作をしてよいかの問い)・Claude の質問・MCP の問い (外部の道具からの問い) が同じ 1 枚の扇に出て、見つめるだけで選べます。
+Claude は作業の区切りで、次の一手を選択肢にして差し出します。権限の確認 (この操作をしてよいかの問い)・Claude の質問・MCP の問い (外部の道具からの問い) が同じ 1 枚の扇に出ます。既定はマウスで、羽根を 1 回押すと選び、同じ羽根を 1.5 秒以内にもう 1 回押すと決まります。ダブルクリックでも同じです。
 
-Claude Code 本体は改造しません。公式の hooks と MCP の elicitation (道具が人に訊く仕組み) に乗るだけです。
+Claude Code 本体は改造しません。公式の仕掛け (hooks) と MCP の問いかけ (elicitation) を使います。
 
 ![左: 端末の小さな確認。右: 画面の隅の扇](docs/img/ohgi.png)
 
@@ -18,13 +18,13 @@ BLEMMA はギリシャ語の βλέμμα (まなざし・一瞥) です。扇 (
 
 Claude Code は仕事の途中で何度も確認を求めます。確認は端末の小さな選択肢で、矢印キーと Enter で答えます。MCP の問いの form では、矢印キーと Space と Enter で 5 回の打鍵でした (作り手の実測・Claude Code v2.1.318)。
 
-作り手は視線だけで PC を操作します。細い 1 行を目で狙うのは難しく、答えるまで仕事は進みません。BLEMMA はその確認を、画面の隅の扇に変えました。見つめて 1 秒、1 回で答えられます。スイッチ 1 つでも同じように選べます。
+作り手は視線で PC を操作し、OS の視線の道具からクリックを送ります。細い 1 行を目で狙うのは難しく、答えるまで仕事は進みません。BLEMMA はその確認を、画面の隅の扇に変えました。見つめて押す・視線で文章を送る・視線の点・スイッチの走査は、すべて既定で切です。見つめるだけで押したい人は、設定か `--set dwell=1` で 1 秒の注視を有効にできます。OS がクリックを送る時は `dwell=0` のまま使えます。
 
 同じ壁は、端末から目を離して働く人の前にもあります。文書やブラウザを見ている間に Claude が確認を待っていて、端末へ戻って初めて気づきます。扇は画面の隅の小さな窓なので、確認が来たら一瞥して、その場で答えられます。片手で使う人にも、同じ入口が届きます。
 
 ## 5 分で試す
 
-必要なもの: Python 3.10 以上 (試験は 3.10 と 3.13 で通しています)・ログイン済みの Claude Code (`claude` が端末から打てること)・Chrome か Edge (小さな窓に使います。無ければ既定のブラウザで開きます)。視線入力の機器は要りません (手 3)。
+必要なもの: Python 3.10 以上 (試験は 3.10 と 3.13 で通しています)・ログイン済みの Claude Code (`claude` が端末から打てること)・Chrome か Edge (小さな窓に使います。無ければ既定のブラウザで開きます)。扇はマウスで試せます。
 
 1. 取得します (zip で展開しても同じです)。
 
@@ -32,25 +32,37 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
    git clone https://github.com/xxGodLiuxx/blemma
    ```
 
-2. 使う project の folder で起動します。
+2. まずは取得したフォルダーで起動します。
 
    ```
-   python <blemma を置いた所>/blemma.py
+   cd blemma
+   python blemma.py
    ```
 
-   **こう見えれば成功:** 画面の隅に小さな窓が開き、同じ端末で Claude Code が起きます。初回は folder の信頼の確認が端末に出るので、端末で答えます。
+   **こう見えれば成功:** 画面の右下に小さな窓が開き、扇が横向きに閉じて控えます。ポインタを載せると状態の字が出ます。同じ端末で Claude Code が起き、初回はフォルダーの信頼の確認が端末に出るので、そこで答えます。通常のブラウザで開いた場合、窓の大きさは変わりません。
 
 3. Claude に「次の一手を 3 つ、ask_board で出して」と頼みます (`ask_board` は同梱の道具の名前です。そのまま打てば通じます)。
 
-   **こう見えれば成功:** 扇が開き、羽根に 一 二 三 四 が出ます (頼んだ 3 つと「ここで止める」)。羽根を見つめると全文が扇の内側に現れ、そのまま 1 秒で押されて、3 秒の取り消しの猶予の後に端末へ答えが返ります。視線入力が無くても、マウスを乗せて 1 秒待つか、数字キー 1〜6 で同じに押せます。
+   **こう見えれば成功:** 窓が元の大きさ (既定 640×720) に戻り、上に扇、下の和紙に問いが出ます。羽根には 一 二 三… が出ます (「ここで止める」が無ければ自動で足されます)。ポインタを羽根に載せると、全文が扇の内側の帯に出ます。読むだけでは決まりません。答えたい羽根をダブルクリックするか、1 回押してから同じ羽根を 1.5 秒以内にもう 1 回押してください。帯が「取り消す (3)」に変わり、3 秒後に端末へ答えが返ります。猶予の間は、その帯を 1 回押せば取り消せます。
 
-4. 「README.md の 1 行目に今日の日付を足して」のように、file を 1 か所直す頼みをします。
+4. 「README.md の『5 分で試す』を『5 分で試してみる』に直して」のように、ファイルを 1 か所直す頼みをします。
 
-   **こう見えれば成功:** 権限の確認が扇に出ます。羽根の 一 (許可 (今回)) を押すと Edit が進みます。押した後の 3 秒は「取り消す」で戻せます。
+   **こう見えれば成功:** 確認が必要な Edit なら、変更の札が出ます。短い変更なら和紙の先頭に出る「変更」の行と、本文の印 (消す所は打ち消し線・足す所は下線) を読んでください。羽根の 一 にポインタを載せ、「許可 (今回)」を確認してから 2 回押すと、3 秒の猶予の後に Edit が進みます。取り消す時は内側の帯を 1 回押します。すでに許可済みの編集では、確認は出ません。
 
-終える時は Claude Code を `/exit` で閉じます。扇を動かしている PC の中の小さな server (以下「板」) も、`blemma.py` が起こしたものなら一緒に止まります。
+終える時は Claude Code を `/exit` で閉じます。扇を動かしている PC の中の小さなサーバー (以下「板」) も、`blemma.py` が起こしたものなら一緒に止まります。板との切断を検知して 10 秒続くと、アプリの小窓も閉じます。別の作業フォルダーで使う時は、そこで `python <blemma を置いた所>/blemma.py` を実行します。
 
-大きなボタンの見え方で使う時は `python <blemma を置いた所>/blemma.py --large` です。明暗は窓の ☀ ☾ で切り替えられます。大きさ・字・配色・見つめる秒は、窓の歯車か `--set` で変えられます (例 `--set scale=1.25 --set theme=dark`)。
+大きなボタンの見え方で使う時は `python blemma.py --large` です。扇を 1 回押しで決めたい時は、設定の「押し方」か `--set click=single` で変えられます。キーの数字 1〜6・有効にした視線・スイッチは 1 回で決まり、取り消しの猶予は同じです。
+
+## 読む・窓を整える
+
+- 窓の縁をドラッグすると、扇・和紙・字が大きさに追従します。横長にすると左に問い、右に扇が並びます。扇の背景をドラッグすると小窓を動かせます。
+- 長い文章は「▼ 続き」にポインタを載せると 0.35 秒後に 1 画面分進み、その後は 1.5 秒ごとに送ります。ボタンを押すか、↓ ↑ PageDown PageUp でも送れます。本文を読んでいる間は動きません。
+- 和紙にポインタを載せるとコピーのボタンが現れます。`C` キーでもコピーできます。
+- 窓の歯車で、字体 (`face`: 佑字 粛・明朝・ゴシック)・文字の大きさ (`font`: 5 段階)・配色を選べます。暗い配色では和紙も夜の色になります。位置 (`pos`) は画面の 4 隅から選べます。
+- 「常に手前」は Windows では今の小窓をそのまま固定します。他の OS では、対応ブラウザの Document Picture-in-Picture で画面に収まる大きさの窓を開きます。
+- 透過 (`--set clear=on`) は既定で切の Windows 専用の設定です。全体倍率が `scale=1` の時、扇の外の角だけを窓から切り、待機中は題の帯も隠します。対象の窓が見つからない時は何も変わりません。
+
+設定の値と操作の一覧は [`board/README.md`](board/README.md) にあります。
 
 ## うまくいかない時
 
@@ -61,20 +73,20 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 | 文字で答える問いや計画の承認が扇に出ない | 扇が答えるのは選ぶ問いだけです。自由記述と計画の承認は端末で答えます |
 | `blemma.py` が「打つ 1 行」を印字して終わった | `claude` が見つかりません。印字された 1 行を、`claude` が動く端末で打ちます |
 | 「ポートが使用中」と出る | `python <blemma を置いた所>/blemma.py --port 8766` のように別の番号で起こします |
-| 窓に「板の server に繋がりません」と出る | 板が止まっています。`blemma.py` を起こし直してください (窓も開き直します)。その間の確認は端末に出ます |
+| 窓に「板の server に繋がりません」と出る、または小窓が閉じた | 板との切断が 10 秒続くとアプリの小窓は閉じます。`blemma.py` を起こし直してください。その間の確認は端末に出ます |
 | 作業を全部止めたい | 権限の確認の「作業を止める」か、端末の Esc です。質問の「この質問に答えない」と MCP の「この問い合わせを閉じる」は、その問いを閉じるだけです |
 
 ## 安心の 3 行
 
 - **勝手に許可しません。** 人が押した時だけ答えを返します。時間切れと異常は判断なしです。
-- **板が無い時は、いつもの Claude Code です。** hook は何も返さず、端末のいつもの確認に戻ります。
+- **板が無い時は、いつもの Claude Code です。** 確認を受ける仕掛けは何も返さず、端末のいつもの確認に戻ります。
 - **外のサービスへ自動では送りません。** 板は 127.0.0.1 だけで待ち受け、起動ごとの token で守ります。記録は選択と時刻と数だけで、問いの本文は残しません。あなたの `settings.json` は書き換えません。
 
 ## BLEMMA の 3 点
 
-1. **先回り** — Claude が作業の区切りで、次の一手を 2〜6 択で差し出します (同梱の MCP の道具 `ask_board` と skill `board`)。区切りごとに Claude に訊き返させる使い方でも、答える手間は一瞥 1 回です。Claude 自身が迷った時に訊く `AskUserQuestion` (2〜4 択) も同じ扇に出ます。板が無い時、`ask_board` の選択肢はいつもの form に出ます。
+1. **先回り** — Claude が作業の区切りで、次の一手を 2〜6 択で差し出します (同梱の MCP の道具 `ask_board` と手順 `board`)。区切りごとに Claude に訊き返させる使い方でも、その場で選んで答えられます。Claude 自身が迷った時に訊く `AskUserQuestion` (2〜4 択) も同じ扇に出ます。板が無い時、`ask_board` の選択肢はいつもの確認に出ます。
 2. **選ぶ問いは全部 1 枚で** — 権限の確認・Claude の質問・MCP の問いが、同じ扇に同じ形で出ます。
-3. **視線とスイッチで押せる** — 見つめて 1 秒で押す。スイッチ 1 つで走査して選ぶ。押した後 3 秒は取り消せる。「止」(作業を止める) と「端」(端末で答える) は親骨の左右で動かない。カードが替わった瞬間は押されない。読む所と押す所を分けた = 全文は押せない内側の帯に出るので、読む視線が他の羽根を押さない。
+3. **マウス・視線・スイッチで押せる** — 既定はマウスの 2 回押し。必要なら、見つめて押す機能やスイッチの走査を設定で入れられます。決めた後 3 秒は取り消せます。「止」(止める側) と「戻」(いつもの確認に戻る) は親骨の左右で動きません。札が替わった瞬間は注視で押されません。全文を読む内側の帯は押せず、確定後の猶予の間だけ「取り消す (n)」のボタンになります。
 
 質問を小窓に集める道具や、携帯から承認する道具は先にあります。BLEMMA の芯は、Claude が次の一手を差し出す所と、3 種の問いを視線とスイッチで押せる 1 枚にまとめた所です。
 
@@ -92,7 +104,7 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 | Claude の質問 (`AskUserQuestion`) | `PreToolUse` | 2〜4 択 | `allow` + `updatedInput` |
 | MCP の問い (elicitation) | `Elicitation` | 選択肢・はい / いいえ | `action` |
 | 次の一手 | 同梱の MCP server `blemma` の道具 `ask_board` | 2〜6 択・頭に「次の一手 (Claude の先回り)」 | elicitation の答え |
-| 待ちの合図 | `Notification` | 窓が光る | 何も返さない |
+| 待ちの合図 | `Notification` | 帯と縁で知らせる (扇の表示では札がある間と、その直後 1.5 秒は出さない) | 何も返さない |
 | 作業の状態 | `UserPromptSubmit`・`Stop` | 印 = 作業中・あなたの番・完了 | 何も返さない |
 
 - 設定は起動時に `--settings` と `--mcp-config` で渡すだけで、あなたの `settings.json` は書き換えません。書くのは repo の `board/state/` (起動の記録と、日ごとの数の記録) だけです。
@@ -100,7 +112,8 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 - 答えが無いまま待ち時間を過ぎた時、hook は判断を返さずに終わります。線と細目は [`docs/design.md`](docs/design.md) に書きました。
 - 扇に載るのは 1 画面で 1 つを選ぶ問いだけです。複数選択・2 問以上・7 択以上は、同じ窓の縦の一覧に切り替わります。羽根の外の「断る」は MCP の問いの補助のボタンです。
 - 手元で試した OS は Windows だけです。mac と Linux は確かめていません。
-- 小さな窓を常に手前に置く時は、窓の「常に手前」を押します (Chrome 系の Document Picture-in-Picture を使います)。
+- Windows の「常に手前」は `POST /window` → `board/window_win.py` → 標準ライブラリの `ctypes` で既存の小窓を固定します。対象の窓が見つからない時と他の OS では、対応ブラウザの Document Picture-in-Picture を使います。
+- 11/6 の自動試験の記録は 414 本・skip 0。実ブラウザの試験も含みます。代用品に差し替えている経路と実機での確認範囲は [`docs/design.md` §7.3](docs/design.md#73-試験と検収) に記載しています。
 
 ## この後
 
@@ -114,7 +127,7 @@ Claude Code を開発の中心に置きました。
 
 - 設計の文書 (`docs/design.md`) を正本にして、実装は部品ごとの依頼書に分け、Claude Code の subagent と別の LLM の agent に並列で任せました。主催の資料の読み取りと計画の反証は、Claude Code の dynamic workflow で回しました (読み手 7 体 + 反証 82 体)。
 - 実機の確かめを実装の初日 (11/4) に置きました。hook の欄名と挙動を公式 doc と実の `claude` (v2.1.318) で測り、結果を設計 §10.3 に残しました。この確かめで、auto mode (v2.1.318 時点の既定) では権限の確認が出ないことが分かり、起動の 1 行に `--permission-mode default` を入れました。
-- 別の LLM による外部のレビューを、設計の前後と実装の後に入れました。tkinter の小窓へ全面で転換する案は、このレビューの反証を受けて「同じ頁の小型の見え方」に変えました。実装の後のレビューでは、自動の試験が全部通っている code に、線を破る道が 3 つ見つかりました (待ちの期限・滞留の入り直し・通知の hook の実行環境)。反例の試験を足してから直しました。
+- 外部のレビュー (別の LLM による反証) を、設計の前後と実装の後に入れました。tkinter の小窓へ全面で転換する案は、このレビューの反証を受けて「同じ頁の小型の見え方」に変えました。実装の後のレビューでは、自動の試験が全部通っているコードに、線を破る道が 3 つ見つかりました (待ちの期限・注視の数え直し・通知の仕掛けの実行環境)。反例の試験を足してから直しました。
 - 出荷の code を実の Claude Code に挟んで 15 の経路を検収しました。板なし・時限・見る頁なし・端末で先に答えた時のどれでも、勝手に続行した例はありません。
 
 ## 期間前に書いた文書について
@@ -129,15 +142,17 @@ MIT (see LICENSE). 扇の字体 Yuji Syuku は SIL Open Font License 1.1 で同�
 
 ## In short (EN)
 
-**BLEMMA** (Greek βλέμμα, "a glance") turns the moments when Claude Code stops to ask you into OhGi, a small folding fan you answer with one glance. Claude also offers the next step as choices. Permission prompts, Claude's own questions and MCP elicitations land on the same fan. Free text still goes to the terminal. Claude Code itself is not modified: BLEMMA uses only the official hooks and MCP elicitation.
+**BLEMMA** (Greek βλέμμα, "a glance") turns the moments when Claude Code stops to ask you into OhGi, a small folding fan you can check at a glance. Claude also offers the next step as choices. Permission prompts, Claude's own questions and MCP elicitations land on the same fan. Free text still goes to the terminal. Claude Code itself is not modified: BLEMMA uses only the official hooks and MCP elicitation.
 
-**Theme 2: "What should reach everyone, by right."** The wall is the operation wall: a small terminal prompt that wants arrow keys and Enter (an MCP form took 5 keystrokes in our measurement). The maker operates the PC with eye gaze alone. The same fan helps anyone working away from the terminal, one-handed users and switch users.
+**Theme 2: "What should reach everyone, by right."** The wall is the operation wall: a small terminal prompt that wants arrow keys and Enter (an MCP form took 5 keystrokes in our measurement). The maker operates the PC with eye gaze and sends clicks through the OS gaze tools. Mouse input is the default; dwell, gaze scrolling, the pointer trail and switch scanning are off. Enable dwell in Settings or with `--set dwell=1` to press by looking for one second. Keep `dwell=0` when the OS sends clicks.
 
-**Try it in 5 minutes.** Python 3.10+ (tests pass on 3.10 and 3.13), a logged-in Claude Code, and Chrome or Edge. Clone the repo, run `python <path to blemma>/blemma.py` in your project folder, then ask Claude: "Offer three next steps with ask_board". Blades show only a numeral; look at one and its full text appears on the fan's inner band, then it presses after one second (a mouse hover or the keys 1–6 work too). The answer is sent after a 3-second undo window. No eye tracker is needed to try it. Use `--large` for the big-button board.
+**Try it in 5 minutes.** Python 3.10+ (tests pass on 3.10 and 3.13), a logged-in Claude Code, and Chrome or Edge. Clone the repo, run `cd blemma` and `python blemma.py`, then ask Claude: "Offer three next steps with ask_board". The app window waits with a closed fan, then returns to its full size (640×720 by default), with the fan above the question on washi paper. Hover over a blade to read its full text on the inner band. Click once to select, then click the same blade again within 1.5 seconds to confirm; a double-click also works. The answer is sent after a 3-second undo window. Click the inner Undo band once to cancel. Use `--set click=single` for one-click confirmation or `--large` for the big-button board.
 
 **Safety.** Never auto-allows: only a human press returns an answer; timeouts and errors return no decision. Without the board you get the normal Claude Code prompt. The board listens on 127.0.0.1 only, with a per-launch token, logs only the choice, the time and counts, and never edits your `settings.json`. BLEMMA starts Claude Code with `--permission-mode default`; in auto mode there is no permission prompt to show.
 
-**Three points.** (1) Pre-emptive choices with the bundled MCP tool `ask_board` and skill. (2) One surface for every selectable question. (3) Gaze and switch input: one-second dwell, one-key scanning, 3-second undo, fixed positions for stop and terminal, no accidental press when the card changes, and a reading band that cannot be pressed, so reading never presses another blade.
+**Three points.** (1) Pre-emptive choices with the bundled MCP tool `ask_board` and skill. (2) One surface for every selectable question. (3) Mouse input with optional gaze and switch input, a 3-second undo period, and fixed stop and return blades (Japanese: 止 / 戻; English: Esc / 0). The reading band cannot be pressed until it becomes the Undo target during that period. Keys, enabled dwell and switches confirm in one action.
+
+**Reading and windows.** Resize the window to resize the fan, paper and text; wide windows put the question on the left. Drag the fan background to move the app window. Hover over More for 0.35 seconds to start paging, then every 1.5 seconds; clicking or ↓ ↑ PageDown PageUp also works. Reading the paper does not move it. Hover to reveal Copy, or press C. Settings offer three typefaces, five text sizes, paper-aware colors and four corner positions. Windows pins the existing app window; other OSes use supported Document Picture-in-Picture windows sized to the screen. Optional `clear=on` cuts only the corners outside the fan on Windows at `scale=1`, and hides the title bar while idle. It does nothing if no matching window is found. The app window closes after a detected board disconnection persists for 10 seconds. Nov 6 test record: 414 passed, 0 skipped, including the real-browser test; see the design document for substituted paths that still need manual checks.
 
 **Phone.** The board stays on your PC. To reach Claude Code from a phone, see the official [Remote Control](https://code.claude.com/docs/en/remote-control).
 
