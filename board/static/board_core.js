@@ -6,7 +6,7 @@
   var I18N = {
     ja: {
       kind_permission: "権限の確認", kind_question: "Claude の質問", kind_elicitation: "MCP の問い",
-      allow_once: "許可 (今回)", deny: "拒否", deny_title: "拒否の理由を選んでください", back: "戻る",
+      allow_once: "許可 (今回)", deny: "拒否", deny_title: "拒否の理由を選んでください", back: "前の画面へ",
       fixed_permission: "作業を止める", fixed_question: "この質問に答えない",
       fixed_elicitation: "この問い合わせを閉じる",
       terminal: "端末で答える", terminal_sub: "端末で答えた時も、これで閉じる",
@@ -43,6 +43,8 @@
       bad_token: "token が違います。server を起こし直した時は、新しい URL で開いてください",
       offline: "板の server に繋がりません (繋ぎ直しています)",
       stale: "画面が古くなっていました。もう一度選んでください",
+      undo_late: "取り消しは間に合いませんでした (答えは渡りました)",
+      omitted: "この問いには、ここに出せない任意の欄が {n} 個あります ({names})。書く時は「端末で答える」を選んでください",
       light_permission_prompt: "権限の確認が届いています",
       light_elicitation_dialog: "問いが届いています",
       light_agent_needs_input: "Claude があなたの入力を待っています",
@@ -97,6 +99,8 @@
       bad_token: "Wrong token. If the server was restarted, open the new URL",
       offline: "Cannot reach the board server (reconnecting)",
       stale: "The screen was out of date. Please choose again",
+      undo_late: "Too late to undo: the answer was handed over",
+      omitted: "{n} optional field(s) cannot be shown here ({names}). Choose the terminal to fill them in",
       light_idle_prompt: "Claude is waiting for your next instruction (terminal)",
       light_elicitation_url_dialog: "Decide in the terminal whether to open the link",
       light_default: "A signal from Claude Code",
@@ -219,6 +223,23 @@
     return { confirm: false, arm: { key: key, at: now } };
   }
 
+  /* 窓を動かす位置の刻み (CSS の画素)。表示倍率が 125%・150%・175% の画面では、物理の画素で割り切れない位置へ
+   * 窓を動かすたびに、ブラウザが窓の矩形を外側へ丸めて 1 画素ずつ大きくする。割り切れる位置だけへ動かせば育たない。
+   * ratio = devicePixelRatio。整数倍は 1、1.5・2.5 倍は 2、それ以外 (1.25・1.75 倍や、頁を拡大している時) は 4。 */
+  function gridStep(ratio) {
+    var r = Number(ratio);
+    if (!(r > 0) || !isFinite(r)) return 1;
+    if (Math.abs(r - Math.round(r)) < 0.01) return 1;
+    if (Math.abs(r * 2 - Math.round(r * 2)) < 0.01) return 2;
+    return 4;
+  }
+
+  /* 位置を刻みの倍数へ寄せる (負の座標 = 左や上の画面でも同じ)。 */
+  function snap(value, step) {
+    var v = Math.round(Number(value) / step) * step;
+    return v === 0 ? 0 : v;           /* -0 を渡さない */
+  }
+
   function mmss(sec) {
     var s = Math.max(0, Math.floor(sec || 0));
     var m = Math.floor(s / 60);
@@ -287,15 +308,16 @@
     return { target: key, progress: p, fire: false };
   };
 
-  /* 1 鍵の走査 = ms ごとに次へ。restart で頭から。 */
+  /* 1 鍵の走査 = ms ごとに次へ。restart で頭から。restart に先の時刻を渡すと、その時刻までは何も光らせない
+   * (-1 を返す) = 表示が替わった直後の間 (頁の SETTLE_MS) は、光が無く押しても何も起きない。 */
   function Scan(ms) {
     this.ms = ms;
     this.t0 = 0;
   }
   Scan.prototype.restart = function (now) { this.t0 = now; };
   Scan.prototype.index = function (now, n) {
-    if (!(this.ms > 0) || !(n > 0)) return -1;
-    return Math.floor(Math.max(0, now - this.t0) / this.ms) % n;
+    if (!(this.ms > 0) || !(n > 0) || now < this.t0) return -1;
+    return Math.floor((now - this.t0) / this.ms) % n;
   };
 
   function reasonsOf(payload, lang) {
@@ -463,9 +485,11 @@
     }
     if (width(t) * 28 <= lengths[0]) return { size: 28, lines: [t, ""], clipped: false };
     if (width(t) * 22 <= lengths[0]) return { size: 22, lines: [t, ""], clipped: false };
-    var size = 20, n = fit(t, lengths[0] / size), rest = t.slice(n), m = fit(rest, lengths[1] / size);
+    /* 切れ目が対の字 (絵文字・一部の漢字) の真ん中に来たら、1 つ手前で切る */
+    function whole(str, i) { var c = i > 0 ? str.charCodeAt(i - 1) : 0; return c >= 0xD800 && c <= 0xDBFF ? i - 1 : i; }
+    var size = 20, n = whole(t, fit(t, lengths[0] / size)), rest = t.slice(n), m = fit(rest, lengths[1] / size);
     var clipped = m < rest.length;
-    return { size: size, lines: [t.slice(0, n), clipped ? rest.slice(0, Math.max(0, m - 1)) + "…" : rest], clipped: clipped };
+    return { size: size, lines: [t.slice(0, n), clipped ? rest.slice(0, whole(rest, Math.max(0, m - 1))) + "…" : rest], clipped: clipped };
   }
 
   /* 羽根の印 = 一文字だけ。全文は見つめた時に上へ大きく出す (扇に字を詰めない) */
@@ -593,6 +617,11 @@
     if (card.kind === "elicitation") {
       out.head = tx(p.head, lang);
       out.text = tx(p.text, lang);
+      /* 板で描けない任意の欄 (hook が札から落とした物) は、黙って落とさず知らせる = 人が見ていない欄を空のまま送らせない */
+      var omitted = (Array.isArray(p.omitted) ? p.omitted : []).filter(function (x) { return typeof x === "string" && x; });
+      if (omitted.length) {
+        out.blocks.push({ label: "", text: fmt(L.omitted, { n: omitted.length, names: omitted.join(lang === "ja" ? "・" : ", ") }), mono: false });
+      }
     }
     if (ui.step < n) {
       var cur = st[ui.step] || {};
@@ -605,6 +634,10 @@
         out.question = tx(cur.title, lang);
       }
       if (card.kind === "elicitation" && n === 1 && out.question === out.text) out.question = "";
+      /* 欄に題と別の説明がある時は、問いの上に出す = 題が「Confirm」だけでも、何を確かめる問いかが見える */
+      if (card.kind === "elicitation" && tx(cur.description, lang)) {
+        out.blocks.push({ label: "", text: tx(cur.description, lang), mono: false });
+      }
       if (n > 1) out.question = (out.question ? out.question + "  " : "") + "(" + (ui.step + 1) + " / " + n + ")";
       (Array.isArray(cur.options) ? cur.options : []).forEach(function (o, i) {
         o = o || {};
@@ -621,6 +654,10 @@
       out.question = L.confirm;
       out.summary = st.map(function (s, k) {
         var name = card.kind === "question" ? tx(s.header || s.question, lang) : tx(s.title || s.name, lang);
+        /* 送る前の確かめでも、欄ごとの説明をもう一度見せる (何に答えたのかを題だけで判断させない) */
+        if (card.kind === "elicitation" && tx(s.description, lang)) {
+          out.blocks.push({ label: name, text: tx(s.description, lang), mono: false });
+        }
         return name + ": " + optionLabels(s.options, ui.picks[k], lang, L.empty_field);
       });
       out.options.push({ key: "send", label: L.send });
@@ -792,7 +829,7 @@
     fanEligible: fanEligible, fanLayout: fanLayout, fanMark: fanMark, fanScript: fanScript, scrollDirection: scrollDirection, actionDescription: actionDescription,
     priorityState: priorityState, diffRange: diffRange,
     parseOptions: parseOptions, OPTION_DEFAULTS: OPTION_DEFAULTS,
-    windowTitle: windowTitle, Health: Health, armStep: armStep,
+    windowTitle: windowTitle, Health: Health, armStep: armStep, gridStep: gridStep, snap: snap,
     buildScreen: buildScreen, pressKey: pressKey, choiceLabel: choiceLabel, viewKey: viewKey,
     statsText: statsText, endText: endText, lightText: lightText, zeroPresses: zeroPresses,
     addPresses: addPresses, newPressLedger: newPressLedger, takePressBatches: takePressBatches,

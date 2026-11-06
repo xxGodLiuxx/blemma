@@ -82,6 +82,7 @@ class Client:
         assert reply["result"]["protocolVersion"] == "2025-11-25"
         assert reply["result"]["capabilities"] == {"tools": {}}
         assert reply["result"]["serverInfo"]["name"] == "blemma"
+        assert isinstance(reply["result"]["instructions"], str) and reply["result"]["instructions"]
         self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         rid = self.request("tools/list", {})
         reply = self.receive()
@@ -411,6 +412,28 @@ def test_wait_timeout_uses_real_event_wait(client_factory):
     assert client.result(client.request("ping", {})) == {}
 
 
+def test_initialize_tells_when_and_how_to_use_ask_board(client_factory):
+    """同梱の skill は Claude Code のどの置き場にも無く読まれない = initialize の instructions で作法の芯を渡す。
+    tool search では起動時に載るのが道具の名と instructions だけなので、頭の文で「いつ使うか」を言う。
+    数と語は server 自身の定義 (道具の schema・止める選択肢・戻りの鍵) と食い違わない。"""
+    import runpy
+
+    module = runpy.run_path(str(SCRIPT))
+    choices = module["ASK_BOARD_TOOL"]["inputSchema"]["properties"]["choices"]
+    client = client_factory()
+    rid = client.request("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}})
+    text = client.result(rid)["instructions"]
+    assert text == module["SERVER_INSTRUCTIONS"] and 300 <= len(text) <= 700   # Claude Code は 4,096 字で切る
+    assert text.startswith("Use ask_board when")
+    assert "fork in the plan" in text and "milestones" in text and "2-5 next steps" in text
+    assert f"{choices['items']['maxLength']} characters or fewer" in text and "distinct" in text
+    assert f"'{module['STOP_CHOICE']}'" in text and choices["maxItems"] == 6 and "at most five of your own" in text
+    # 戻りの読み方の芯 = 推測で進めない・declined は別の案・cancelled と時間切れの isError は止めて待つ
+    assert "Never guess" in text and "declined = offer other choices or ask in prose" in text
+    assert "cancelled, or an isError timeout = stop and wait for instructions" in text
+    assert "free-text-only questions" in text and "permission checks" in text
+
+
 def test_default_wait_is_shared_with_board():
     import runpy
 
@@ -422,6 +445,23 @@ def test_default_wait_is_shared_with_board():
 def test_bad_input_reports_json_rpc_error_and_recovers(client, raw):
     client.raw(raw)
     assert client.receive()["error"]["code"] == -32700
+    assert client.result(client.request("ping", {})) == {}
+
+
+@pytest.mark.parametrize("kind", ["deep", "long"])
+def test_unparsable_line_is_a_parse_error_and_reading_continues(client, kind):
+    if kind == "deep":
+        # 3.10 は 1,000 重弱・3.12 と 3.13 は 3,000 重弱で RecursionError になった (実測)。それを大きく越える深さ。
+        line = b"[" * 100_000 + b"]" * 100_000 + b"\n"
+    else:
+        # 上限を超えた 1 行。読み捨てが行の途中で止まると、後ろに隠した ping (別の id) に答えてしまう。
+        import runpy
+
+        limit = runpy.run_path(str(SCRIPT))["MAX_LINE"]
+        hidden = json.dumps({"jsonrpc": "2.0", "id": "hidden", "method": "ping"}).encode()
+        line = b" " * (limit + 1) + hidden + b"\n"
+    client.raw(line)
+    assert client.receive() == {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}
     assert client.result(client.request("ping", {})) == {}
 
 

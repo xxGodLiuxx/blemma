@@ -15,11 +15,12 @@ from pathlib import Path
 
 # 直接起動した時にも、期限の正本 (§3.4) を同梱の板から参照する。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from board.server import Limits
+from board.server import MAX_BODY, Limits
 
 PROTOCOL_VERSION = "2025-11-25"
 SERVER_INFO = {"name": "blemma", "version": "0.0.1"}
 ELICIT_WAIT_SEC = Limits().hard_deadline
+MAX_LINE = MAX_BODY   # 1 行 (改行を含む) の上限 = 板の本文の上限と同じ = 板に出せる大きさの問いは通し、際限なく読まない
 STOP_CHOICE = "ここで止める"
 
 ASK_BOARD_TOOL = {
@@ -57,6 +58,19 @@ ASK_BOARD_TOOL = {
         "required": ["title", "choices"],
     },
 }
+
+# initialize で返す使い方 (英語・Claude が読む)。同梱の skill (skills/board) は Claude Code の置き場に無く読まれない
+# ので、作法の芯をここで渡す。tool search では起動時に載るのが道具の名とこの文だけ = 頭の文で「いつ使うか」を言う。
+# 中身は skill の「In short (EN)」と同じ決まり (数は ASK_BOARD_TOOL・STOP_CHOICE・MSG_* と揃える)。
+SERVER_INSTRUCTIONS = (
+    "Use ask_board when the human's answer fits a few short choices: at a fork in the plan, and at "
+    "milestones (after a commit, tests or research) to offer 2-5 next steps. Choices: 40 characters or "
+    "fewer, distinct, verb first. The server adds '" + STOP_CHOICE + "' when it is absent, so pass at most "
+    "five of your own. Never guess: index = do that choice; declined = offer other choices or ask in prose; "
+    "cancelled, or an isError timeout = stop and wait for instructions without asking again. "
+    "Not for free-text-only questions (names, prose, numbers) or permission checks: "
+    "Claude Code asks for permission itself."
+)
 
 MSG_DECLINED = "人はどれも選びませんでした。別の案を出すか、文で訊いてください。"
 MSG_CANCELLED = "人はこの問い合わせを閉じました。作業を止めて次の指示を待ってください。"
@@ -197,6 +211,7 @@ class Server:
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
                     "serverInfo": SERVER_INFO,
+                    "instructions": SERVER_INSTRUCTIONS,
                 })
             elif method == "ping":
                 self.reply(rid, {})
@@ -279,14 +294,21 @@ class Server:
         stdin = sys.stdin.buffer
         try:
             while not self._closed.is_set():
-                line = stdin.readline()
+                line = stdin.readline(MAX_LINE + 1)
                 if not line:
                     break
+                if len(line) > MAX_LINE:
+                    # 長すぎる行は解釈しない。行の終わりまで読み捨て、次の行から読み続ける。
+                    while line and not line.endswith(b"\n"):
+                        line = stdin.readline(MAX_LINE + 1)
+                    self.log("line too long")
+                    self.error(None, -32700, "Parse error")
+                    continue
                 if not line.strip():
                     continue
                 try:
                     msg = json.loads(line.decode("utf-8"))
-                except (UnicodeDecodeError, ValueError):
+                except (UnicodeDecodeError, ValueError, RecursionError):   # 壊れた JSON・UTF-8 でない・深すぎる入れ子
                     self.log("invalid JSON")
                     self.error(None, -32700, "Parse error")
                     continue

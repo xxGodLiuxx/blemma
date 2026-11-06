@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shutil
@@ -11,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -73,6 +74,60 @@ def unused_port():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         return listener.getsockname()[1]
+
+
+def run_info(root):
+    return L.read_run(root / "board" / "state" / "run.json")
+
+
+def client_files(root):
+    folder = root / "board" / "state" / "clients"
+    return sorted(path.name for path in folder.iterdir()) if folder.exists() else []
+
+
+class Launchers:
+    """起こし方を thread で回す。Claude の代わりは、名 (最後の引数) ごとに end() まで終わらない。"""
+
+    def __init__(self, port):
+        self.port = port
+        self.running, self.finish, self.codes, self.threads = {}, {}, {}, {}
+
+    def pretend_claude(self, command):
+        self.running[command[-1]].set()
+        assert self.finish[command[-1]].wait(10)
+        return 0
+
+    def start(self, name, *flags):
+        self.running[name], self.finish[name] = threading.Event(), threading.Event()
+        argv = ["--large", "--port", str(self.port), *flags, "--", name]
+        thread = threading.Thread(target=lambda: self.codes.setdefault(name, L.main(argv)), daemon=True)
+        self.threads[name] = thread
+        thread.start()
+        deadline = time.monotonic() + 10
+        while not self.running[name].wait(0.05):
+            assert thread.is_alive() and time.monotonic() < deadline, "起こし方が Claude の起動まで届かない"
+
+    def end(self, name):
+        self.finish[name].set()
+        self.threads[name].join(10)
+        assert not self.threads[name].is_alive() and self.codes[name] == 0
+
+    def release_all(self):
+        for event in self.finish.values():
+            event.set()
+        for thread in self.threads.values():
+            thread.join(10)
+
+
+@pytest.fixture
+def launchers(isolated_repo, monkeypatch):
+    runner = Launchers(unused_port())
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")
+    monkeypatch.setattr(L.webbrowser, "open", lambda url: True)
+    monkeypatch.setattr(L, "run_claude", runner.pretend_claude)
+    yield runner
+    runner.release_all()
 
 
 @pytest.fixture
@@ -186,26 +241,27 @@ def test_generated_configs_and_templates(isolated_repo, monkeypatch):
     settings, mcp = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
     assert all(path.is_absolute() and path.parent == isolated_repo / "board" / "state" for path in paths)
     assert settings["permissions"] == {"allow": ["mcp__blemma__ask_board"]}
+    # 「待っています」は板の答えを待つ 3 本だけ。通知 (1 回送るだけ) と状態の 2 本には付けない。
     expected = {
-        "PermissionRequest": (".*", "permission.py", 600),
-        "PreToolUse": ("AskUserQuestion", "ask.py", 600),
-        "Elicitation": (".*", "elicitation.py", 600),
+        "PermissionRequest": (".*", "permission.py", 600, True),
+        "PreToolUse": ("AskUserQuestion", "ask.py", 600, True),
+        "Elicitation": (".*", "elicitation.py", 600, True),
         "Notification": ("permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input",
-                         "notify.py", 10),
-        "UserPromptSubmit": (None, "state.py", 5),
-        "Stop": (None, "state.py", 5),
+                         "notify.py", 10, False),
+        "UserPromptSubmit": (None, "state.py", 5, False),
+        "Stop": (None, "state.py", 5, False),
     }
     assert set(settings["hooks"]) == set(expected)
-    for event, (matcher, name, timeout) in expected.items():
+    for event, (matcher, name, timeout, waits) in expected.items():
         assert settings["hooks"][event] == [{**({"matcher": matcher} if matcher else {}), "hooks": [{
             "type": "command", "command": L.python_executable(),
-            "args": [str(isolated_repo / "hooks" / name)], "timeout": timeout,
-            **({"statusMessage": L.STATUS_MESSAGE} if name != "state.py" else {}),
+            "args": ["-I", str(isolated_repo / "hooks" / name)], "timeout": timeout,
+            **({"statusMessage": L.STATUS_MESSAGE} if waits else {}),
         }]}]
         assert (REPO / "hooks" / name).is_file()
     assert Path(L.python_executable()).is_absolute()
     assert mcp == {"mcpServers": {"blemma": {
-        "command": L.python_executable(), "args": [str(isolated_repo / "mcp" / "blemma_mcp.py")],
+        "command": L.python_executable(), "args": ["-I", str(isolated_repo / "mcp" / "blemma_mcp.py")],
     }}}
 
     def expand(value):
@@ -223,6 +279,44 @@ def test_generated_configs_and_templates(isolated_repo, monkeypatch):
         template = json.loads((REPO / "examples" / f"{name}.blemma.json").read_text(encoding="utf-8"))
         assert expand(template) == generated
     assert not list(paths[0].parent.glob("*.tmp"))
+
+
+@pytest.fixture
+def shadowing_pythonpath(tmp_path, monkeypatch):
+    """利用者の PYTHONPATH に、標準と同じ名の module (json) がある形。子の process だけが受け継ぐ。"""
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    (shadow / "json.py").write_text("raise ImportError('shadowed json (test stand-in)')\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(shadow))
+    return shadow
+
+
+def test_generated_hooks_and_mcp_survive_a_shadowing_pythonpath(isolated_repo, tmp_path, shadowing_pythonpath):
+    """生成の設定の起こし方 (-I) のまま、6 本の hook は無出力 exit 0 で、MCP server は initialize に答える。
+    -I が無いと permission.py と MCP server は traceback を出して exit 1 になる (hook のほかの 4 本も _client を
+    読めず、黙って板なしの動きになる)。木を汚さないよう、写した repo から起こす。"""
+    for sub in ("hooks", "mcp"):
+        shutil.copytree(REPO / sub, isolated_repo / sub, ignore=shutil.ignore_patterns("__pycache__"))
+    settings, mcp = [json.loads(path.read_text(encoding="utf-8")) for path in L.write_configs(isolated_repo)]
+    env = {**os.environ, "BLEMMA_RUN_FILE": str(tmp_path / "no-board.json"), "BLEMMA_DEBUG": "0"}
+    hooks = [group["hooks"][0] for groups in settings["hooks"].values() for group in groups]
+    assert len(hooks) == 6
+    for hook in hooks:
+        result = subprocess.run([hook["command"], *hook["args"]], input=b"{}", capture_output=True, env=env,
+                                timeout=30)
+        assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), hook["args"][-1]
+    server = mcp["mcpServers"]["blemma"]
+    request = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+               "params": {"protocolVersion": "2025-11-25", "capabilities": {}}}
+    result = subprocess.run([server["command"], *server["args"]], input=(json.dumps(request) + "\n").encode(),
+                            capture_output=True, env=env, timeout=30)
+    assert result.returncode == 0 and result.stderr == b""
+    assert json.loads(result.stdout)["result"]["serverInfo"]["name"] == "blemma"
+
+
+def test_board_starts_despite_a_shadowing_pythonpath(isolated_repo, sessions, shadowing_pythonpath):
+    session = L.ensure_board(isolated_repo, unused_port())   # -I が無いと板の server が起動で落ちる
+    assert session.process is not None and L.board_responds(session.info)
 
 
 @pytest.mark.parametrize("demo", [False, True])
@@ -283,9 +377,83 @@ def test_help_runs_without_starting_apps():
     assert result.returncode == 0 and result.stderr == ""
     assert "板と Claude Code を起こします" in result.stdout and "Launch the board" in result.stdout
     assert "BLEMMA_WINDOW_SIZE" in result.stdout and "--keep-board" in result.stdout
+    # --print-only は頁を開かない = 見る頁が要る時は板を手で起こす (日英)。残した板は --stop で止める。
+    assert "頁は開かない" in result.stdout and "Opens no page" in result.stdout
+    assert result.stdout.count("python board/server.py") == 2
+    assert "止めるには --stop" in result.stdout and "stop it with --stop" in result.stdout
+    assert "Stop this repository's board" in result.stdout
+    # 使い回しは記録の年齢でなく、認証付きの照会で決める
+    assert "24 時間" not in result.stdout and "24 hours" not in result.stdout
+    assert "認証付きの照会に答えれば" in result.stdout and "answers an authenticated check" in result.stdout
 
 
-def test_missing_claude_prints_one_line_and_exits_zero(isolated_repo, sessions, monkeypatch, capsys):
+def test_old_python_stops_before_the_board_and_window(tmp_path):
+    """3.10 未満なら、ほかの import より前に日英 1 行ずつで止まる。版を 3.9 に差し替えて、blemma.py だけを置いた
+    写しで走らせる (hooks も board も無い = 確かめが import の後ろにずれると ImportError で落ちる)。"""
+    source = (REPO / "blemma.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, feature_version=(3, 9))   # 3.9 で起こしても、構文の誤りにならずに確かめの行へ届く
+    docstring, future, imported, check = tree.body[:4]
+    assert isinstance(docstring, ast.Expr) and isinstance(future, ast.ImportFrom) and future.module == "__future__"
+    assert isinstance(imported, ast.Import) and [alias.name for alias in imported.names] == ["sys"]
+    assert isinstance(check, ast.If) and ast.unparse(check.test) == "sys.version_info < (3, 10)"
+    copy = tmp_path / "blemma 写し"
+    copy.mkdir()
+    shutil.copy2(REPO / "blemma.py", copy / "blemma.py")
+    code = ("import runpy, sys; sys.version_info = (3, 9, 6, 'final', 0); "
+            "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
+    result = subprocess.run([sys.executable, "-B", "-c", code, str(copy / "blemma.py"), "--large", "--port",
+                             str(unused_port()), "--", "日本語の頼み"], cwd=copy, capture_output=True,
+                            encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"}, timeout=30)
+    assert result.returncode == 1 and result.stdout == ""
+    assert result.stderr.splitlines() == [
+        "BLEMMA: Python 3.10 以上で実行してください (今の版は 3.9)",
+        "BLEMMA: Python 3.10 or later is required (this is 3.9)",
+    ]
+    assert sorted(path.name for path in copy.iterdir()) == ["blemma.py"]   # board/state も窓の profile も作らない
+
+
+def test_set_names_an_unknown_key_and_takes_a_bare_key(monkeypatch, capsys):
+    """--set の打ち間違いは黙って捨てず、鍵の名だけを出して止める。`=` の無い鍵は空の値 (頁の既定) で通す。
+    BLEMMA_OPTS の知らない鍵は今までどおり黙って捨てる。"""
+    monkeypatch.setenv("BLEMMA_OPTS", "dwel=1&theme=dark")
+    args = L.parse_args(["--set", "scan", "--set", "desc"])
+    assert args.page_options == {"theme": "dark", "scan": "", "desc": ""}
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("設定の誤りでは何も起こさない")
+
+    monkeypatch.setattr(L, "launch", unexpected)
+    for key in ("dwel", "Dwell", "x" * 24, "no_such-key9"):
+        assert L.main(["--set", f"{key}=1"]) == 1
+        assert capsys.readouterr() == (
+            "", f"BLEMMA: 頁の設定の名を確認してください: {key} (--help) / Unknown page option: {key}\n")
+    # 字の形が鍵らしくない時は名を写さない (頼みの文・秘密・長い文字列)
+    for assignment in ("日本語の頼み=1", "x" * 25 + "=1", "a b=1", "secret/value=1", "=1", "", "dwell\n=1"):
+        assert L.main(["--set", assignment]) == 1
+        captured = capsys.readouterr()
+        assert captured == ("", "BLEMMA: 引数を確認してください (--help) / Invalid arguments (see --help)\n")
+
+
+@pytest.mark.parametrize("name,flag,value", [
+    ("BLEMMA_WINDOW_SIZE", "--window-size", "640x"), ("BLEMMA_WINDOW_SIZE", "--window-size", ""),
+    ("BLEMMA_WINDOW_POSITION", "--window-position", "秘密の値"), ("BLEMMA_WINDOW_POSITION", "--window-position", ""),
+])
+def test_bad_geometry_environment_names_the_variable(monkeypatch, capsys, name, flag, value):
+    """引数を何も打っていないのに「引数を確認」と出さない。変数の名だけを出し、値は写さない。引数が勝つ。"""
+    monkeypatch.setenv(name, value)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("環境変数の誤りでは何も起こさない")
+
+    monkeypatch.setattr(L, "launch", unexpected)
+    assert L.main([]) == 1
+    assert capsys.readouterr() == (
+        "", f"BLEMMA: 環境変数 {name} の値を確認してください (--help) / Invalid {name} (see --help)\n")
+    args = L.parse_args([flag, "30,40"])
+    assert (args.window_size if flag == "--window-size" else args.window_position) == (30, 40)
+
+
+def test_missing_claude_stops_before_board_and_window(isolated_repo, sessions, monkeypatch, capsys):
     # Exercise shutil.which itself with an empty executable search path.
     monkeypatch.setenv("PATH", "")
     monkeypatch.chdir(isolated_repo)
@@ -293,16 +461,39 @@ def test_missing_claude_prints_one_line_and_exits_zero(isolated_repo, sessions, 
     opened = []
     monkeypatch.setattr(L.webbrowser, "open", lambda url: opened.append(url) or True)
     assert L.find_claude() is None
-    assert L.main(["--large", "--port", str(unused_port()), "--", "日本語の頼み"]) == 0
+    assert L.main(["--large", "--keep-board", "--port", str(unused_port()), "--", "日本語の頼み"]) == 1
     captured = capsys.readouterr()
-    assert len(captured.out.splitlines()) == 1 and captured.err == ""
-    assert "claude" in captured.out and "--permission-mode" in captured.out and "日本語の頼み" in captured.out
-    assert "#t=" not in captured.out
-    assert len(opened) == 1
-    assert sessions[0].process.poll() is not None
-    assert not sessions[0].run_file.exists()
-    assert not L.board_responds(sessions[0].info, timeout=0.05)
-    assert (isolated_repo / "board" / "state" / "settings.generated.json").is_file()
+    lines = captured.err.splitlines()
+    assert captured.out == "" and len(lines) == 2 and all(line.startswith("BLEMMA: ") for line in lines)
+    assert "claude が見つかりません" in lines[0] and "claude was not found" in lines[1]
+    # 別の端末の道 = 頁を開く板を手で起こし、--print-only の 1 行を使う。--print-only は頁を開かないので、
+    # --keep-board で残した板には見る頁が無い (30 秒の後の札は no_viewer で全部端末へ戻る)。
+    assert all("python board/server.py" in line and "python blemma.py --print-only" in line for line in lines)
+    assert "Ctrl+C" in lines[0] and "Ctrl+C" in lines[1] and "--keep-board" not in captured.err
+    # 板の server は起こした端末を塞ぐ = --print-only を打つ所は Claude Code の端末と書く (README の行と同じ)
+    assert "Claude Code を起こす端末で python blemma.py --print-only" in lines[0]
+    assert "in the terminal for Claude Code, run python blemma.py --print-only" in lines[1]
+    assert "日本語の頼み" not in captured.err and "#t=" not in captured.err
+    assert opened == [] and sessions == []
+    assert not (isolated_repo / "board" / "state").exists()
+    # 案内の通りに打つ。手で起こした板 (頁は server が開く・試験では開かない) を、claude が無くても --print-only が使い
+    # 回し、起動の行を出し、終わっても板を止めない。
+    board = subprocess.Popen([L.python_executable(), str(isolated_repo / "board" / "server.py"),
+                              "--no-browser", "--port", str(unused_port())],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 10
+        while (info := run_info(isolated_repo)) is None or not L.board_responds(info):
+            assert board.poll() is None and time.monotonic() < deadline, "手で起こした板が立たない"
+            time.sleep(0.05)
+        assert L.main(["--large", "--print-only", "--port", str(unused_port()), "--", "日本語の頼み"]) == 0
+        captured = capsys.readouterr()
+        assert len(captured.out.splitlines()) == 1 and captured.err == ""
+        assert "claude" in captured.out and "--permission-mode" in captured.out and "日本語の頼み" in captured.out
+        assert "#t=" not in captured.out and opened == [] and sessions[0].process is None
+        assert L.board_responds(info) and board.poll() is None and client_files(isolated_repo) == []
+    finally:
+        L.stop_process(board)
 
 
 @pytest.mark.parametrize("keep", [False, True])
@@ -349,26 +540,50 @@ def test_cleanup_preserves_another_servers_run_file(isolated_repo, sessions):
     assert json.loads(session.run_file.read_text(encoding="utf-8")) == replacement
 
 
-def test_stale_and_invalid_run_records_are_ignored(tmp_path):
+def test_run_record_shape_is_checked_but_not_its_age(tmp_path):
     path = tmp_path / "run.json"
     good = {"port": 8765, "token": "test-placeholder", "pid": 123,
             "started": datetime.now(timezone.utc).isoformat()}
     path.write_text(json.dumps(good), encoding="utf-8")
-    assert L.read_run(path) is not None
-    old = time.time() - L.RUN_MAX_AGE - 1
-    os.utime(path, (old, old))
-    assert L.read_run(path) is None
-    for patch in ({"port": True}, {"pid": 0}, {"token": "bad\r\nheader"},
-                  {"started": "2000-01-01T00:00:00+00:00"}, {"started": "bad"}):
+    assert L.read_run(path) == L.RunInfo(8765, "test-placeholder", 123, good["started"])
+    # 年齢では捨てない = 使い回すかは token つきの照会が決める (1 日を越えて動く板・時計が戻った後の記録)
+    old = time.time() - 3 * 24 * 60 * 60
+    for started in ("2000-01-01T00:00:00+00:00", (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()):
+        path.write_text(json.dumps({**good, "started": started}), encoding="utf-8")
+        os.utime(path, (old, old))
+        assert L.read_run(path) == L.RunInfo(8765, "test-placeholder", 123, started)
+    for patch in ({"port": True}, {"port": 65536}, {"pid": 0}, {"pid": "123"}, {"token": "bad\r\nheader"},
+                  {"token": ""}, {"started": "bad"}, {"started": 0}, {"started": "2026-11-06T12:00:00"}):
         path.write_text(json.dumps({**good, **patch}), encoding="utf-8")
-        assert L.read_run(path) is None
+        assert L.read_run(path) is None, patch
     for raw in ("[1]", "null", "broken", "{}"):
         path.write_text(raw, encoding="utf-8")
         assert L.read_run(path) is None
 
 
+@pytest.mark.parametrize("shift", [-25 * 60 * 60, 2 * 60 * 60])   # 1 日を越えて動いた板 / 時計が戻った (記録が先)
+def test_answering_board_is_reused_whatever_the_record_age(isolated_repo, sessions, monkeypatch, shift):
+    """年齢で記録を捨てると、生きている板を照会しないまま同じ port に新しい板を起こし、「板を起動できません」で
+    終わる。答える板は、記録の started と mtime がいつでも使い回す。"""
+    first = L.ensure_board(isolated_repo, unused_port())
+    data = json.loads(first.run_file.read_text(encoding="utf-8"))
+    when = time.time() + shift
+    data["started"] = datetime.fromtimestamp(when, timezone.utc).isoformat()
+    first.run_file.write_text(json.dumps(data), encoding="utf-8")
+    os.utime(first.run_file, (when, when))
+
+    def unexpected_start(*args, **kwargs):
+        pytest.fail("答える板があるのに、同じ port に新しい板を起こした")
+
+    monkeypatch.setattr(L.subprocess, "Popen", unexpected_start)
+    reused = L.ensure_board(isolated_repo, first.info.port)
+    assert reused.process is None and reused.info.started == data["started"]
+    assert (reused.info.port, reused.info.pid, reused.info.token) == (first.info.port, first.info.pid, first.info.token)
+
+
 def test_occupied_port_stops_before_browser_or_claude(isolated_repo, monkeypatch, capsys):
     monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")  # PATH に claude が無い機械でも同じ経路を通す
     with socket.socket() as listener:
         if os.name == "nt":
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
@@ -402,6 +617,7 @@ def test_startup_timeout_stops_real_child(isolated_repo, monkeypatch):
 @pytest.mark.parametrize("keep", [False, True])
 def test_browser_failure_cleans_owned_board(isolated_repo, sessions, monkeypatch, capsys, keep):
     monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")
     monkeypatch.setattr(L.webbrowser, "open", lambda url: False)
     assert L.main(["--large", "--port", str(unused_port())] + (["--keep-board"] if keep else [])) == 1
     captured = capsys.readouterr()
@@ -421,6 +637,12 @@ def test_claude_exit_code_and_caller_working_directory(isolated_repo, sessions, 
         assert L.board_responds(sessions[0].info)
         assert Path.cwd() == isolated_repo.parent
         assert Path(command[2]).is_file() and Path(command[4]).is_file()
+        # Claude の間だけ、使い手の登録 (pid と始めた時刻) と、起こし方が起こした板の印がある。
+        names = client_files(isolated_repo)
+        mine = [name for name in names if name.startswith(f"client-{os.getpid()}-")]
+        assert len(names) == 2 and len(mine) == 1 and f"board-{sessions[0].info.pid}.json" in names
+        record = json.loads((isolated_repo / "board" / "state" / "clients" / mine[0]).read_text(encoding="utf-8"))
+        assert record["pid"] == os.getpid() and datetime.fromisoformat(record["started"]).tzinfo is not None
         commands.append(command)
         return 17
 
@@ -428,11 +650,13 @@ def test_claude_exit_code_and_caller_working_directory(isolated_repo, sessions, 
     assert L.main(["--large", "--port", str(unused_port()), "--", "頼み"]) == 17
     assert len(commands) == 1 and commands[0][-1] == "頼み"
     assert sessions[0].process.poll() is not None and not sessions[0].run_file.exists()
+    assert client_files(isolated_repo) == []
     assert capsys.readouterr() == ("", "")
 
 
 def test_config_write_failure_stops_before_claude(isolated_repo, sessions, monkeypatch, capsys):
     monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")
     monkeypatch.setattr(L.webbrowser, "open", lambda url: True)
     (isolated_repo / "board" / "state" / "settings.generated.json").mkdir(parents=True)
     assert L.main(["--large", "--keep-board", "--port", str(unused_port())]) == 1
@@ -441,6 +665,278 @@ def test_config_write_failure_stops_before_claude(isolated_repo, sessions, monke
     assert "起動処理に失敗" in captured.err and "Launch failed" in captured.err
     assert sessions[0].process.poll() is not None and not sessions[0].run_file.exists()
     assert not list((isolated_repo / "board" / "state").glob("*.tmp"))
+
+
+@pytest.mark.parametrize("first", ["starter", "reuser"])
+def test_shared_board_lives_until_the_last_launcher_ends(isolated_repo, sessions, launchers, first):
+    launchers.start("starter")
+    info = run_info(isolated_repo)
+    launchers.start("reuser")
+    assert sessions[0].process is not None and sessions[1].process is None   # 2 つ目は使い回し
+    names = client_files(isolated_repo)
+    assert len(names) == 3 and f"board-{info.pid}.json" in names            # 使い手 2 つと印
+    launchers.end(first)
+    assert L.board_responds(info)            # 残った回の Claude Code は、まだ扇から答えを受けられる
+    launchers.end("reuser" if first == "starter" else "starter")
+    assert not L.board_responds(info, timeout=0.05) and sessions[0].process.poll() is not None
+    assert not sessions[0].run_file.exists() and client_files(isolated_repo) == []
+
+
+def test_second_launcher_does_not_open_another_page(isolated_repo, sessions, launchers, monkeypatch, capsys):
+    """使い回した板に見る頁がもう在る時は、頁をもう 1 枚開かない (同じ板の窓が 2 枚になると、固定と透過が効かない)。
+    見る頁が無い板を使い回す時は、今までどおり開く。"""
+    import http.client
+    opened = []
+    monkeypatch.setattr(L.webbrowser, "open", lambda url: opened.append(url) or True)
+    launchers.start("starter")
+    info = run_info(isolated_repo)
+    assert len(opened) == 1 and not L.board_has_page(info)       # 板を起こした回は開く (偽のブラウザ = 頁はまだ無い)
+    launchers.start("no-page")
+    assert len(opened) == 2                                      # 見る頁の無い板を使い回す = 開く
+    headers = {"X-Blemma-Token": info.token}
+    first = http.client.HTTPConnection("127.0.0.1", info.port, timeout=3)
+    first.request("GET", "/pending?seq=-1", headers=headers)
+    seq = json.loads(first.getresponse().read())["seq"]
+    first.close()
+    page = http.client.HTTPConnection("127.0.0.1", info.port, timeout=3)
+    page.request("GET", f"/pending?seq={seq}", headers=headers)  # 頁の代わりの見張り = 返事を読まず、開いたまま
+    try:
+        assert L.board_has_page(info)
+        launchers.start("with-page")
+        assert len(opened) == 2 and sessions[2].process is None  # 開かない
+    finally:
+        page.close()
+    assert "扇は既に開いています" in capsys.readouterr().err
+
+
+def test_page_probe_failure_means_no_page(probe_server):
+    """頁の照会に板が答えない・この口を持たない古い板 (404) の時は「頁は無い」= 今までどおり窓を開く側に倒す。"""
+    old_board = probe_server()                        # どの GET にも 404 を返す = /page の口が無い板
+    assert L.board_has_page(old_board) is False
+    with socket.socket() as listener:                 # 誰も聞いていない port
+        listener.bind(("127.0.0.1", 0))
+        dead = L.RunInfo(listener.getsockname()[1], "test-placeholder", os.getpid())
+    assert L.board_has_page(dead, timeout=0.2) is False
+
+
+def test_dead_launchers_registration_does_not_keep_the_board(isolated_repo, sessions, launchers):
+    # 名乗ったまま後始末をせずに消えた起こし方 (端末の窓ごと閉じた時など) を、本物の別 process で作る。
+    code = ("import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import blemma; "
+            "blemma.Clients(Path(sys.argv[2])).join()")
+    dead = subprocess.Popen([L.python_executable(), "-c", code, str(REPO), str(isolated_repo / "board" / "state")])
+    assert dead.wait(10) == 0   # Popen が handle を持つ間、Windows はこの pid を別の process に使わない
+    leftover = client_files(isolated_repo)
+    assert len(leftover) == 1 and leftover[0].startswith(f"client-{dead.pid}-")
+    launchers.start("only")
+    info = run_info(isolated_repo)
+    launchers.end("only")
+    assert not L.board_responds(info, timeout=0.05) and sessions[0].process.poll() is not None
+    assert client_files(isolated_repo) == []
+
+
+def test_hand_started_board_is_left_running(isolated_repo, sessions, launchers):
+    board = subprocess.Popen([L.python_executable(), str(isolated_repo / "board" / "server.py"),
+                              "--no-browser", "--port", str(unused_port())],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 10
+        while (info := run_info(isolated_repo)) is None or not L.board_responds(info):
+            assert board.poll() is None and time.monotonic() < deadline, "手で起こした板が立たない"
+            time.sleep(0.05)
+        launchers.start("guest")
+        assert sessions[0].process is None   # 手で起こした板を使い回した
+        launchers.end("guest")
+        assert L.board_responds(info) and board.poll() is None
+        assert client_files(isolated_repo) == []
+    finally:
+        L.stop_process(board)
+
+
+def test_kept_board_is_not_stopped_by_a_later_launcher(isolated_repo, sessions, launchers):
+    launchers.start("keeper", "--keep-board")
+    info = run_info(isolated_repo)
+    launchers.end("keeper")
+    assert L.board_responds(info) and client_files(isolated_repo) == []   # 印も消えた = 残すと決めた板
+    launchers.start("later")
+    assert sessions[1].process is None
+    launchers.end("later")
+    assert L.board_responds(info) and sessions[0].process.poll() is None
+    assert client_files(isolated_repo) == []
+
+
+@pytest.mark.parametrize("first", ["winner", "loser"])
+def test_simultaneous_start_loser_does_not_orphan_the_board(isolated_repo, sessions, launchers, monkeypatch, first):
+    """板の無い所から 2 つをほぼ同時に起こした形を、実の ensure_board で作る。負けた側は勝った板の run.json を
+    見る前に自分の板を起こし (port を取れずに終わる)、自分の起動より後に書かれた run.json を見て、勝った板を
+    自分の板と取り違える。取り違えた側が最後に終わっても、板を止める (印だけ消して板を残さない)。"""
+    launchers.start("winner")
+    info = run_info(isolated_repo)
+    original = L.read_run
+    blind = []
+
+    def before_the_winner_wrote(path):
+        if not blind:                      # 負けた側の 1 回目の照会 = 勝った板の run.json はまだ無かった
+            blind.append(path)
+            os.utime(path)                 # 勝った板はその直後 (負けた側の起動の 1 秒の内) に書いた
+            return None
+        return original(path)
+
+    monkeypatch.setattr(L, "read_run", before_the_winner_wrote)
+    launchers.start("loser")
+    loser = sessions[1]
+    assert blind and loser.process is not None and loser.info == info
+    assert loser.process.wait(10) != 0     # 負けた側の子は板ではない (port は勝った板が持つ)
+    launchers.end(first)
+    assert L.board_responds(info)          # 残った回の Claude Code は、まだ扇から答えを受けられる
+    launchers.end("loser" if first == "winner" else "winner")
+    assert not L.board_responds(info, timeout=0.05) and sessions[0].process.poll() is not None
+    assert not sessions[0].run_file.exists() and client_files(isolated_repo) == []
+
+
+def test_marker_stays_until_the_board_is_stopped(isolated_repo, sessions, launchers, monkeypatch):
+    """使い回した板を止められなかった時 (別の利用者・管理者の権限で動く板など) は印を残し、後の回が止める。"""
+    launchers.start("starter")
+    info = run_info(isolated_repo)
+    launchers.start("reuser")
+    launchers.end("starter")
+    real_stop = L.stop_reused_board
+    attempts = []
+    monkeypatch.setattr(L, "stop_reused_board", attempts.append)    # 止めに失敗した = 板は答え続ける
+    launchers.end("reuser")
+    assert len(attempts) == 1 and L.board_responds(info)
+    assert client_files(isolated_repo) == [f"board-{info.pid}.json"]
+    monkeypatch.setattr(L, "stop_reused_board", real_stop)
+    launchers.start("later")
+    assert sessions[2].process is None
+    launchers.end("later")
+    assert not L.board_responds(info, timeout=0.05) and sessions[0].process.poll() is not None
+    assert not sessions[0].run_file.exists() and client_files(isolated_repo) == []
+
+
+def test_two_launchers_writing_the_same_marker_keep_the_roster(isolated_repo, sessions):
+    """取り違えた 2 つは同じ印を同時に書く。2 thread で本当に同時に書く (差し替え無しの os.replace)。一時の名が
+    同じだと互いの一時 file を消し合い、Windows は同じ file への置き換えが重なると PermissionError を返す
+    (どちらも名簿を捨てて、今までの動きに戻る)。作り手の機械 (Windows) では、直す前は書き 600 回のうち 358 回、
+    一時の名を分けるだけでは書き 2000 回のうち 78〜150 回が落ちた = 100 回 (書き 200 回) で直しの抜けを捕まえる。"""
+    board = L.ensure_board(isolated_repo, unused_port())
+    marker = f"board-{board.info.pid}.json"
+    failed = 0
+    for number in range(100):
+        state = isolated_repo / "board" / "state" / f"race-{number}"
+        pair = [L.Clients(state), L.Clients(state)]
+        barrier = threading.Barrier(2)
+
+        def write(clients):
+            barrier.wait(10)
+            clients.mark(board)
+
+        threads = [threading.Thread(target=write, args=(clients,)) for clients in pair]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        failed += sum(not clients.ok for clients in pair)
+        assert sorted(path.name for path in (state / "clients").iterdir()) == [marker]   # 一時 file も残らない
+        assert json.loads((state / "clients" / marker).read_text(encoding="utf-8")) == {
+            "pid": board.info.pid, "port": board.info.port, "started": board.info.started}
+    assert failed == 0
+
+
+STOPPED = "BLEMMA: 板を止めました / Board stopped\n"
+NO_BOARD = "BLEMMA: 動いている板はありません / No board is running\n"
+
+
+def forbid_starting_anything(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("--stop は板も窓も Claude も起こさない")
+
+    for owner, name in ((L.subprocess, "Popen"), (L.webbrowser, "open"), (L, "find_claude"), (L, "launch")):
+        monkeypatch.setattr(owner, name, unexpected)
+
+
+def test_stop_stops_a_kept_board(isolated_repo, sessions, launchers, monkeypatch, capsys):
+    """--keep-board で残した板には、止める道が要る。--stop は照会に答える板を止め、2 回目は「ありません」で 0。"""
+    launchers.start("keeper", "--keep-board")
+    info = run_info(isolated_repo)
+    launchers.end("keeper")
+    assert L.board_responds(info) and client_files(isolated_repo) == []
+    forbid_starting_anything(monkeypatch)
+    capsys.readouterr()
+    assert L.main(["--stop"]) == 0
+    assert capsys.readouterr() == (STOPPED, "")
+    sessions[0].process.wait(10)
+    assert not L.board_responds(info, timeout=0.05) and not sessions[0].run_file.exists()
+    assert L.main(["--stop"]) == 0
+    assert capsys.readouterr() == (NO_BOARD, "")
+
+
+def test_stop_while_a_launcher_runs_clears_the_marker(isolated_repo, sessions, launchers, monkeypatch, capsys):
+    """Claude Code の回が使っている間に --stop = 板を止め、起こし方の印も片づける。その回の hook は板なしの動き
+    (いつもの確認) に戻るだけ。その回が終わる時も何も壊さず、名簿は空になる。"""
+    launchers.start("running")
+    info = run_info(isolated_repo)
+    assert f"board-{info.pid}.json" in client_files(isolated_repo)
+    capsys.readouterr()
+    assert L.main(["--stop"]) == 0
+    assert capsys.readouterr() == (STOPPED, "")
+    assert not L.board_responds(info, timeout=0.05)
+    names = client_files(isolated_repo)
+    assert len(names) == 1 and names[0].startswith(f"client-{os.getpid()}-")   # 走っている回の名乗りだけが残る
+    launchers.end("running")
+    sessions[0].process.wait(10)
+    assert client_files(isolated_repo) == []
+
+
+def test_stop_needs_the_token_answer(isolated_repo, sessions, monkeypatch, capsys):
+    """run.json の token で照会に答えない板は止めない (別の鍵の板・同じ port の別の server)。"""
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    board = L.ensure_board(isolated_repo, unused_port())
+    genuine = board.run_file.read_text(encoding="utf-8")
+    board.run_file.write_text(json.dumps({**json.loads(genuine), "token": "other-test-placeholder"}), encoding="utf-8")
+    try:
+        assert L.main(["--stop"]) == 0
+        assert capsys.readouterr() == (NO_BOARD, "")
+        assert board.process.poll() is None and L.board_responds(board.info)
+    finally:
+        board.run_file.write_text(genuine, encoding="utf-8")
+
+
+def test_stop_without_a_board_touches_nothing(isolated_repo, monkeypatch, capsys):
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    forbid_starting_anything(monkeypatch)
+    assert L.main(["--stop"]) == 0
+    assert capsys.readouterr() == (NO_BOARD, "")
+    assert not (isolated_repo / "board" / "state").exists()
+
+
+def test_stop_is_used_alone(isolated_repo, sessions, monkeypatch, capsys):
+    """--stop と起こす旗・-- の後の引数を混ぜたら、何も止めず・何も起こさず、引数の誤りの 1 行で 1 を返す。"""
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    board = L.ensure_board(isolated_repo, unused_port())
+    forbid_starting_anything(monkeypatch)
+    for extra in (["--print-only"], ["--keep-board"], ["--port", "8765"], ["--large"], ["--small"], ["--demo"],
+                  ["--set", "theme=dark"], ["--window-size", "640,720"], ["--window-position", "0,0"],
+                  ["--"], ["--", "日本語の頼み"]):
+        assert L.main(["--stop", *extra]) == 1, extra
+        captured = capsys.readouterr()
+        assert captured.out == "" and len(captured.err.splitlines()) == 1, extra
+        assert "引数を確認" in captured.err and "Invalid arguments" in captured.err
+        assert "日本語の頼み" not in captured.err
+    assert board.process.poll() is None and L.board_responds(board.info) and len(sessions) == 1
+
+
+def test_stop_failure_keeps_the_marker(isolated_repo, sessions, launchers, monkeypatch, capsys):
+    """止められなかった板 (別の利用者・管理者の権限で動く板など) は 1 を返し、印を残す = 最後の回が止める。"""
+    launchers.start("running")
+    info = run_info(isolated_repo)
+    monkeypatch.setattr(L, "stop_reused_board", lambda session: None)
+    capsys.readouterr()
+    assert L.main(["--stop"]) == 1
+    assert capsys.readouterr() == ("", "BLEMMA: 板を止められませんでした / Could not stop the board\n")
+    assert L.board_responds(info) and f"board-{info.pid}.json" in client_files(isolated_repo)
+    launchers.end("running")
+    assert not L.board_responds(info, timeout=0.05) and sessions[0].process.poll() is not None
+    assert client_files(isolated_repo) == []
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows executable suffixes")

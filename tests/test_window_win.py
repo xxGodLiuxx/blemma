@@ -1,5 +1,7 @@
 """扇の窓の最前面と透過: 頁から来た形の確かめ・この板の 1 枚だけに当てる事・当たらない時に何もしない事。"""
 import ctypes
+import threading
+import time
 from ctypes import wintypes
 
 import pytest
@@ -112,6 +114,22 @@ def test_two_windows_with_the_same_name_are_never_cut():
     assert only_pin.calls == [("find", "name")]
 
 
+def test_two_windows_with_the_same_name_are_all_unpinned_when_asked_to_unpin():
+    """同じ名の窓が 2 枚でも、固定を外す頼みは戻す向き (安全側) = 全部から外す (前に固定した窓が、外せないまま
+    手前に残らない)。固定する頼みは今までどおり当てない。返りは found: false のまま。"""
+    win = FakeWin([11, 12])
+    win.top = {11, 12}
+    assert W._drive(win, {"pin": False}, "name") == {"found": False}
+    assert win.calls == [("find", "name"), ("pin", 11, False), ("pin", 12, False)] and win.top == set()
+    both = FakeWin([11, 12])
+    assert W._drive(both, {"pin": False, "shape": None}, "name") == {"found": False}
+    assert both.calls == [("find", "name"), ("pin", 11, False), ("pin", 12, False), ("uncut", 11), ("uncut", 12)]
+    for not_false in (0, None, "false"):            # 真偽の False の外は、外す頼みと読まない
+        odd = FakeWin([11, 12])
+        assert W._drive(odd, {"pin": not_false}, "name") == {"found": False}
+        assert odd.calls == [("find", "name")]
+
+
 @pytest.mark.parametrize("fail, calls", [
     ("cut", [("cut", 11), ("uncut", 11)]),          # 切れなかった = 四角い窓へ戻す
     ("width", [("uncut", 11)]),                     # 窓の幅が読めない = 切らない
@@ -127,18 +145,25 @@ def test_a_failed_pin_is_reported_with_the_real_state():
     assert W._drive(win, {"pin": True}, "name") == {"found": True, "ok": False, "pin": False}
 
 
-def test_a_broken_or_empty_shape_returns_the_window_to_a_rectangle():
-    for shape in (None, good_shape(dpr=10 ** 400)):
-        win = FakeWin([11])
-        assert W._drive(win, {"shape": shape}, "name") == {"found": True, "ok": True, "pin": False}
-        assert win.calls == [("find", "name"), ("uncut", 11)]
+def test_an_empty_shape_returns_the_window_to_a_rectangle():
+    win = FakeWin([11])
+    assert W._drive(win, {"shape": None}, "name") == {"found": True, "ok": True, "pin": False}
+    assert win.calls == [("find", "name"), ("uncut", 11)]
+
+
+@pytest.mark.parametrize("shape", [good_shape(dpr=10 ** 400), good_shape(dpr=0.25), good_shape(rects="x"), "x", []])
+def test_a_broken_shape_returns_the_window_to_a_rectangle_and_reports_failure(shape):
+    """null でないのに読めない形 = 窓は四角へ戻し、ok: false を返す (頁が当たったと思って送り直さない、を作らない)。"""
+    win = FakeWin([11])
+    assert W._drive(win, {"shape": shape}, "name") == {"found": True, "ok": False, "pin": False}
+    assert win.calls == [("find", "name"), ("uncut", 11)]
 
 
 class FakeGdi:
-    """gdi32 の代用品。region を番号で配り、解放された番号を覚える。"""
+    """gdi32 の代用品。region を番号で配り、解放された番号を覚える。box = GetRgnBox の返り (2 = 面積のある形)。"""
 
-    def __init__(self, polygon=100, combine=1):
-        self.polygon, self.combine, self.next, self.freed = polygon, combine, 200, []
+    def __init__(self, polygon=100, combine=1, box=2):
+        self.polygon, self.combine, self.box, self.next, self.freed = polygon, combine, box, 200, []
 
     def CreatePolygonRgn(self, points, count, mode):
         return self.polygon
@@ -149,6 +174,9 @@ class FakeGdi:
 
     def CombineRgn(self, target, a, b, mode):
         return self.combine
+
+    def GetRgnBox(self, region, rect):
+        return self.box
 
     def DeleteObject(self, handle):
         self.freed.append(handle)
@@ -200,6 +228,38 @@ def test_cut_does_nothing_when_the_region_cannot_be_made():
     assert gdi.freed == [] and user.regions == []
 
 
+@pytest.mark.parametrize("box", [W.NULLREGION, W.RGN_ERROR])
+def test_cut_refuses_a_region_without_area_and_frees_it(box):
+    """面積 0 の region (全部の点が同じ多角形 + 四角なし・題の帯なし など) を窓に当てると、窓が丸ごと見えず
+    押せなくなる = 当てずに失敗とし、作った region は解放する。"""
+    gdi, user = FakeGdi(box=box), FakeUser()
+    assert real_cut(gdi, user) is False
+    assert user.regions == [] and gdi.freed == [201, 202, 100]
+
+
+def test_a_shape_without_area_leaves_a_plain_window_and_reports_failure():
+    """面積 0 の形が頁から届いても、窓は四角のまま (当てたのは四角へ戻すだけ)・ok: false を返す。"""
+    gdi, user = FakeGdi(box=W.NULLREGION), FakeUser()
+
+    class Half(W._Win):                             # 切る・戻す手順は本物、窓を探す所だけ代用品
+        def __init__(self):
+            self.c, self.w, self.g, self.u, self.d = ctypes, wintypes, gdi, user, FakeDwm()
+
+        def find(self, title):
+            return [11]
+
+        def width(self, hwnd):
+            return 960
+
+        def pinned(self, hwnd):
+            return False
+
+    flat = {"dpr": 1, "left": 0, "top": 0, "keep": 0, "polygon": [[5, 5], [5, 5], [5, 5]], "rects": [], "bare": True}
+    assert W.clean_shape(flat) is not None                                  # 形の照合だけでは弾けない形
+    assert W._drive(Half(), {"shape": flat}, "name") == {"found": True, "ok": False, "pin": False}
+    assert user.regions == [None] and gdi.freed == [100]
+
+
 def test_apply_does_nothing_without_a_request_body(monkeypatch):
     assert W.apply("x") == {"found": False}
     monkeypatch.setattr(W.sys, "platform", "linux")
@@ -228,3 +288,28 @@ def test_apply_is_quiet_when_the_system_call_fails(monkeypatch, error):
     monkeypatch.setattr(W.sys, "platform", "win32")
     monkeypatch.setattr(W, "_apply", fail)
     assert W.apply({"pin": True}) == {"found": False}
+
+
+def test_window_calls_are_applied_one_at_a_time(monkeypatch):
+    """頁からの頼みが重なっても、窓への操作は 1 つずつ順に当てる (切るのと戻すのが同時に走らない)。"""
+    running, peak = [0], [0]
+
+    class Slow(FakeWin):
+        def __init__(self):
+            super().__init__([7])
+
+        def find(self, title):
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+            time.sleep(0.05)
+            running[0] -= 1
+            return super().find(title)
+
+    monkeypatch.setattr(W.sys, "platform", "win32")
+    monkeypatch.setattr(W, "_Win", Slow)
+    threads = [threading.Thread(target=W.apply, args=({"pin": True},)) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert peak[0] == 1

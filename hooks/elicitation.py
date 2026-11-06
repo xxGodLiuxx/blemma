@@ -10,8 +10,11 @@ MCP server が form で人に訊く時 (同梱の `ask_board` を含む)、`requ
   必須の複数選択は `minItems` が 0 の時だけ印 0 個でも送れる (= 値は `[]`)・`minItems` が無ければ 1 個以上。
 - `ask_board` の「ほかの答え」(const `"other"` + 書く欄 `other_text` = §2.5) = 押すと端末で答える
   (板で文字は書かない)。
-- 板で描けない欄 (文字・数の入力など): 必須なら札ごと端末へ (無出力)・任意なら板では空のまま (content に入れない)。
-  欄が 7 つ以上・描く欄が 0・URL 形式 (`mode: url`) も無出力で端末へ。
+- 板で描けない欄 (文字・数の入力など): 必須なら札ごと端末へ (無出力)・任意でも既定の値 (`default`) が在れば札ごと端末へ
+  (板で答えると、その値が抜ける)・既定の値の無い任意の欄は板では空のまま (content に入れない)。
+  空のままにした任意の欄は、題を札の `omitted` に載せる (頁が「板に出ない欄がある」と知らせる・ask_board の
+  `other_text` は「ほかの答え」の釦と対なので載せない)。欄が 7 つ以上・描く欄が 0・URL 形式 (`mode: url`) も
+  無出力で端末へ。
 - 送る = `action: "accept"` + `content` (欄の名 → 値・client が自分の payload の写しから組む) / 断る = `decline` /
   この問い合わせを閉じる (固定の位置の釦) = `cancel`。
 - 判断なし (端末で答える・時限・板なし・壊れた返り・例外) は全部、何も書かず exit 0 = 端末に form が出る。
@@ -35,6 +38,8 @@ FREE_CONST = "other"         # ask_board の「ほかの答え」の値 (§2.5)
 FREE_FIELD = "other_text"    # ask_board の書く欄の名 (§2.5)
 MAX_FIELDS = 6               # 欄が 7 つ以上の form は板に出さない (§2.3)
 MAX_FIELD_OPTIONS = 12       # 1 欄の釦の数の上限 (超える欄は描けない欄の扱い)
+MAX_OMITTED = 8              # 札の omitted (板に出ない任意の欄の題) の数の上限
+OMITTED_CLIP = 80            # omitted の 1 個の字の上限
 YES = {"ja": "はい", "en": "Yes"}
 NO = {"ja": "いいえ", "en": "No"}
 
@@ -96,6 +101,9 @@ def field_of(name: str, spec: Any, required: bool, free: bool) -> Optional[dict]
     if not isinstance(spec, dict):
         return None
     title = _text(spec.get("title")) or _text(spec.get("description")) or name
+    # 題と説明の両方がある欄は、説明も札に載せる。題が「Confirm」だけの問いで、
+    # 何を確かめるのか (消す対象・元に戻せるか) が説明にしか無い事がある
+    note = _text(spec.get("description")) if _text(spec.get("title")) else None
     typ = spec.get("type")
     default = spec.get("default")
     least: Optional[int] = None                  # 複数選択で送れる最小の印の数 (下の min_picks)
@@ -141,6 +149,8 @@ def field_of(name: str, spec: Any, required: bool, free: bool) -> Optional[dict]
                 if isinstance(entry, dict) and isinstance(entry.get("description"), str):
                     option["description"] = entry["description"]
     field = {"name": name, "title": title, "multi": multi, "required": required, "options": options}
+    if note and note != title:
+        field["description"] = note
     if least is not None:
         field["min_picks"] = least
     if marks:
@@ -148,8 +158,13 @@ def field_of(name: str, spec: Any, required: bool, free: bool) -> Optional[dict]
     return field
 
 
-def fields_of(schema: Any) -> Optional[List[dict]]:
-    """`requested_schema` → 板の欄の列。札にできなければ None (= 端末へ)。"""
+def fields_of(schema: Any, omitted: Optional[List[str]] = None) -> Optional[List[dict]]:
+    """`requested_schema` → 板の欄の列。札にできなければ None (= 端末へ)。
+
+    omitted に list を渡すと、板で描けずに空のままにした任意の欄の題 (`title`・無ければ欄の名) を足す
+    (札にできた時だけ・MAX_OMITTED 個・各 OMITTED_CLIP 字まで)。ask_board の書く欄 `other_text` は、
+    「ほかの答え」の釦 (端末で答える) と対の時は足さない (その釦が端末へ導く)。
+    """
     if not isinstance(schema, dict) or schema.get("type", "object") != "object":
         return None
     props = schema.get("properties")
@@ -163,14 +178,30 @@ def fields_of(schema: Any) -> Optional[List[dict]]:
     free = (isinstance(spec, dict) and spec.get("type") == "string" and choices_of(spec) is None
             and FREE_FIELD not in required)
     fields = []
+    dropped = []
     for name, spec in props.items():
         f = field_of(name, spec, name in required, free)
         if f is None:
             if name in required:
                 return None        # 要る欄を板で描けない = 札ごと端末へ
-            continue               # 任意の欄 = 板では空のまま (書きたい時は「端末で答える」)
+            if isinstance(spec, dict) and "default" in spec and not (free and name == FREE_FIELD):
+                # 既定の値つきの欄 = 端末の form なら、その値ごと送られる。板では見せも埋めもできず、
+                # 答えからその欄が抜けて結果が変わる = 札ごと端末へ
+                return None
+            dropped.append((name, spec))   # 任意の欄 = 板では空のまま (書きたい時は「端末で答える」)
+            continue
         fields.append(f)
-    return fields or None
+    if not fields:
+        return None
+    if omitted is not None:
+        paired = free and any(o.get("terminal") for f in fields for o in f["options"])
+        for name, spec in dropped:
+            if paired and name == FREE_FIELD:
+                continue           # 「ほかの答え」の釦で端末へ行く書く欄 = 板に出ない欄に数えない
+            title = (_text(spec.get("title")) if isinstance(spec, dict) else None) or name
+            if len(omitted) < MAX_OMITTED:
+                omitted.append(title[:OMITTED_CLIP])
+    return fields
 
 
 def decide(choice: dict) -> Optional[dict]:
@@ -203,11 +234,14 @@ def main() -> None:
     if server is None:
         _client.debug("問うている server の名が無い = 端末へ")
         return
-    fields = fields_of(data.get("requested_schema"))
+    omitted: List[str] = []
+    fields = fields_of(data.get("requested_schema"), omitted)
     if fields is None:
         _client.debug("板で描けない form = 端末へ")
         return
     payload = {"head": server, "text": _text(data.get("message")) or "", "fields": fields}
+    if omitted:                  # 板に出ない任意の欄がある = 頁が知らせる (無ければ鍵ごと付けない)
+        payload["omitted"] = omitted
     if not _client.payload_fits(payload):
         _client.debug("札が大きすぎる = 端末へ")
         return

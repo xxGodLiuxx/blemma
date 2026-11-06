@@ -41,6 +41,17 @@ def card_of(board, cid):
     return board._find(cid) or board.done.get(cid)
 
 
+def test_page_open_counts_real_pages_not_the_startup_grace(clock):
+    """起こし方が訊く「見る頁が在るか」: 起動の猶予 (見る人の判定) は数えず、頁の見張りが在る時と直後だけ True。"""
+    board = S.Board(replace(S.Limits(), pending_hold=0.0, wait_hold=0.0), clock=clock)
+    assert board.page_open() is False            # 起きたばかりの板 = 見る人の猶予の内でも、頁は無い
+    board.pending(-1)
+    assert board.page_open() is True             # 頁の見張りが、いま張り直しの間
+    clock.advance(S.PAGE_GAP + 0.1)
+    assert board.page_open() is False            # 頁が閉じた
+    board.close()
+
+
 def test_defaults_match_design_table():
     lim = S.Limits()
     assert S.HOOK_TIMEOUT_SEC == 600

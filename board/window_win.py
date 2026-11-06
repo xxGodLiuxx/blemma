@@ -2,11 +2,13 @@
 
 頁が開いている Chrome / Edge の app の窓のうち、この板の 1 枚だけを窓の名で探して触る。
 他の OS・窓が見つからない・同じ名の窓が 2 枚以上ある・API が失敗した時は窓を切らない (退化)。
+同じ名の窓が 2 枚以上の時も、戻す向きの頼み (固定を外す・四角へ戻す) だけは、その全部に当てる。
 """
 from __future__ import annotations
 
 import math
 import sys
+import threading
 from typing import Any, Optional
 
 TITLE = "BLEMMA · 扇 (OhGi)"
@@ -25,7 +27,10 @@ DWMWA_NCRENDERING_POLICY, DWMWA_SYSTEMBACKDROP_TYPE = 2, 38
 DWMNCRP_USEWINDOWSTYLE, DWMNCRP_DISABLED = 0, 1
 DWMSBT_AUTO, DWMSBT_NONE = 0, 1
 WINDING, RGN_OR = 2, 2
+RGN_ERROR, NULLREGION = 0, 1          # GetRgnBox の返り (2・3 = 面積のある形)
 PER_MONITOR_AWARE_V2 = -4
+
+_ONE_AT_A_TIME = threading.Lock()     # 頁からの頼みが重なっても、窓へは 1 つずつ順に当てる
 
 
 def title_for(port: Any) -> str:
@@ -126,6 +131,8 @@ class _Win:
         g.CreatePolygonRgn.argtypes = [ctypes.POINTER(wintypes.POINT), ctypes.c_int, ctypes.c_int]
         g.CombineRgn.restype = ctypes.c_int
         g.CombineRgn.argtypes = [wintypes.HRGN, wintypes.HRGN, wintypes.HRGN, ctypes.c_int]
+        g.GetRgnBox.restype = ctypes.c_int
+        g.GetRgnBox.argtypes = [wintypes.HRGN, ctypes.POINTER(wintypes.RECT)]
         g.DeleteObject.restype = wintypes.BOOL
         g.DeleteObject.argtypes = [wintypes.HGDIOBJ]
 
@@ -183,6 +190,10 @@ class _Win:
             if not joined:
                 g.DeleteObject(target)
                 return False
+        box = w.RECT()
+        if g.GetRgnBox(target, self.c.byref(box)) in (RGN_ERROR, NULLREGION):
+            g.DeleteObject(target)              # 面積 0 の形を当てると、窓が丸ごと見えず押せなくなる = 当てない
+            return False
         self._attribute(hwnd, DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED)
         self._attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_NONE)
         if self.u.SetWindowRgn(hwnd, target, True):
@@ -199,22 +210,29 @@ class _Win:
 
 
 def _drive(win: Any, data: dict, title: str) -> dict:
-    """この板の窓 1 枚にだけ当てる。0 枚 = 何もしない。2 枚以上 = どの窓が頼んだ頁か決められないので切らない。"""
+    """この板の窓 1 枚にだけ当てる。0 枚 = 何もしない。2 枚以上 = どの窓が頼んだ頁か決められないので、
+    切らず固定もしない (戻す向きの「固定を外す」「四角へ戻す」だけは、同じ名の窓の全部に当てる)。"""
     windows = win.find(title)
     wants_shape = "shape" in data
+    pin = data.get("pin")
     if len(windows) != 1:
+        if pin is False:                        # 前に固定した窓が、外せないまま手前に残らないよう、全部から外す
+            for hwnd in windows:
+                win.pin(hwnd, False)
         if wants_shape:
             for hwnd in windows:                # 前に切った形が残らないよう、同じ名の窓は四角へ戻す
                 win.uncut(hwnd)
         return {"found": False}
     hwnd, ok = windows[0], True
-    pin = data.get("pin")
     if isinstance(pin, bool):
         ok = win.pin(hwnd, pin) and ok
     if wants_shape:
-        shape = clean_shape(data.get("shape"))
+        raw = data.get("shape")
+        shape = clean_shape(raw)
         if shape is None:
             ok = win.uncut(hwnd) and ok
+            if raw is not None:                 # null でないのに読めない形 = 四角へ戻した上で失敗を返す
+                ok = False                      # (頁が当たったと思って送り直さない、を作らない)
         else:
             width = win.width(hwnd)
             if width is None or not win.cut(hwnd, device_shape(shape, width)):
@@ -234,10 +252,12 @@ def _apply(data: dict, title: str) -> dict:
 
 def apply(data: Any, port: Any = DEFAULT_PORT) -> dict:
     """{"pin": bool?, "shape": 形 | None?} を、port の板の窓に当てる。当たらない時は {"found": False}。
-    窓は見つかったが API が失敗した時は {"found": True, "ok": False} (頁が送り直すか、別の手段へ切り替える)。"""
+    窓は見つかったが API が失敗した・形が読めない・面積 0 の形の時は {"found": True, "ok": False}
+    (窓は四角へ戻す・頁が送り直すか、別の手段へ切り替える)。"""
     if sys.platform != "win32" or not isinstance(data, dict):
         return {"found": False}
     try:
-        return _apply(data, title_for(port))
+        with _ONE_AT_A_TIME:
+            return _apply(data, title_for(port))
     except Exception:                           # 窓の操作は飾り = 何が起きても板は止めない (勝手に答えもしない)
         return {"found": False}

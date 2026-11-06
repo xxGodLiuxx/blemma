@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -328,10 +329,33 @@ def test_perm_write_shows_the_first_40_lines(board):
 
 
 def test_perm_debug_writes_only_blemma_lines(tmp_path):
+    """記録の行は UTF-8 の bytes + LF (stderr の文字の層の cp932・CRLF にしない = Claude Code の記録で化けない)。"""
     p = run("permission.py", EDIT, tmp_path / "none.json", env={"BLEMMA_DEBUG": "1"})
     assert (p.returncode, p.stdout) == (0, b"")
-    lines = p.stderr.decode("cp932").splitlines()
+    assert b"\r" not in p.stderr
+    lines = p.stderr.decode("utf-8").splitlines()
     assert lines and all(x.startswith("BLEMMA: ") for x in lines)
+    assert any("板なし" in x for x in lines)
+
+
+def test_debug_writes_utf8_bytes_with_lf_whatever_the_text_layer_is(monkeypatch):
+    """stderr の文字の層の符号 (cp932 など)・改行 (CRLF) によらず UTF-8 の bytes + LF。bytes の層が無い時だけ文字で。
+    どの形でも例外を外へ出さない (stderr の無い起こし方も)。"""
+    monkeypatch.setenv(C.DEBUG_ENV, "1")
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(raw, encoding="cp932", newline="\r\n", write_through=True))
+    C.debug("板に出さない: tool_name が無い")
+    assert raw.getvalue() == "BLEMMA: 板に出さない: tool_name が無い\n".encode("utf-8")
+    raw.seek(0)
+    raw.truncate()
+    C.debug("壊れた字 \ud83d")                         # 対の無いサロゲートでも行を落とさない
+    assert raw.getvalue() == "BLEMMA: 壊れた字 \\ud83d\n".encode("utf-8")
+    text = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", text)
+    C.debug("板")
+    assert text.getvalue() == "BLEMMA: 板\n"
+    monkeypatch.setattr(sys, "stderr", None)
+    C.debug("板")
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +510,7 @@ def test_elicit_free_text_choice_goes_to_the_terminal(board):
     field = dict(CHOICE_FIELD, options=CHOICE_FIELD["options"] + [
         {"label": "ほかの答え (書いて伝える)", "terminal": True}])
     assert board.payload["fields"] == [field]
+    assert "omitted" not in board.payload          # 書く欄は「ほかの答え」の釦と対 = 板に出ない欄に数えない
 
 
 def test_elicit_free_text_picked_on_the_board_is_silent(board):
@@ -524,6 +549,68 @@ def test_elicit_optional_fields_left_empty(board):
     out = one_json(run("elicitation.py", elicit(schema), board.run_file))
     assert out["hookSpecificOutput"]["content"] == {"choice": "3"}
     assert [f["name"] for f in board.payload["fields"]] == ["choice", "flag"]
+    assert board.payload["omitted"] == ["メモ", "count"]      # 題 (無ければ欄の名) = 頁が「板に出ない欄」を知らせる
+
+
+def test_elicit_names_the_optional_fields_the_board_cannot_draw(board):
+    """板で描けず空のままにした任意の欄は、題 (無ければ欄の名・80 字まで) を札の omitted に載せる。人が板で
+    「はい」を押した時の content には入れない (今までどおり = 押した人に見えない値を送らない)。"""
+    long_title = "長い題" * 40
+    schema = {"type": "object", "required": ["confirm"], "properties": {
+        "confirm": {"type": "boolean", "title": "続けますか?"},
+        "title": {"type": "string", "title": "題"},
+        "reviewers": {"type": "string"},
+        "note": {"type": "string", "title": long_title}}}
+    board.answer({"type": "accept", "picks": [[0]]})
+    out = one_json(run("elicitation.py", elicit(schema), board.run_file))
+    assert out["hookSpecificOutput"]["content"] == {"confirm": True}
+    assert [f["name"] for f in board.payload["fields"]] == ["confirm"]
+    assert board.payload["omitted"] == ["題", "reviewers", long_title[:80]]
+
+
+def test_elicit_optional_field_with_a_default_goes_to_the_terminal(board):
+    """板で描けない任意の欄に既定の値が在る form は、札にしない。端末の form なら既定の値ごと送られるのに、
+    板で答えるとその欄が抜けて、結果が変わるため (既定の値の無い任意の欄は、今までどおり空のまま + 札に知らせ)。"""
+    schema = {"type": "object", "required": ["confirm"], "properties": {
+        "confirm": {"type": "boolean", "title": "続けますか?"},
+        "title": {"type": "string", "title": "題", "default": "fix: typo"}}}
+    board.answer({"type": "accept", "picks": [[0]]})
+    silent(run("elicitation.py", elicit(schema), board.run_file))
+    assert board.asks == []
+
+
+def test_elicit_ask_board_free_text_field_with_a_default_still_shows(board):
+    """ask_board の書く欄 (「ほかの答え」の釦と対) は、既定の値が付いていても札にする = その釦が端末へ導くので、
+    板では値を送らない事が見えている。"""
+    schema = json.loads(json.dumps(ASK_BOARD_FREE))
+    schema["properties"]["other_text"]["default"] = ""
+    board.answer({"type": "accept", "picks": [[0]]})
+    out = one_json(run("elicitation.py", elicit(schema), board.run_file))
+    assert out["hookSpecificOutput"]["content"] == {"choice": "1"} and "omitted" not in board.payload
+
+
+def test_elicit_other_text_without_the_other_choice_is_named(board):
+    """other_text という名でも、「ほかの答え」の釦と対でなければ、ただの描けない任意の欄 = omitted に載せる。"""
+    schema = {"type": "object", "required": ["choice"], "properties": {
+        "choice": ASK_BOARD["properties"]["choice"], "other_text": {"type": "string", "title": "補足"}}}
+    board.answer({"type": "accept", "picks": [[0]]})
+    one_json(run("elicitation.py", elicit(schema), board.run_file))
+    assert board.payload["omitted"] == ["補足"]
+
+
+def test_elicit_omitted_titles_are_capped(monkeypatch):
+    """omitted は 8 個まで・1 個 80 字まで (札を膨らませない)。札にできない form では何も足さない。"""
+    import elicitation as E
+
+    monkeypatch.setattr(E, "MAX_FIELDS", 20)
+    props = {"ok": {"type": "boolean"}}
+    props.update({f"t{i}": {"type": "string", "title": f"欄{i}" + "あ" * 100} for i in range(10)})
+    omitted = []
+    assert [f["name"] for f in E.fields_of({"type": "object", "properties": props}, omitted)] == ["ok"]
+    assert len(omitted) == 8 and all(len(t) == 80 for t in omitted) and omitted[0].startswith("欄0")
+    none = []
+    assert E.fields_of({"type": "object", "properties": {"note": {"type": "string"}}}, none) is None
+    assert none == []
 
 
 @pytest.mark.parametrize("min_items,least", [(0, 0), (1, 1), (None, 1)])
@@ -620,3 +707,16 @@ def test_run_hook_survives_a_broken_stdout(monkeypatch):
     with pytest.raises(SystemExit) as e:
         C.run_hook(lambda: C.emit({"a": 1}))
     assert e.value.code == 0
+
+
+def test_elicitation_field_keeps_its_description_next_to_the_title():
+    """欄に題と説明の両方がある時、説明を捨てない (題が「Confirm」だけの問いで、何を確かめるのかが消える)。"""
+    import elicitation as E
+
+    both = E.field_of("ok", {"type": "boolean", "title": "Confirm",
+                             "description": "Delete all records permanently?"}, True, False)
+    assert both["title"] == "Confirm" and both["description"] == "Delete all records permanently?"
+    only = E.field_of("ok", {"type": "boolean", "description": "Delete all records?"}, True, False)
+    assert only["title"] == "Delete all records?" and "description" not in only       # 題が無ければ、説明が題になる
+    same = E.field_of("ok", {"type": "boolean", "title": "Proceed?", "description": "Proceed?"}, True, False)
+    assert "description" not in same                                                  # 同じ文を 2 度出さない

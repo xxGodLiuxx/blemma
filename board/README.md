@@ -45,18 +45,18 @@ python board/server.py
 | `desc` | `on` | `off` = 選択肢の解説を出さない |
 | `trail` | `off` | `on` = 見ている所に点を重ねる (録画用) |
 
-頁の右上の「設定」でも替えられます (キーと click だけ・保存はブラウザの localStorage)。優先の順は URL の引数 > 保存した値 > 既定です。`blemma.py` からは `--set 鍵=値` か環境変数 `BLEMMA_OPTS` で渡せます。「携帯で開く」は `#t=` つきの URL を大きな字で出します。携帯は利用者の転送で 127.0.0.1 へ届けます (例 USB の Android = `adb reverse tcp:8765 tcp:8765`)。転送の先へ札の本文と token が渡ります。
+頁の右上の「設定」でも替えられます (設定の釦はキーとクリックで押します = 注視では押せません。替えた値はブラウザの localStorage に残ります)。優先の順は URL の引数 > 保存した値 > 既定です。`blemma.py` からは `--set 鍵=値` か環境変数 `BLEMMA_OPTS` で渡せます。「携帯で開く」は `#t=` つきの URL を大きな字で出します。携帯は利用者の転送で 127.0.0.1 へ届けます (例 USB の Android = `adb reverse tcp:8765 tcp:8765`)。転送の先へ札の本文と token が渡ります。
 
 ### 扇と和紙・小窓
 
-- `python blemma.py` は、既定 640×720 の縦長の小窓を右下に開きます。札がある時は上に扇、下の和紙に問いを表示します。横長では左に問い、右に扇。窓の縁をドラッグすると扇・和紙・字が追従し、扇の背景をドラッグすると窓が動きます。
+- `python blemma.py` は、既定 640×720 の縦長の小窓を右下に開きます。札がある時は上に扇、下の和紙に問いを表示します。横長では左に問い、右に扇。窓の縁をドラッグすると扇・和紙・字が追従し、扇の背景をドラッグすると窓が動きます (表示倍率が 125%・150% などの画面でも、運んだ窓の大きさは変わりません)。
 - 羽根は「一〜六」「止」「戻」(英語は `1`〜`6`・`Esc`・`0`)。「戻」はいつもの確認に戻る入口です。朱の印はありません。ポインタを載せた羽根の全文は、内側の押せない帯に出ます。確定後の猶予の間だけ、その帯が「取り消す (n)」のボタンになります。
 - Edit の札は、短い差分の「変更」の行を本文の先頭に出し、本文の変わる所に印を付けます。消す所は打ち消し線、足す所は下線です。配色を変えると和紙も追従し、暗い配色では夜の色になります。
 - 長い文章は「▼ 続き」で 1 画面ずつ送ります。ポインタを載せて 0.35 秒後に始まり、その後は 1.5 秒ごと。末尾で止まり、載せ直すと先頭へ戻ります。押す操作や ↓ ↑ PageDown PageUp でも送れます。扇の和紙は本文の上にポインタを置いても動きません。「▼ 続き」は `dwell=0` でも使えます。
 - 和紙にポインタを載せるとコピーのボタンが現れ、`C` キーでもコピーできます (キーでボタンに移った時も表示)。問いと本文をコピーし、重複する「変更」の行は含めません。
 - 小型表示では、札がある間と札が消えてから 1.5 秒間、通知の帯と縁を出しません。
-- 「常に手前」は Windows では `POST /window` → `board/window_win.py` の `ctypes` で今のアプリの小窓を固定します。触るのは、窓の名がこの板の物と一致する 1 枚だけです (既定の 8765 以外のポートの板は、窓の名にポート番号が付きます。同じ名の窓が 2 枚以上ある時は、どちらも切りません)。他の OS、対象の窓が見つからない時、固定に失敗した時は、対応ブラウザの Document Picture-in-Picture で画面に収まる大きさの窓を開きます。
-- 待機中の扇は横向きに閉じて控え、ポインタを載せると状態の字が出ます。アプリの小窓だけは 320×120 に縮み、札が来ると元の大きさに戻ります (待機の大きさのまま頁を読み直しても、元の大きさは覚えています)。板との切断が 10 秒続くと、アプリの小窓を閉じます。切断と見るのは、板の見張りが続けて 3 回つながらなかった時だけです (送信が 1 回届かなかっただけでは閉じません)。通常のタブでは大きさを変えず、自動では閉じません。
+- 「常に手前」は Windows では `POST /window` → `board/window_win.py` の `ctypes` で今のアプリの小窓を固定します。触るのは、窓の名がこの板の物と一致する 1 枚だけです (既定の 8765 以外のポートの板は、窓の名にポート番号が付きます。同じ名の窓が 2 枚以上ある時は、どちらも切りません)。他の OS、対象の窓が見つからない時、固定に失敗した時は、対応ブラウザの Document Picture-in-Picture で画面に収まる大きさの窓を開きます (「固定を外す」が当たらなかった時は、窓を増やしません)。透過 (`clear=on`) は、頁を拡大・縮小している間は切り抜きをやめて四角の窓へ戻します。
+- 待機中の扇は横向きに閉じて控え、ポインタを載せると状態の字が出ます。アプリの小窓だけは 320×120 に縮み、札が来ると元の位置と大きさに戻ります (窓の右下の角は動きません。待機の大きさのまま頁を読み直しても、元の大きさは覚えています。札の途中で読み直した時は、今の窓の大きさのままです)。板との切断が 10 秒続くと、アプリの小窓を閉じます。切断と見るのは、板の見張りが続けて 3 回つながらなかった時だけです (送信が 1 回届かなかっただけでは閉じません)。通常のタブでは大きさを変えず、自動では閉じません。
 
 ### 入力
 
@@ -68,7 +68,9 @@ python board/server.py
 | スイッチ 1 鍵 | 設定で `scan` を入れ、光ったボタンで鍵を 1 回押す | 鍵を一度離してから、もう一度押す |
 | 携帯 | 大きな板の縦 1 列は 1 回触る。扇の表示はマウスと同じ 2 回 (携帯への転送は利用者が用意) | 「取り消す」を 1 回触る |
 
-札・設問・並びが替わったら、pointer の下のボタンは一度外へ出て入り直すまで数えず、押したままの鍵は離すまで数えません (見続けて 2 回押さない)。
+札・設問・並びが替わったら、pointer の下のボタンは一度外へ出て入り直すまで数えず、押したままの鍵は離すまで数えません (見続けて 2 回押さない)。板から札が替わった直後の 0.4 秒は、キー・スイッチ・クリックの押しも数えません (前の表示へ向けた遅れた 1 押しが、新しい札に当たらない)。スイッチの走査は、札が替わった後の 1 こまぶん (0.4〜1.5 秒) 何も光らせません。窓の大きさや位置が変わった直後 (待機の小窓が札で開く時など) は、0.6 秒のあいだ注視を数えません。
+
+読み上げの「押す」や音声操作のように pointer の無いクリックは、キーと同じ 1 回の押しとして受けます。スイッチの鍵は、Ctrl・Alt・Meta と一緒に押した時は数えません。Windows のコントラスト テーマ (強制の配色) でも、光っている羽根は系の強調色で見えます。
 
 ## 手で確かめる (5 分)
 
@@ -82,7 +84,7 @@ python board/server.py
 頁の純粋な計算 (滞留・走査・ボタンの並び・字) は `board/static/board_core.js` に分けてあり、node で読めます:
 `node -e "const c = require('./board/static/board_core.js'); console.log(c.suggestionLabel({type: 'addRules', rules: [{toolName: 'Bash', ruleContent: 'git commit:*'}], behavior: 'allow', destination: 'localSettings'}, 'ja'))"`
 
-自動の試験 = `python -m pytest tests -q` (試験だけ pytest が要ります)。11/6 の記録は **438 passed・0 skipped**。実ブラウザの試験も走ります (Chromium と WebSocket を使える node が必要)。ただし、実ブラウザの試験でも `window.moveTo`・`window.resizeTo`・クリップボードは代用品に差し替えています。Windows の実窓の固定・透過や Document Picture-in-Picture の開閉まで、この合格数で確認したとはしません。細目は [`docs/design.md` §7.3](../docs/design.md#73-試験と検収)。
+自動の試験 = `python -m pytest tests -q` (試験だけ pytest が要ります)。11/6 の記録は **522 passed・0 skipped**。実ブラウザの試験も走ります (Chromium と WebSocket を使える node が必要)。ただし、実ブラウザの試験でも `window.moveTo`・`window.resizeTo`・クリップボードは代用品に差し替えています。Windows の実窓の固定・透過や Document Picture-in-Picture の開閉まで、この合格数で確認したとはしません。細目は [`docs/design.md` §7.3](../docs/design.md#73-試験と検収)。
 
 ---
 
@@ -94,4 +96,4 @@ Page URL: `http://127.0.0.1:8765/?mode=small&lang=en#t=<token>`. Mouse input is 
 
 The app opens at 640×720, with the fan above the question; wide windows place the question on the left. Resize to fit the fan, paper and text, or drag the fan background to move the window. More pages after a 0.35 s hover and then every 1.5 s, or by click/arrow/PageUp/PageDown keys. Hover to reveal Copy, or press C. Settings include `face` (Yuji Syuku/serif/sans serif), five `font` sizes, paper-aware `theme`, four corners (`pos`) and optional Windows-only `clear=on` at `scale=1`. Windows pins the existing app window; other OSes use supported Document Picture-in-Picture. The idle app shrinks to 320×120 with a closed fan, returns to its saved size for a card, and closes after a detected disconnection lasts 10 s. Phones reach 127.0.0.1 through your own forwarding; the card text and token travel to wherever you forward.
 
-Hand check: start the server, then from the repo root run the `_client.ask_detail(...)` one-liner above, click "Allow (this time)" on the default large board, undo within the grace, click again and wait — the terminal prints `('answered', {'type': 'allow_once'})`. Tests: `python -m pytest tests -q`, 414 passed and 0 skipped in the Nov 6 record, including a real-browser test. Window movement/resizing and clipboard writes are substituted there; native pinning, clipping and real PiP windows still require separate checks.
+Hand check: start the server, then from the repo root run the `_client.ask_detail(...)` one-liner above, click "Allow (this time)" on the default large board, undo within the grace, click again and wait — the terminal prints `('answered', {'type': 'allow_once'})`. Tests: `python -m pytest tests -q`, 522 passed and 0 skipped in the Nov 6 record, including a real-browser test. Window movement/resizing and clipboard writes are substituted there; native pinning, clipping and real PiP windows still require separate checks.

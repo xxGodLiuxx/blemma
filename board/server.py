@@ -16,6 +16,16 @@
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 10):
+    # 手で起こした時も、板を起こす前に止める (blemma.py と同じ文)。古い python でもこの行まで届くよう、
+    # file 全体を 3.9 の文法で書く。
+    _VERSION = "%d.%d" % tuple(sys.version_info[:2])
+    sys.stderr.write("BLEMMA: Python 3.10 以上で実行してください (今の版は %s)\n"
+                     "BLEMMA: Python 3.10 or later is required (this is %s)\n" % (_VERSION, _VERSION))
+    sys.exit(1)
+
 import argparse
 import atexit
 import collections
@@ -29,7 +39,7 @@ import select
 import signal
 import socket
 import socketserver
-import sys
+import subprocess
 import threading
 import time
 import webbrowser
@@ -131,9 +141,14 @@ DEBUG = os.environ.get("BLEMMA_DEBUG") == "1"
 
 
 def _debug(msg: str) -> None:
-    if DEBUG:
+    """`BLEMMA_DEBUG=1` の時だけ stderr に 1 行。書けない時 (stderr の無い起こし方) も、板の仕事を落とさない。"""
+    if not DEBUG:
+        return
+    try:
         sys.stderr.write("BLEMMA server: " + msg + "\n")
         sys.stderr.flush()
+    except Exception:
+        pass
 
 
 def _is_index(v: Any) -> bool:
@@ -240,6 +255,9 @@ class Card:
         self.from_deciding = False
 
 
+PAGE_GAP = 2.0                        # 頁の見張りの張り直しの間 (ふつう数 ms) を「頁が在る」と見る幅
+
+
 class Board:
     """待ち行列と札の状態の確定。HTTP を知らない (試験は clock を差し替えて直に叩ける)。"""
 
@@ -259,6 +277,7 @@ class Board:
         self.closed = False
         self.viewers_open = 0                 # 開いている GET /pending の数 (見る人)
         self.viewer_seen = clock()            # 最後に見た時 = 起動も「見た」と数える
+        self.page_seen: Optional[float] = None    # 頁の見張りが最後に在った時 (1 度も来ていなければ None = 起動の猶予は数えない)
         self._logq: "collections.deque[Tuple[str, dict]]" = collections.deque()
         self._log_lock = threading.Lock()
         self._reset_stats_locked(clock())
@@ -463,6 +482,13 @@ class Board:
                     if c.end is not None:
                         return 200, self._final_body(c), None
                     if c.state == "deciding" and c.ready and not c.delivering:
+                        if not alive():
+                            # 渡す直前に hook が閉じていた = 渡さず切断で閉じる (受け取り手の居ない答えを
+                            # 頁に「渡しました」と出さない)。次の札もすぐ出す
+                            self._finish(c, "disconnected", now)
+                            self._bump()
+                            self._advance(now)
+                            return 0, {}, None
                         c.delivering = True
                         st = "released" if c.choice and c.choice.get("type") == "terminal" else "answered"
                         body = {"state": st}
@@ -669,7 +695,7 @@ class Board:
         相手が閉じたらすぐ返す = 閉じた頁を見る人に数え続けない (端末へ戻るのが遅れる)。"""
         with self.cond:
             self.viewers_open += 1
-            self.viewer_seen = self.clock()
+            self.viewer_seen = self.page_seen = self.clock()
             try:
                 until = self.clock() + self.lim.pending_hold
                 while True:
@@ -680,7 +706,16 @@ class Board:
                     self.cond.wait(max(0.0, min(1.0, until - now)))
             finally:
                 self.viewers_open -= 1
-                self.viewer_seen = self.clock()
+                self.viewer_seen = self.page_seen = self.clock()
+
+    def page_open(self) -> bool:
+        """いま板を見ている頁が在るか = 頁の見張り (GET /pending) が開いている・または直前 (PAGE_GAP 秒のうち) に在った。
+        起こし方が「窓をもう 1 枚開くか」を決めるのに使う。見る人の判定と違い、起動の猶予は数えない
+        (起きたばかりの板は、まだ誰にも見られていない)。"""
+        with self.cond:
+            if self.viewers_open > 0:
+                return True
+            return self.page_seen is not None and self.clock() - self.page_seen <= PAGE_GAP
 
 
 # ---------------------------------------------------------------------------
@@ -694,6 +729,25 @@ class App:
         self.token = token
         self.hosts = {"127.0.0.1", "localhost"} | {h.lower() for h in (allow_hosts or []) if h}
         self.static_dir = static_dir or (Path(__file__).resolve().parent / "static")
+        # token の要らない静的の口が開くのは、起動の時にこの置き場に在った file だけ
+        # (Windows の装置名 CON.js・COM1.js などを、file の名として開きに行かない)
+        self.static_names = _file_names(self.static_dir)
+
+
+def _file_names(folder: Path) -> frozenset:
+    """folder に今ある普通の file の名の集合。読めない時は空 (= 静的の口は全部 404)。"""
+    names = set()
+    try:
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file():
+                        names.add(entry.name)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return frozenset(names)
 
 
 def _peer_alive(sock: socket.socket) -> bool:
@@ -707,9 +761,16 @@ def _peer_alive(sock: socket.socket) -> bool:
         return False
 
 
+READ_TIMEOUT = 10.0          # 要求の行・ヘッダー・本文を読む時の待ち (秒)。正しい相手は同じ機械から一瞬で送る
+MAX_CONNECTIONS = 64         # 同時に抱える接続の上限 (頁の long-poll と hook を合わせても普段は 10 未満)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "BLEMMA"
     sys_version = ""
+    # 鍵を確かめる前の読み取りで、遅い相手を時間の限りなく待たない。long-poll は返事を抱えるだけで
+    # 読まないので、この待ちには掛からない
+    timeout = READ_TIMEOUT
     protocol_version = "HTTP/1.0"
     default_request_version = "HTTP/1.0"   # 壊れた要求の行にも状態行つきで返す (Python 3.10 の既定は HTTP/0.9 扱いで状態行を省く)
 
@@ -751,7 +812,9 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, obj: Any) -> bool:
         if code == 204:
             return self._send(204, b"", None)
-        return self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+        # ASCII だけで返す (日本語は \uXXXX)。札の文に対のないサロゲートなど UTF-8 に直せない字が
+        # 混じっても、その札が出ている間じゅう板の取得が落ち続ける、という形にしない
+        return self._send(code, json.dumps(obj, ensure_ascii=True).encode("ascii"),
                           "application/json; charset=utf-8")
 
     def _read_json(self) -> Tuple[Optional[dict], int]:
@@ -814,14 +877,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         board = self.app.board
         q = parse_qs(parts.query)
+        if method == "GET" and path == "/page":      # 起こし方の照会 = 札を作らず、見る人にも数えない
+            self._json(200, {"open": board.page_open()})
+            return
         if method == "GET" and path == "/wait":
             cid = (q.get("id") or [None])[0]
             code, body, card = board.wait(cid, alive=lambda: _peer_alive(self.connection))
-            if code == 0:
-                return
-            ok = self._json(code, body)
-            if card is not None:
-                board.delivered(card, ok)
+            ok = False                    # 書き終えたと確かめられた時だけ True
+            try:
+                if code != 0:
+                    ok = self._json(code, body)
+            finally:
+                # 書く所が OSError の外の例外で落ちても、渡しの途中の札は必ず閉じる
+                # (閉じないと delivering のまま先頭に残り、以後の札が出ない)
+                if card is not None:
+                    board.delivered(card, ok)
             return
         if method == "GET" and path == "/pending":
             try:
@@ -865,7 +935,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not_found"})
 
     def _static(self, name: str) -> None:
-        if not STATIC_NAME.match(name):
+        if not STATIC_NAME.match(name) or name not in self.app.static_names:
             self._json(404, {"error": "not_found"})
             return
         path = self.app.static_dir / name
@@ -886,6 +956,28 @@ class BoardHTTPServer(ThreadingHTTPServer):
     block_on_close = False      # 抱えた long-poll の終わりを待たずに閉じる
     # Windows の SO_REUSEADDR は使用中の port にも bind できてしまう = 使わず、排他の旗を立てる
     allow_reuse_address = os.name != "nt"
+    max_connections = MAX_CONNECTIONS
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._slots = threading.BoundedSemaphore(self.max_connections)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        """接続ごとに thread を 1 本。上限を超えた接続は受けずに閉じる (thread を増やし続けない)。"""
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
     def server_bind(self) -> None:
         if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
@@ -933,6 +1025,41 @@ def write_run_file(path: Path, info: dict) -> None:
         os.replace(str(tmp), str(path))
     if os.name != "nt":
         os.chmod(str(path), 0o600)
+
+
+def restrict_to_user(folder: Path, run: Callable[..., Any] = subprocess.run) -> bool:
+    """置き場を、今のユーザーだけが読めるようにする (run.json には板の port と鍵が入る)。
+
+    Windows の file は親の folder の許可を継ぐ。置いた場所によっては、同じ PC の他のユーザーにも読めて
+    しまい、鍵を読んだ人は代わりに答えを送れる。できなかった時は False を返す (板は動かす・許可は元のまま)。
+    """
+    if os.name != "nt":
+        try:
+            os.chmod(str(folder), 0o700)
+            return True
+        except OSError:
+            return False
+    return _restrict_windows(folder, run)
+
+
+def _restrict_windows(folder: Path, run: Callable[..., Any]) -> bool:
+    system = Path(os.environ.get("SystemRoot") or "C:/Windows") / "System32"    # PATH の同名の物を拾わない
+    quiet = {"capture_output": True, "timeout": 10, "stdin": subprocess.DEVNULL,
+             "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    try:
+        who = run([str(system / "whoami.exe"), "/user", "/fo", "csv", "/nh"], **quiet)
+        sid = re.search(rb"S-1-[0-9-]+", who.stdout or b"")
+        if who.returncode != 0 or not sid:
+            return False
+        # 先に自分の許可を足し、それが通った時だけ親からの継ぎを外す
+        # (逆の順で途中で失敗すると、自分も読めない folder が残る)
+        grant = run([str(system / "icacls.exe"), str(folder), "/grant:r",
+                     "*" + sid.group(0).decode("ascii") + ":(OI)(CI)F"], **quiet)
+        if grant.returncode != 0:
+            return False
+        return run([str(system / "icacls.exe"), str(folder), "/inheritance:r"], **quiet).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def remove_run_file(path: Path, token: str) -> None:
@@ -986,6 +1113,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     port = httpd.server_address[1]
     run = state / "run.json"
+    state.mkdir(parents=True, exist_ok=True)
+    if not restrict_to_user(state):       # 鍵を書く前に絞る (後から絞ると、その間は読める)
+        print("BLEMMA: 置き場の許可を今のユーザーだけに絞れませんでした。共有の PC では、他のユーザーが読めない"
+              "場所に置いてください / Could not restrict board/state to the current user.", file=sys.stderr)
     write_run_file(run, {"port": port, "token": token, "pid": os.getpid(),
                          "started": datetime.now().astimezone().isoformat(timespec="seconds")})
     atexit.register(remove_run_file, run, token)

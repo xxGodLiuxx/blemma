@@ -40,7 +40,11 @@ async function api(route, body) {
   assert(response.ok, route + ': ' + response.status);
   return response.status === 204 ? null : response.json();
 }
+// Right after the view changes the page counts no press for a moment (a late press must not land on the new card).
+// The page marks that moment on the body, so every press here waits until it is over.
+const READY=`!document.body.classList.contains('settling')`;
 async function key(key, code = key) {
+  await until(READY);
   const virtual = {Enter:13, Escape:27, Backspace:8, ArrowRight:39, ArrowLeft:37, ' ':32}[key] || key.charCodeAt(0);
   await call('Input.dispatchKeyEvent', {type:'keyDown', key, code, windowsVirtualKeyCode:virtual});
   await call('Input.dispatchKeyEvent', {type:'keyUp', key, code, windowsVirtualKeyCode:virtual});
@@ -51,15 +55,19 @@ async function point(selector) {
     const k=b.offsetWidth ? r.width/b.offsetWidth : 1;   // The fan follows the window, so the label is scaled too.
     return Number.isFinite(lx) ? {x:r.x+lx*k, y:r.y+ly*k} : {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
 }
-async function mouse(p, type='mouseMoved') { await call('Input.dispatchMouseEvent', {type, ...p, ...(type==='mouseMoved'?{}:{button:'left',clickCount:1})}); }
-async function click(selector) { const p=await point(selector); await mouse(p,'mousePressed'); await mouse(p,'mouseReleased'); }
+async function mouse(p, type='mouseMoved') { if (type==='mousePressed') await until(READY); await call('Input.dispatchMouseEvent', {type, ...p, ...(type==='mouseMoved'?{}:{button:'left',clickCount:1})}); }
+async function click(selector) { await until(READY); const p=await point(selector); await mouse(p,'mousePressed'); await mouse(p,'mouseReleased'); }
 async function screenshot(name) {
   const data = await call('Page.captureScreenshot', {format:'png', captureBeyondViewport:false});
   fs.writeFileSync(path.join(config.output,name+'.png'),Buffer.from(data.data,'base64'));
 }
-async function open(query='mode=small&lang=ja&dwell=0') {
+const WAITING=`document.querySelector('#text') && document.querySelector('#text').textContent.length > 0`;
+const FIRST_BLADE=`document.querySelectorAll('.btn[data-key="opt:0"]').length === 1`;
+async function open(query='mode=small&lang=ja&dwell=0', ready=WAITING) {
+  // The same address again is only a jump inside the page (the part after #), not a reload: go through a blank page.
+  await call('Page.navigate', {url:'about:blank'});
   await call('Page.navigate', {url:config.origin+'/?'+query+'#t=ohgi-browser-test'});
-  await until(`document.querySelector('#text') && document.querySelector('#text').textContent.length > 0`);
+  await until(ready);
   await call('Page.bringToFront');
 }
 async function card(n, multi=false) {
@@ -155,6 +163,16 @@ async function closeCard(id) {
   await closeCard(multi);
   await open('mode=small&lang=ja&dwell=0.3&scan=0.5');
   const dwell=await card(2);
+  // With gaze dwell on, holding a button (selecting text, dragging) and resting on a blade must never answer.
+  const heldBlade=await point('#fan [data-key="opt:0"]');
+  await mouse({x:5,y:5});
+  await mouse({x:5,y:5},'mousePressed');
+  await mouse({...heldBlade,buttons:1});
+  await sleep(700);
+  assert.equal((await api('/pending')).card.state,'shown','Dwell does not count while a button is held');
+  await mouse(heldBlade,'mouseReleased');
+  await sleep(700);
+  assert.equal((await api('/pending')).card.state,'shown','After release the blade must be re-entered first');
   await mouse({x:5,y:5}); await mouse(await point('#fan [data-key="opt:0"]'));
   await until(`!document.querySelector('#undo-zone').hidden`);
   await key(' ','Space');
@@ -212,6 +230,27 @@ async function closeCard(id) {
   await mouse({x:hub.x+80,y:hub.y+20});
   assert.equal(await evaluate(`window.__moved`),null,'The drag ends with the button');
   assert.equal((await api('/pending')).card.state,'shown','Dragging never answers');
+  // On a 150% screen the browser grows the window by a pixel on every move to an odd position: the drag only moves
+  // to positions the screen can show exactly, and a window that grew anyway goes back to the size it was grabbed at.
+  const size=await evaluate(`[window.outerWidth, window.outerHeight]`);
+  await evaluate(`window.__keep={ow:Object.getOwnPropertyDescriptor(window,'outerWidth'),dpr:Object.getOwnPropertyDescriptor(window,'devicePixelRatio'),resize:window.resizeTo};
+    Object.defineProperty(window,'devicePixelRatio',{value:1.5,configurable:true}); window.__moves=[]; window.__resized=[];
+    window.moveTo=(x,y)=>window.__moves.push([x,y]); window.resizeTo=(w,h)=>window.__resized.push([w,h]); 0`);
+  await mouse(hub); await mouse(hub,'mousePressed');
+  for (const d of [[11,7],[23,9],[37,15]]) await mouse({x:hub.x+d[0],y:hub.y+d[1],buttons:1});
+  const moves=await evaluate(`window.__moves`);
+  assert(moves.length>=3 && moves.every(p=>p[0]%2===0 && p[1]%2===0),'A drag on a 150% screen moves to even positions only: '+JSON.stringify(moves));
+  assert.deepEqual(await evaluate(`window.__resized`),[],'A window that kept its size is left alone');
+  await evaluate(`Object.defineProperty(window,'outerWidth',{value:${size[0]+9},configurable:true}); 0`);
+  await mouse({x:hub.x+41,y:hub.y+15,buttons:1});
+  assert.deepEqual(await evaluate(`window.__resized`),[size],'A window that grew during the drag goes back to its size');
+  await evaluate(`window.__resized=[]; Object.defineProperty(window,'outerWidth',{value:${size[0]+2},configurable:true}); 0`);
+  await mouse({x:hub.x+41,y:hub.y+15},'mouseReleased');
+  assert.deepEqual(await evaluate(`window.__resized`),[size],'Letting go puts the last pixels back');
+  await evaluate(`for (const [k,d] of [['outerWidth',window.__keep.ow],['devicePixelRatio',window.__keep.dpr]]) { if (d) Object.defineProperty(window,k,d); else delete window[k]; }
+    window.resizeTo=window.__keep.resize; window.__moved=null; window.moveTo=(x,y)=>{window.__moved=[x,y];}; 0`);
+  assert.deepEqual(await evaluate(`[window.outerWidth, window.outerHeight]`),size,'The test put the real window size back');
+  assert.equal((await api('/pending')).card.state,'shown','A drag on a 150% screen never answers either');
   // The copy button copies the whole text and never answers.
   await evaluate(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:t=>{window.__copied=t;return Promise.resolve();}}})`);
   await click('#copy-btn');
@@ -246,7 +285,7 @@ async function closeCard(id) {
   await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan > .btn').disabled`);
   await mouse({x:5,y:5}); await closeCard(edit);
   // In an app window the waiting fan is a small window, and the next card brings the remembered size back.
-  const stubs=`window.matchMedia=()=>({matches:true}); window.__sizes=[]; window.resizeTo=(w,h)=>window.__sizes.push([w,h]); window.moveTo=()=>{};`;
+  const stubs=`window.matchMedia=()=>({matches:true}); window.__sizes=[]; window.__ops=[]; window.resizeTo=(w,h)=>{window.__sizes.push([w,h]);window.__ops.push('resize');Object.defineProperty(window,'outerWidth',{value:w,configurable:true});Object.defineProperty(window,'outerHeight',{value:h,configurable:true});}; window.moveTo=()=>window.__ops.push('move');`;
   await evaluate(stubs);
   const outer=await evaluate(`[window.outerWidth, window.outerHeight]`);
   const first=await card(2);
@@ -255,9 +294,12 @@ async function closeCard(id) {
   await closeCard(first);
   await until(`window.__sizes.length>=1`);
   assert.deepEqual(await evaluate(`window.__sizes[0]`),[320,120],'Waiting shrinks to the closed fan');
+  // Shrinking resizes first and moves second: a large window moved into the corner is pushed back by the screen edge.
+  assert.deepEqual(await evaluate(`window.__ops`),['resize','move'],'Shrink, then move into the corner');
   const again=await card(2);
   await until(`window.__sizes.length>=2`);
   assert.deepEqual(await evaluate(`window.__sizes[1]`),outer,'The next card brings the remembered size back');
+  assert.deepEqual(await evaluate(`window.__ops.slice(2)`),['move','resize'],'Move back first, then grow');
   await closeCard(again);
   // A reload while the window is the small waiting fan must not take that size for the full one.
   await open();
@@ -270,6 +312,77 @@ async function closeCard(id) {
   await until(`window.__sizes.length>=3`);
   assert.deepEqual(await evaluate(`window.__sizes`),[outer,[320,120],outer],'After a reload in the waiting size, the settings and the card open at the remembered size');
   await closeCard(reloaded);
+  // A reload in the middle of a card keeps the window the user made larger: the size remembered before is not forced back.
+  const kept=await card(2);
+  await evaluate(`window.__mark=1; sessionStorage.setItem('blemma.full','500,600'); 0`);
+  await open(undefined, FIRST_BLADE);          // The card is still waiting on the board: the page comes back with it.
+  assert.equal(await evaluate(`window.__mark`),undefined,'open() really loads the page again');
+  await evaluate(stubs);
+  await sleep(400);
+  assert.deepEqual(await evaluate(`window.__ops`),[],'A reload during a card leaves the window as it is');
+  await closeCard(kept);
+  // While the page is still loading the window reports no size at all: nothing may move it then (it would jump to a screen corner).
+  await open();
+  await evaluate(stubs+`Object.defineProperty(window,'outerWidth',{value:0,configurable:true}); Object.defineProperty(window,'outerHeight',{value:0,configurable:true}); 0`);
+  const early=await card(2);
+  await sleep(500);
+  assert.deepEqual(await evaluate(`window.__ops`),[],'No window size yet: the window is left alone');
+  await evaluate(`Object.defineProperty(window,'outerWidth',{value:320,configurable:true}); Object.defineProperty(window,'outerHeight',{value:120,configurable:true}); 0`);
+  await until(`window.__sizes.length>=1`);                 // The next tick picks it up once the size is known.
+  await closeCard(early);
+  // A press right behind a change of the view is not counted: a late press meant for the view before, or a bouncing
+  // switch, must not land on what just appeared. Here: the answer is in, the Undo band has just come up, and a second
+  // press arrives at once. It must not undo the answer; the same key does once the page counts presses again.
+  await open();
+  const bounce=await card(2);
+  await key('1','Digit1');
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  assert((await evaluate(`document.querySelector('#undo-btn').getAttribute('aria-label')||''`)).startsWith('取り消す'),'In the fan the Undo target has a spoken name');
+  await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await sleep(150);
+  assert.equal((await api('/pending')).card.state,'deciding','A press right behind the answer does not undo it');
+  await key('Escape');                           // key() waits for the page to count presses again.
+  await until(`document.querySelector('#undo-zone').hidden`);
+  assert.equal((await api('/pending')).card.state,'shown','The same key undoes once the moment is over');
+  await closeCard(bounce);
+  // Inside one card the person moves on by pressing (Deny, then a reason): those two presses can follow each other
+  // at once. The quiet moment is only for a view that changed from the board's side.
+  const quick=(await api('/ask',{kind:'permission',from:{cwd:'repo'},payload:{head:'Bash',text:'ls',blocks:[{label:'command',text:'ls',mono:true}]}})).id;
+  await until(`document.querySelectorAll('.btn[data-key="deny"]').length === 1`);
+  await key('2','Digit2');                       // Deny… opens the reasons (waits for the quiet moment of the new card).
+  await call('Input.dispatchKeyEvent',{type:'keyDown',key:'1',code:'Digit1',windowsVirtualKeyCode:49});   // The reason, typed right behind it.
+  await call('Input.dispatchKeyEvent',{type:'keyUp',key:'1',code:'Digit1',windowsVirtualKeyCode:49});
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  assert.equal((await api('/pending')).card.state,'deciding','Two quick presses inside one card both count');
+  await sleep(1050); await api('/wait?id='+quick);
+  await until(`document.body.classList.contains('idle')`);
+  // Assistive technology (a screen reader's "activate", voice control) presses with a click that carries no pointer.
+  // It counts as one press, like a key: no second press is asked for, and the Undo period still follows.
+  const assist=await card(2);
+  await until(READY);
+  await evaluate(`document.querySelector('.btn[data-key="opt:0"]').click()`);
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  assert.equal((await api('/pending')).card.state,'deciding','A click without a pointer answers in one press');
+  await sleep(1050); await api('/wait?id='+assist);
+  await until(`document.body.classList.contains('idle')`);
+  // A long "don't ask again" rule: the full text under the fan grows up to four lines, so its end
+  // (how far the rule is saved) is not cut off.
+  const longRule=(await api('/ask',{kind:'permission',from:{cwd:'repo'},payload:{head:'Bash',text:'npm run test:unit -- --watch=false',
+    suggestions:[{type:'addRules',rules:[{toolName:'Bash',ruleContent:'npm run test:unit -- --watch=false:*'}],behavior:'allow',destination:'projectSettings'}],
+    blocks:[{label:'command',text:'npm run test:unit -- --watch=false',mono:true}]}})).id;
+  await until(`document.querySelectorAll('#fan [data-key="sugg:0"]').length === 1`);
+  await mouse(await point('#fan [data-key="sugg:0"]'));
+  await until(`document.querySelector('#spot-label').textContent.includes('commit')`);
+  const spot=await evaluate(`(() => { const b=document.querySelector('#spotlight'); return [b.scrollHeight, b.clientHeight]; })()`);
+  assert(spot[0]<=spot[1]+1,'The full text of a long rule is not cut off: '+JSON.stringify(spot));
+  // With forced colours (a Windows contrast theme) background pictures are dropped: the blade under the pointer
+  // keeps its own highlight colours instead of vanishing into the others.
+  await call('Emulation.setEmulatedMedia',{features:[{name:'forced-colors',value:'active'}]});
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('#fan [data-key="sugg:0"]')).forcedColorAdjust`),'none','With forced colours the blade under the pointer keeps a visible highlight');
+  await call('Emulation.setEmulatedMedia',{features:[{name:'forced-colors',value:'none'}]});
+  await mouse({x:5,y:5});
+  await closeCard(longRule);
   // The text size fitted to the window survives the replies of window calls (clear=on asks the board to cut the window).
   await call('Emulation.setDeviceMetricsOverride',{width:900,height:1000,deviceScaleFactor:1,mobile:false});
   await open('mode=small&lang=ja&dwell=0&clear=on&font=1.3');

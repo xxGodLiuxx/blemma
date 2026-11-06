@@ -74,15 +74,18 @@
     var timer = setTimeout(function () { ctl.abort(); }, 40000);
     api("GET", "/pending?seq=" + S.seq, undefined, ctl.signal).then(function (r) {
       clearTimeout(timer);
+      if (S.abort === ctl) S.abort = null;        /* 終わった要求は kick の的にしない */
       if (r.status === 401) { S.stopped = true; S.problem = L().bad_token; return; }
       if (r.status !== 200 || !r.data) throw new Error("status " + r.status);
       S.retry = 0;
       S.offline = false;
+      S.kicked = false;                 /* 通った = 古い kick の印を持ち越さない (後の 1 回の失敗を数え落とさない) */
       S.health.ok();
       apply(r.data);
       poll();                         /* 直に呼ぶ = 隠れた頁で timer が間引かれても見る人の数が途切れない */
     }).catch(function () {
       clearTimeout(timer);
+      if (S.abort === ctl) S.abort = null;
       if (S.kicked) { S.kicked = false; poll(); return; }
       S.offline = true;
       S.health.fail(performance.now());
@@ -106,11 +109,13 @@
     S.snap = snap;
     S.snapAt = now;
     if (!card) {
+      if (S.ui.cardId !== null) forgetSends();
       S.ui = C.newUi(null);
     } else if (card.id !== S.ui.cardId) {
       S.ui = C.newUi(card.id);
       S.delta = C.zeroPresses();
       S.pressLedger = C.newPressLedger(S.pressLedger.source);
+      forgetSends();
     } else if (prev && prev.id === card.id && prev.state === "deciding" && card.state === "shown") {
       S.ui = C.uiAfterUndo(card, S.ui);          /* 取り消した = 確かめの画面か頭へ */
     }
@@ -144,7 +149,7 @@
       S.ui.marks = [];
       S.key = k;
       render();
-      bumpGen();
+      bumpGen(true);
     }
     updateSide(performance.now());
   }
@@ -195,6 +200,7 @@
     var lang = S.lang;
     var T = L();
     var card = S.card;
+    fitWindow();                      /* 先に窓の大きさ。形 (透過) は寸法が揃ってから送る */
     var focusedKey = viewDocument.activeElement && viewDocument.activeElement.dataset
       ? viewDocument.activeElement.dataset.key : null;
     viewDocument.documentElement.lang = lang;
@@ -258,7 +264,6 @@
     if (focusedKey && S.btns[focusedKey] && !S.btns[focusedKey].disabled) {
       S.btns[focusedKey].focus({ preventScroll: true });
     }
-    fitWindow();
   }
 
   /* 見つめた羽根の全文 = 押せない書の帯に出す。目を移しても消さない (読むために羽根を離れるので)。
@@ -449,7 +454,7 @@
   /* 最前面と透過 = Windows の小窓は server が窓に当てる。当たらない時は何も変わらない。
    * 返り = 頼んだ事が窓に当たったか (窓が見つからない・API が失敗した時は false)。応答で直すのは固定のボタンだけ */
   function windowCall(body) {
-    return api("POST", "/window", body).then(function (r) {
+    return send("/window", body, 5000).then(function (r) {
       var found = !!(r.status === 200 && r.data && r.data.found);
       S.windowOk = found;
       if (found) S.pinned = !!r.data.pin;
@@ -460,7 +465,9 @@
 
   function togglePin() {
     if (viewWindow !== window) { viewWindow.close(); return; }
-    windowCall({ pin: !S.pinned }).then(function (done) { if (!done) openPip(); });
+    var want = !S.pinned;
+    /* 固定できない時は別の窓 (PiP) を手前に出す。外す側が当たらなかった時は、手前の窓を増やさない */
+    windowCall({ pin: want }).then(function (done) { if (!done && want) openPip(); });
   }
 
   function isApp() {
@@ -491,34 +498,63 @@
     if (S.mode !== "small" || viewWindow !== window || !isApp()) return;
     var idle = !S.card && !S.overlay;
     if (idle === S.widget) return;
-    S.widget = idle;
     var w = window.outerWidth, h = window.outerHeight, s = window.screen, pos = S.options.pos;
+    if (!(w > 0 && h > 0)) return;    /* 読み込みの頭は窓の寸法がまだ 0 = 次のこまで見直す (窓を画面の左上へ飛ばさない) */
+    S.widget = idle;
     var tiny = w <= WIDGET[0] + 40 && h <= WIDGET[1] + 40;      /* いま待機の大きさ = これを「元の大きさ」と覚えない */
     if (idle && !tiny) rememberFull([w, h]);
-    /* 元の大きさを知らないまま札つきで始まった時は、今の窓のまま (起動時の大きさを別の値で上書きしない)。
-       待機の大きさの窓に札が来た時だけは、扇が入らないので既定の大きさへ開く */
-    var to = idle ? WIDGET : recallFull() || (tiny ? FULL : null);
+    /* 札つきで始まった時 (起動の直後・札の途中で頁を読み直した時) は、今の窓のまま = 利用者が広げた窓を、
+       前に覚えた大きさへ縮めない。待機の大きさの窓に札が来た時だけ、覚えた大きさ (無ければ既定) へ開く */
+    var to = idle ? WIDGET : tiny ? recallFull() || FULL : null;
     if (!to) return;
+    S.drag = null;                    /* 掴んで運んでいる最中に窓の大きさが替わる = 掴み直してもらう (掴んだ時の大きさへ戻さない) */
+    windowMoved();
     var x = window.screenX + w - to[0], y = window.screenY + h - to[1];        /* 右下の角を保つ */
     if (pos !== "keep") {
       x = pos.charAt(1) === "r" ? s.availLeft + s.availWidth - to[0] : s.availLeft;
       y = pos.charAt(0) === "b" ? s.availTop + s.availHeight - to[1] : s.availTop;
     }
-    window.moveTo(Math.max(s.availLeft, Math.min(x, s.availLeft + s.availWidth - to[0])),
-                  Math.max(s.availTop, Math.min(y, s.availTop + s.availHeight - to[1])));
-    window.resizeTo(to[0], to[1]);
+    x = Math.max(s.availLeft, Math.min(x, s.availLeft + s.availWidth - to[0]));
+    y = Math.max(s.availTop, Math.min(y, s.availTop + s.availHeight - to[1]));
+    /* 縮める時は先に小さくしてから動かす = 大きいまま隅へ動かすと、画面からはみ出す分だけ押し戻されて角がずれる。
+       広げる時は先に動かしてから大きくする (逆の順だと、広げた窓がはみ出して押し戻される) */
+    if (to[0] * to[1] < w * h) { window.resizeTo(to[0], to[1]); window.moveTo(x, y); }
+    else { window.moveTo(x, y); window.resizeTo(to[0], to[1]); }
+  }
+
+  /* 窓の大きさや位置が変わると、画面の同じ所に居る pointer の下の物が入れ替わる (待機の小窓が札で開くと、置いたままの
+     pointer の下に羽根が来る)。落ち着くまで滞留を数えず (frame)、落ち着いた後に最初に届いた pointer の下の釦は、
+     入り直すまで数えない = 見ないまま押されない (線 3)。前の窓の座標 (lastX/lastY) と、その下に居た釦は捨てる */
+  var WINDOW_SETTLE_MS = 600;
+  function windowMoved() {
+    S.windowAt = performance.now();
+    S.lastX = -1;
+    S.over = null;
+    S.firstPointer = true;
+    releaseDwell();
   }
 
   /* 扇の周りを透かす = 題の帯と和紙は四角のまま、扇の外の角だけを窓から切る */
   function pushShape() {
-    if (S.mode !== "small" || viewWindow !== window) return;
+    if (S.mode !== "small" || viewWindow !== window || S.shapeBusy) return;   /* 前の頼みの返事を待つ = 順が入れ替わらない */
     var shape = null;
     var side = (window.outerWidth - window.innerWidth) / 2, top = window.outerHeight - window.innerHeight - side;
-    if (S.options.clear === "on" && !S.card && !S.overlay && S.options.scale === 1) {
+    /* 窓の大きさを変えた直後は、外の寸法だけが先に新しくなる。枠の幅と題の帯の高さがあり得ない値の間は、
+       形を作らず次のこまを待つ (崩れた形を送ると、板は窓を四角へ戻してしまう) */
+    var odd = S.options.clear === "on" && !(side >= 0 && side <= 14 && top >= 0 && top <= 56);
+    if (odd) {
+      /* 続く時は、頁を拡大・縮小している (内の寸法だけが倍率で変わり、形が扇からずれて羽根が切れる) = 切り抜きをやめて四角へ戻す */
+      var since = performance.now();
+      if (!S.shapeOddAt) S.shapeOddAt = since;
+      if (since - S.shapeOddAt < 800) return;
+    } else {
+      S.shapeOddAt = 0;
+    }
+    if (!odd && S.options.clear === "on" && !S.card && !S.overlay && S.options.scale === 1) {
       var c = $("closed").querySelector("svg").getBoundingClientRect(), z = c.width / 300;   /* 待機中 = 閉じた扇だけ */
       shape = { dpr: window.devicePixelRatio, left: side, top: top, keep: 0, bare: true, rects: [],
                 polygon: CLOSED.map(function (p) { return [c.left + p[0] * z, c.top + p[1] * z]; }) };
-    } else if (S.options.clear === "on" && S.fan && !S.overlay && S.options.scale === 1 && S.fanOutline) {
+    } else if (!odd && S.options.clear === "on" && S.fan && !S.overlay && S.options.scale === 1 && S.fanOutline) {
       var fan = $("fan"), r = fan.getBoundingClientRect(), k = r.width / parseFloat(fan.style.width);
       var wide = window.innerWidth / window.innerHeight >= 1.5;
       var below = $("fan-scroll").getBoundingClientRect().bottom;       /* 縦向き = 扇の下は和紙 */
@@ -533,7 +569,9 @@
     var sig = JSON.stringify(shape);
     if (sig === S.shapeSig) return;
     S.shapeSig = sig;
+    S.shapeBusy = true;
     windowCall({ shape: shape }).then(function (done) {
+      S.shapeBusy = false;
       /* 開いた直後は窓の名がまだ付いていない = 当たるまで少し繰り返す (API が失敗した時も同じ) */
       S.shapeTries = done ? 0 : (S.shapeTries || 0) + 1;
       if (!done && S.shapeTries < 20 && S.shapeSig === sig) S.shapeSig = "";
@@ -559,22 +597,44 @@
   function letGo() {
     releaseDwell();
     S.overMore = false;
+    S.down = false;
     endDrag();
   }
 
   /* 表示の世代を進める = 滞留を止めて選択を解き、pointer の下の釦は入り直すまで数えない・走査は頭から (§4.2) */
-  function bumpGen() {
+  /* fromBoard = 板から来た替わり (新しい札・状態の変化・取り消しで戻った)。この時だけ、押しを数えない間を置く (press の SETTLE_MS)。
+     札の中で人が画面を進めた時 (拒否 → 理由・次の設問) は置かない = 鍵で続けて打つ人の 2 打目を捨てない */
+  function bumpGen(fromBoard) {
+    var now = performance.now();
     S.gen += 1;
+    if (fromBoard) {
+      S.genAt = now;
+      setSettling(true);
+    }
     S.over = keyAtPointer();
     if (S.lastX < 0) S.firstPointer = true;
     S.overMore = false;               /* 「▼ 続き」も同じ = 動かさないままの pointer で、新しい札の和紙を送らない */
     releaseDwell();
-    S.scan.restart(performance.now());
+    S.scan.restart(fromBoard ? now + scanQuiet() : now);   /* 板から替わった後は、1 こまぶん何も光らせない */
     if (S.scanEl) { S.scanEl.classList.remove("scan"); S.scanEl = null; }
     if (S.card && S.card.state === "shown" && S.lastInput === "key" && !S.overlay && S.scanMs <= 0) {
       var first = S.fan ? S.scanList[0] : viewDocument.querySelector("#opts .btn:not(:disabled)");
       if (first) first.focus({ preventScroll: true });
     }
+  }
+
+  /* 板から札が替わった後、走査が最初の光を出すまでの間 = 走査の 1 こまぶん (0.4〜1.5 秒)。押すのが遅い人の、前の札へ向けた
+     1 押しが、新しい札の先頭 (許可) に当たらない (光っていない物は押せない) */
+  function scanQuiet() {
+    return Math.max(SETTLE_MS, Math.min(S.scanMs || 0, 1500));
+  }
+
+  /* 押しを数えない間は、頁に印を付ける (body.settling)。見た目は変えない = 試験と外の道具が「もう押せる」を読める */
+  function setSettling(on) {
+    var b = viewDocument.body;
+    if (S.settling === on) return;
+    S.settling = on;
+    if (b && b.classList) b.classList.toggle("settling", on);
   }
 
   function dwellKeyOf(target) {
@@ -636,6 +696,7 @@
       setText($("fan-time"), "");
     }
     updateMore();
+    fitWindow();
     pushShape();
     /* 板が止まったら app の窓を閉じる (題の帯が隠れた窓も残らない)。止まったと見てから 10 秒 */
     var gone = goneSince(now);
@@ -697,6 +758,7 @@
       setText($("undo-text"), T.undo + " (" + Math.ceil(left) + ")");
       btn.hidden = false;
       btn.disabled = false;
+      btn.setAttribute("aria-label", T.undo + ": " + label);   /* 扇では釦の字を出さない = 読み上げ用の名 */
       if (S.fan) fanNote(T.undo + " (" + Math.ceil(left) + ")", label);
     } else {
       setText($("undo-label"), T.delivering + " " + label);
@@ -736,11 +798,17 @@
     }
   }
 
+  /* 人の操作より前に作った AudioContext は止まったまま始まる = 合図の時と、鍵・click の時に起こす */
+  function wakeSound() {
+    try { if (S.ac && S.ac.state === "suspended" && S.ac.resume) S.ac.resume(); } catch (e) { /* 音が出せない環境では光だけ */ }
+  }
+
   function beep() {
     try {
       var AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
       S.ac = S.ac || new AC();
+      wakeSound();
       var o = S.ac.createOscillator();
       var g = S.ac.createGain();
       o.frequency.value = 880;
@@ -753,6 +821,7 @@
   }
 
   /* ---- 押す ---- */
+  var SETTLE_MS = 400;                /* 表示が替わってから、押しを数え始めるまで */
   function press(key, by) {
     if (key === "reset" || key === "phone" || key === "gear" || key === "pip" || key === "theme" || key === "copy") {
       if (by !== "key" && by !== "click") return;          /* 視線では押さない (§4.5) */
@@ -765,6 +834,10 @@
       return;
     }
     if (key === "close") { closeOverlay(); return; }
+    /* 表示が替わった直後の押しは数えない (線 3) = 前の表示へ向けた遅れた 1 押しや、スイッチ・鍵のばたつきが、
+       新しい札の先頭 (許可) や出たばかりの「取り消す」に当たらない。人が新しい表示を見て押すには、これより長く掛かる。
+       滞留は「入り直すまで数えない」(bumpGen の releaseDwell) が別に守る */
+    if (by !== "dwell" && performance.now() - S.genAt < SETTLE_MS) return;
     if (key === "more") {                                  /* 和紙の続きを 1 画面分送る。最後まで読んだら先頭へ */
       copyPage(1);
       S.moreNext = performance.now() + 1500;
@@ -821,13 +894,35 @@
     else S.delta = C.addPresses(S.delta, sent);
   }
 
+  /* 期限つきの送信 = ms のうちに返らなければ中断して、失敗として扱う (返らない送信で頁が固まらない)。
+   * 板は同じ機械に居る = 正常なら一瞬で返る。時計は返った時に止める */
+  var SEND_MS = 8000;
+  function send(path, body, ms) {
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, ms);
+    return api("POST", path, body, ctl.signal).then(
+      function (r) { clearTimeout(timer); return r; },
+      function (e) { clearTimeout(timer); throw e; });
+  }
+
+  /* 札が替わった = 前の札への送信の印を持ち越さない (返らない送信が残っていても、新しい札は押せる)。
+   * 番号を進めておけば、遅れて返った古い送信が、新しい送信の印を消す事も無い */
+  function forgetSends() {
+    S.answering = false;
+    S.undoing = false;
+    S.answerId = (S.answerId || 0) + 1;
+    S.undoId = (S.undoId || 0) + 1;
+  }
+
   function sendAnswer(choice, by) {
     var card = S.card;
+    var mine = S.answerId = (S.answerId || 0) + 1;
+    function settle() { if (S.answerId === mine) S.answering = false; }
     S.answering = true;
     var sentKey = S.key;
     var batches = takePressBatches(), sent = C.sumPressBatches(batches);
-    api("POST", "/answer", { id: card.id, seq: card.view_seq, choice: choice, by: by,
-                             presses: sent, press_batches: batches })
+    send("/answer", { id: card.id, seq: card.view_seq, choice: choice, by: by,
+                      presses: sent, press_batches: batches }, SEND_MS)
       .then(function (r) {
         if (r.status === 200) {
           S.sentKey = sentKey;
@@ -844,7 +939,7 @@
         giveBack(card.id, sent, batches);
         lostCall();
       })
-      .then(function () { S.answering = false; }, function () { S.answering = false; });
+      .then(settle, settle);
   }
 
   /* 送信が 1 回届かなかった = 「つながらない」と出して、板の見張りをすぐ取り直す。
@@ -857,26 +952,30 @@
   function doUndo(by) {
     var card = S.card;
     if (!card || S.undoing) return;
+    var mine = S.undoId = (S.undoId || 0) + 1;
+    function settle() { if (S.undoId === mine) S.undoing = false; }
     S.undoing = true;
     S.delta[by] = (S.delta[by] || 0) + 1;
     var batches = takePressBatches(), sent = C.sumPressBatches(batches);
-    api("POST", "/undo", { id: card.id, by: by, presses: sent, press_batches: batches })
+    send("/undo", { id: card.id, by: by, presses: sent, press_batches: batches }, SEND_MS)
       .then(function (r) {
         if (r.status === 200) return;
         giveBack(card.id, sent, batches);
+        if (r.status === 409) showNotice(L().undo_late);     /* 黙って答えが渡ると、取り消せたと取り違える */
         kick();
       }, function () {
         giveBack(card.id, sent, batches);
         lostCall();
       })
-      .then(function () { S.undoing = false; }, function () { S.undoing = false; });
+      .then(settle, settle);
   }
 
   /* ---- 入力 ---- */
   function onPointer(e) {
+    S.down = !!e.buttons;             /* 窓の外で押し始めたドラッグも、動きの知らせに載る釦の状態で分かる */
     if (S.drag) {
       /* 釦を離した知らせを取りこぼしても、押していない pointer に窓を貼り付かせない */
-      if (e.buttons & 1) { window.moveTo(e.screenX - S.drag.x, e.screenY - S.drag.y); return; }
+      if (e.buttons & 1) { dragTo(e); return; }
       endDrag();
     }
     if (e.pointerType === "touch") { S.pointerType = "touch"; return; }
@@ -899,12 +998,15 @@
   }
 
   function isSwitch(e) {
+    if (e.ctrlKey || e.altKey || e.metaKey) return false;   /* Ctrl+Space (IME の切り替え) などで、光っている釦を押さない */
     var k = S.switchKey;
     if (k === "Space" || k === " ") return e.code === "Space" || e.key === " ";
     return e.code === k || e.key === k || (k.length === 1 && typeof e.key === "string" && e.key.toLowerCase() === k.toLowerCase());
   }
 
   function onKeyDown(e) {
+    S.keyAt = performance.now();
+    wakeSound();
     if (!inputActive()) return;
     var code = e.code || e.key;
     var sw = S.scanMs > 0 && isSwitch(e);
@@ -970,12 +1072,16 @@
   }
 
   function onClick(e) {
-    if (e.detail === 0) return;                             /* キーで起きた click は keydown で扱った */
+    /* detail 0 の click = 鍵で起きた物か、支援技術 (読み上げの「押す」・音声操作) が起こした物。鍵の分は keydown で扱った
+       ので、直前に鍵が動いていない時だけ受ける。受けた時は鍵と同じ扱い = 1 回で決まる (猶予の取り消しは残る) */
+    var assist = e.detail === 0;
+    if (assist && performance.now() - S.keyAt < 500) return;
+    wakeSound();
     var b = e.target && e.target.closest ? e.target.closest("[data-key]") : null;
     if (!b || b.disabled) return;
-    var how = S.pointerType === "touch" ? "touch" : "click";
+    var how = assist ? "key" : S.pointerType === "touch" ? "touch" : "click";
     S.lastInput = how;
-    if (S.fan && S.options.click !== "single" && (b.parentNode === $("fan") || b.closest(".fan-aux"))) {
+    if (!assist && S.fan && S.options.click !== "single" && (b.parentNode === $("fan") || b.closest(".fan-aux"))) {
       var at = performance.now();
       var step = C.armStep(S.armKey ? { key: S.armKey, at: S.armAt } : null, b.dataset.key, at, ARM_MS);
       if (!step.confirm) { armChoice(b, at); return; }
@@ -989,17 +1095,27 @@
     now = performance.now();  // Use one clock even after adopting the DOM into PiP.
     var dwelling = false;
     if (S.dwellMs > 0 && S.pointerType !== "touch" && !S.overlay && inputActive()) {
-      var r = S.dwell.update(S.over, now);
-      setFill(r.target, r.progress);
-      dwelling = !!r.target;
-      /* 滞留の間は、数えている羽根の全文を必ず出す = 読んだ字と違う羽根が押されない (線 3) */
-      if (dwelling && S.spotKey !== r.target && S.btns[r.target]) spotlight(S.btns[r.target]);
-      if (r.fire) {
-        setFill(null, 0);
-        S.lastInput = "dwell";
-        press(r.target, "dwell");
+      if (S.down) {
+        /* 釦を押している間 (文字の選択・ドラッグ・窓の移動) は滞留を数えない。離した後も、羽根へ入り直すまで数えない
+           = 押したまま羽根の上で止まっただけで答えが出ない (線 3) */
+        releaseDwell();
+      } else if (now - S.windowAt < WINDOW_SETTLE_MS) {
+        S.firstPointer = true;        /* 窓が落ち着くまで (windowMoved)。この間に届いた pointer は、最初の 1 つに数えない */
+        releaseDwell();
+      } else {
+        var r = S.dwell.update(S.over, now);
+        setFill(r.target, r.progress);
+        dwelling = !!r.target;
+        /* 滞留の間は、数えている羽根の全文を必ず出す = 読んだ字と違う羽根が押されない (線 3) */
+        if (dwelling && S.spotKey !== r.target && S.btns[r.target]) spotlight(S.btns[r.target]);
+        if (r.fire) {
+          setFill(null, 0);
+          S.lastInput = "dwell";
+          press(r.target, "dwell");
+        }
       }
     }
+    if (S.settling && now - S.genAt >= SETTLE_MS) setSettling(false);
     if (S.armKey && now - S.armAt > ARM_MS) { disarm(); if (S.spotBtn) spotlight(S.spotBtn); }
     if (S.overMore) hoverMore(now);
     if (S.scanMs > 0) {
@@ -1009,17 +1125,20 @@
        * pointer が止まっているか窓の外なら回る (スイッチの人・OS の鍵盤を見ている時)。 */
       var moving = dwelling || now - (S.pointerAt || -1e9) < 1500;
       if (moving) S.scanPaused = true;
-      else if (S.scanPaused) { S.scanPaused = false; S.scan.restart(now); }
+      else if (S.scanPaused) { S.scanPaused = false; S.scan.restart(Math.max(now, S.genAt + scanQuiet() || 0)); }
       if (card && card.state === "deciding") {
         var u = $("undo-btn");                               /* 猶予のうち = 走査を止め、次の押下 = 取り消す */
-        target = u.hidden ? null : u;
+        target = u.hidden || now - S.genAt < SETTLE_MS ? null : u;   /* 出たばかりの間は光らせない (press の SETTLE_MS) */
       } else if (card && card.state === "shown" && !S.overlay && !S.answering && inputActive() && !moving) {
         var i = S.scan.index(now, S.scanList.length);
         target = i >= 0 ? S.scanList[i] : null;
       }
       if (S.scanEl !== target) {
         if (S.scanEl) S.scanEl.classList.remove("scan");
-        if (target) target.classList.add("scan");
+        if (target) {
+          target.classList.add("scan");
+          if (!S.fan && target.scrollIntoView) target.scrollIntoView({ block: "nearest" });   /* 列が窓より長い札 */
+        }
         S.scanEl = target;
         if (target) spotlight(target);
       }
@@ -1075,18 +1194,20 @@
     function active(fn) { return function (e) { if (w === viewWindow) fn(e); }; }
     d.addEventListener("pointermove", active(onPointer), { passive: true });
     d.addEventListener("pointerover", active(onPointer), { passive: true });
-    d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; }), { passive: true, capture: true });
+    d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; S.down = true; }), { passive: true, capture: true });
+    d.addEventListener("pointerup", active(function () { S.down = false; }), { passive: true, capture: true });
+    d.addEventListener("pointercancel", active(function () { S.down = false; }), { passive: true, capture: true });
     d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.overMore = false; S.lastX = -1; S.scrollRest = 0; }));
     d.addEventListener("pointerdown", active(startDrag));
     d.addEventListener("pointerup", active(endDrag));
     d.addEventListener("pointercancel", active(endDrag));
     d.addEventListener("lostpointercapture", active(endDrag));
     w.addEventListener("blur", active(letGo));
-    w.addEventListener("focus", active(function () { releaseDwell(); S.scan.restart(performance.now()); }));
+    w.addEventListener("focus", active(function () { releaseDwell(); S.scan.restart(Math.max(performance.now(), S.genAt + scanQuiet() || 0)); }));
     d.addEventListener("visibilitychange", active(letGo));
-    w.addEventListener("resize", active(fitFan));
+    w.addEventListener("resize", active(function () { windowMoved(); fitFan(); }));
     d.addEventListener("keydown", active(onKeyDown));
-    d.addEventListener("keyup", active(function (e) { delete S.held[e.code || e.key]; }));
+    d.addEventListener("keyup", active(function (e) { S.keyAt = performance.now(); delete S.held[e.code || e.key]; }));
     d.addEventListener("click", active(onClick));
     d.addEventListener("focusin", active(function (e) { spotlight(e.target); }));
   }
@@ -1210,11 +1331,32 @@
     var t = e.target;
     if (e.button !== 0 || e.pointerType === "touch" || viewWindow !== window) return;
     if (!t || !t.closest || !t.closest("#fan-scroll, #closed") || t.closest("[data-key]")) return;
-    S.drag = { x: e.screenX - window.screenX, y: e.screenY - window.screenY };
+    S.drag = { x: e.screenX - window.screenX, y: e.screenY - window.screenY,
+               w: window.outerWidth, h: window.outerHeight, moved: false };
     t.setPointerCapture(e.pointerId);
   }
 
-  function endDrag() { S.drag = null; }
+  /* 掴んだ窓を pointer に付いて行かせる。位置は物理の画素で割り切れる所だけ (C.gridStep) = 表示倍率が 125%・150% などの
+     画面で、動かすたびに窓が 1 画素ずつ大きくなるのを防ぐ。それでも育った時 (頁を拡大している時など) は、
+     掴んだ時の大きさへ戻す */
+  function dragTo(e) {
+    var d = S.drag, step = C.gridStep(window.devicePixelRatio);
+    d.moved = true;
+    window.moveTo(C.snap(e.screenX - d.x, step), C.snap(e.screenY - d.y, step));
+    keepSize(d, 4);
+  }
+
+  function keepSize(d, slack) {
+    var w = window.outerWidth, h = window.outerHeight;
+    if (!(d.w > 0 && d.h > 0 && w > 0 && h > 0)) return;      /* 寸法が読めない間は触らない */
+    if (Math.abs(w - d.w) > slack || Math.abs(h - d.h) > slack) window.resizeTo(d.w, d.h);
+  }
+
+  function endDrag() {
+    var d = S.drag;
+    S.drag = null;
+    if (d && d.moved) keepSize(d, 0);                         /* 離す時に、掴んだ時の大きさへ揃える */
+  }
 
   /* 和紙の文章が切れている時だけ「▼ 続き」を見せる */
   function updateMore() {

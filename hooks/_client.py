@@ -86,8 +86,10 @@ notify) と、要れば `mcp/blemma_mcp.py` が同じ関数を呼ぶ。設計 = 
 
     {"head": "<MCP server の名>",              # 問うている server (MCP の MUST = 誰が訊いているか)
      "text": "<message>",
+     "omitted": ["題", "reviewers"],           # 在る時だけ・板で描けず空のままにした任意の欄の題 (無ければ欄の名・8 個・各 80 字まで)
      "fields": [                               # 1 欄 = 1 画面 (hook が requested_schema から作る)
          {"name": "choice", "title": "次の一手を選んでください",
+          "description": "<欄の説明>",         # 任意・題と別に説明がある欄だけ (頁は問いの上と、送る前の確かめに出す)
           "multi": false,                      # true = 複数選択 (array の enum)
           "required": true,                    # false なら頁は「空のまま」の釦を足す
           "min_picks": 1,                      # multi だけ・必須の欄で送れる最小の印の数 (0 か 1・無ければ 1。
@@ -208,13 +210,24 @@ class _Connection(http.client.HTTPConnection):
 
 
 def debug(msg: Any) -> None:
-    """`BLEMMA_DEBUG=1` の時だけ stderr に 1 行。それ以外は何もしない。"""
+    """`BLEMMA_DEBUG=1` の時だけ stderr に 1 行 (UTF-8 の bytes・改行は LF)。それ以外は何もしない。
+
+    stderr の文字の層は locale の符号 (日本語の Windows は cp932) と CRLF で書き、UTF-8 で読む Claude Code の
+    debug の記録で化ける = bytes の層へ直に書く (MCP の server の記録と同じ形)。bytes の層が無い時だけ文字で。
+    """
     if os.environ.get(DEBUG_ENV) != "1":
         return
     try:
         line = str(msg).replace("\r", " ").replace("\n", " ")[:500]
-        sys.stderr.write("BLEMMA: " + line + "\n")
-        sys.stderr.flush()
+        text = "BLEMMA: " + line + "\n"
+        raw = getattr(sys.stderr, "buffer", None)
+        if raw is None:
+            sys.stderr.write(text)
+            sys.stderr.flush()
+            return
+        sys.stderr.flush()                       # 文字の層に残った物を先に出す (行の順を保つ)
+        raw.write(text.encode("utf-8", "backslashreplace"))   # 対の無いサロゲートでも行を落とさない
+        raw.flush()
     except Exception:
         pass
 
