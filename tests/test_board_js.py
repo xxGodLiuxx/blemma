@@ -1106,7 +1106,8 @@ def test_scan_light_is_brought_into_view_outside_the_fan(tmp_path, clock):
 const t = loadPage(function () { throw new Error("通信しない"); });
 show(t);
 let brought = 0;
-function item() { return { classList: { add: function () {}, remove: function () {} }, scrollIntoView: function () { brought += 1; } }; }
+function item() { return { classList: { add: function () {}, remove: function () {} }, scrollIntoView: function () { brought += 1; },
+                           getBoundingClientRect: function () { return { top: 10, left: 10 }; } }; }
 t.selectWindow({ document: { hidden: false }, requestAnimationFrame: function () { return 1; } });
 t.S.sideAt = Infinity; t.S.scanMs = 1500; t.S.scan = new core.Scan(1500); t.S.scanList = [item(), item()];
 const seen = {};
@@ -1164,31 +1165,53 @@ setTimeout(function () { console.log(JSON.stringify(Object.assign(counts, { sent
 
 
 def test_the_scan_light_scrolling_the_list_arms_the_same_guard(tmp_path, clock):
-    """走査の光が釦を見える所へ送った時は、scroll の知らせを待たずに、その場で同じ守りを掛ける (知らせは次のこまに来る)。
-    文書の scroll の知らせ (capture) も同じ守りへ繋がっている。"""
+    """走査の光が釦を見える所へ実際に送った時は、scroll の知らせを待たずに、その場で同じ守りを掛ける (知らせは次のこまに来る)。
+    光が進んでも何も送らなかった時 (列が窓に収まる) は掛けない。文書の scroll の聞き手は capture で付く (要素の送りは泡立たない)。
+    聞き手が守るのは、文書そのものと、押せる的 (滞留の釦) を含む列の送りだけ = 本文の枠・和紙の送りは素通し。"""
     _, card = _board(clock)
     out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + r"""
 const t = loadPage(function () { throw new Error("通信しない"); });
 show(t);
-function item() { return { classList: { add: function () {}, remove: function () {} }, scrollIntoView: function () {} }; }
-const handlers = {};
-const doc = { hidden: false, addEventListener: function (name, fn) { handlers[name] = fn; }, documentElement: { addEventListener: function () {} } };
+function item(moves) {                                 /* moves = scrollIntoView で列が送られて、釦の位置が変わる */
+  let top = 300;
+  return { classList: { add: function () {}, remove: function () {} }, scrollIntoView: function () { if (moves) top -= 120; },
+           getBoundingClientRect: function () { return { top: top, left: 20 }; } };
+}
+const handlers = {}, opts = {};
+const doc = { nodeType: 9, hidden: false, addEventListener: function (name, fn, opt) { handlers[name] = fn; opts[name] = opt; },
+              documentElement: { addEventListener: function () {} } };
 const win = { document: doc, addEventListener: function () {}, requestAnimationFrame: function () { return 1; } };
 t.selectWindow(win); t.bindInputs(win);
-t.S.sideAt = Infinity; t.S.scanMs = 500; t.S.scan = new core.Scan(500); t.S.scanList = [item(), item()];
+t.S.sideAt = Infinity; t.S.scanMs = 500; t.S.scan = new core.Scan(500); t.S.scanList = [item(true), item(true)];
 t.S.fan = false; t.S.scan.restart(0);
 t.S.dwellMs = 0;                                       /* ここでは守りが掛かる所だけを見る (滞留のこまは回さない) */
-const seen = {};
-t.S.windowAt = -1e9; t.S.firstPointer = false; t.S.over = "allow_once";
+const seen = { capture: !!(opts.scroll && opts.scroll.capture) };
+function reset() { t.S.windowAt = -1e9; t.S.firstPointer = false; t.S.over = "allow_once"; t.S.lastX = 77; }
+reset();
 now = 10; t.frame(now);                                /* 光が当たり、見える所へ送った */
 seen.byLight = { at: t.S.windowAt, first: t.S.firstPointer, over: t.S.over };
-t.S.windowAt = -1e9; t.S.firstPointer = false; t.S.over = "allow_once"; t.S.lastX = 77;
-now = 900; handlers.scroll();                          /* ホイールなどで送られた */
+t.S.scanList = [item(false), item(false)]; t.S.scan.restart(1000); t.S.scanEl = null; reset();
+now = 1010; t.frame(now);                              /* 光が進んだだけ (送っていない) */
+seen.stillLight = { at: t.S.windowAt, first: t.S.firstPointer, over: t.S.over };
+reset();
+now = 1900; handlers.scroll();                         /* 知らせの形が分からない = 守る */
 seen.byEvent = { at: t.S.windowAt, first: t.S.firstPointer, over: t.S.over, lastX: t.S.lastX };
+function box(buttons) { return { nodeType: 1, querySelectorAll: function (s) { return s === "[data-dwell]" ? buttons : []; } }; }
+const scrolls = { list: box([{ hidden: false, disabled: false }]), text: box([]), hiddenMore: box([{ hidden: true, disabled: false }]),
+                  disabledOnly: box([{ hidden: false, disabled: true }]), page: doc };
+seen.targets = {};
+Object.keys(scrolls).forEach(function (k, i) {
+  reset();
+  now = 3000 + i; handlers.scroll({ target: scrolls[k] });
+  seen.targets[k] = t.S.windowAt === now;
+});
 console.log(JSON.stringify(seen));
 """).replace("__CARD__", json.dumps(card)))
+    assert out["capture"] is True
     assert out["byLight"] == {"at": 10, "first": True, "over": None}
-    assert out["byEvent"] == {"at": 900, "first": True, "over": None, "lastX": 77}   # 位置は捨てない (見つめて送る動きが続く)
+    assert out["stillLight"] == {"at": -1e9, "first": False, "over": "allow_once"}
+    assert out["byEvent"] == {"at": 1900, "first": True, "over": None, "lastX": 77}   # 位置は捨てない (見つめて送る動きが続く)
+    assert out["targets"] == {"list": True, "text": False, "hiddenMore": False, "disabledOnly": False, "page": True}
 
 
 def test_a_key_press_on_a_page_button_keeps_the_focus_where_the_person_put_it(tmp_path, clock):
@@ -1981,6 +2004,193 @@ console.log(JSON.stringify({ answered: answered, undoAfterAnswer: undoAfterAnswe
     assert out["undoAfterAnswer"] == ["/answer"]
     assert out["restingOnNext"] == ["/answer"]
     assert out["reentered"] == [[False, "dwell"], [True, "dwell"]]
+
+
+def test_closing_the_settings_does_not_press_what_waits_under_the_pointer(tmp_path, clock):
+    """設定の板を閉じた直後、板の裏で置いたままの pointer の下に居た釦は、入り直すまで滞留で押さない (反証役の再現 =
+    閉じた後のこまが pointer の知らせより先に来ると守りが解け、止まったマウスが 1 px 動いた後に約 1 秒で押された)。
+    Esc でも「閉じる」でも、板を開いている間に札が替わっていても同じ。閉じた後に最初に届いた pointer の下の釦も、入り直すまで
+    数えない (板が開いていた間の位置と、その下の物は信じない)。"""
+    a = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("git status")))
+    b = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("npm test")))
+    out = page(tmp_path, r"""
+async function scene(how, swap, first) {
+  const c = await P.boot({ query: "?mode=large&lang=ja&dwell=1" });
+  c.doc().layout = function (e) {
+    if (e.id === "overlay") return { left: 0, top: 0, width: 640, height: 700, z: 50 };
+    if (e.dataset.key === "allow_once") return { left: 0, top: 0, width: 100, height: 100, z: 1 };
+    if (e.dataset.key === "sugg:0") return { left: 200, top: 0, width: 100, height: 100, z: 1 };
+    return null;
+  };
+  c.show(A);
+  await c.run(600, function () { c.pointer(400, 400); });   /* 釦の外 */
+  await c.key("Tab", "Tab");
+  c.$("gear-btn").focus();
+  await c.key("Enter", "Enter");                   /* 設定の板を開く */
+  await c.run(300, function () { c.pointer(40, 40); });     /* 板の上 (裏に「許可」) */
+  if (swap) c.show(B);                             /* 板を開いている間に、板から札が替わった */
+  await c.run(300);                                /* pointer は止まった */
+  if (how === "esc") await c.key("Escape", "Escape");
+  else await c.click(c.$("panel-close"));
+  await c.run(500);                                /* 閉じた後のこまが先 (pointer は止まったまま) */
+  c.pointer(first[0], first[1]);                   /* 0.5 秒後に最初の知らせ */
+  await c.run(2500);
+  const resting = c.answers().length;
+  await c.run(300, function () { c.pointer(400, 400); });
+  await c.run(1300, function () { c.pointer(first[0] + 1, first[1]); });   /* 入り直す */
+  return { resting: resting, open: !c.$("overlay").hidden, reentered: c.answers().length };
+}
+console.log(JSON.stringify({ esc: await scene("esc", false, [41, 40]), close: await scene("close", false, [41, 40]),
+                             swapped: await scene("esc", true, [41, 40]), movedAway: await scene("esc", false, [240, 40]) }));
+""", A=a, B=b)
+    want = {"resting": 0, "open": False, "reentered": 1}
+    assert out == {"esc": want, "close": want, "swapped": want, "movedAway": want}
+
+
+def test_scrolling_only_the_text_does_not_hold_back_the_next_dwell(tmp_path, clock):
+    """本文の枠・和紙だけが送られた時 (押せる物は動いていない) は、次に見た釦を入り直さずに滞留で押せる (反証役の再現 =
+    本文から「許可」へ視線を移す途中で本文が数 px 送られると、見続けても押せなかった・扇で「▼ 続き」の 0.3 秒後に羽根へ
+    着くと押せなかった)。逆向き: 押せる釦を含む列が送られた時は、今までどおり pointer の下に来た釦を入り直すまで押さない
+    (要素の送りは泡立たない = capture の聞き手だけが受ける)。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+let c = await P.boot({ query: "?mode=large&lang=ja&dwell=1" });
+c.$("card").scrollHeight = 3000; c.$("card").clientHeight = 300;
+c.doc().layout = function (e) {
+  if (e.id === "card") return { left: 0, top: 0, width: 600, height: 300, z: 0 };
+  if (e.dataset.key === "allow_once") return { left: 0, top: 320, width: 300, height: 100, z: 1 };
+  return null;
+};
+c.show(A);
+await c.run(1000, function () { c.pointer(100, 150); });        /* 本文の真ん中で読む */
+await c.run(200, function () { c.pointer(100, 285); });         /* 下寄りの帯を通る = 本文が送られる */
+const textMoved = c.$("card").scrollTop > 0;
+let arrived = c.clock.now;
+await c.run(1500, function () { c.pointer(100, 370); });        /* 「許可」を見続ける */
+out.text = { moved: textMoved, after: c.answers().map(function (s) { return Math.round(s.at - arrived); }) };
+c = await P.boot({ query: "?mode=small&lang=ja&dwell=1" });
+c.$("copy").scrollHeight = 900; c.$("copy").clientHeight = 180;
+c.doc().layout = function (e) {
+  if (e.id === "more") return { left: 0, top: 600, width: 200, height: 40, z: 1 };
+  if (e.dataset.key === "allow_once") return { left: 0, top: 0, width: 100, height: 100, z: 1 };
+  return null;
+};
+c.show(A);
+await c.run(600, function () { c.pointer(400, 400); });
+await c.run(450, function () { c.pointer(50, 610); });          /* 「▼ 続き」に載せる = 0.35 秒で 1 画面送る */
+const paged = c.$("copy").scrollTop > 0;
+await c.run(300, function () { c.pointer(400, 400); });         /* 和紙を 0.3 秒読む */
+arrived = c.clock.now;
+await c.run(1500, function () { c.pointer(50, 50); });          /* 羽根へ */
+out.fan = { paged: paged, after: c.answers().map(function (s) { return Math.round(s.at - arrived); }) };
+c = await P.boot({ query: "?mode=large&lang=ja&dwell=1" });
+c.$("opts").scrollHeight = 2000; c.$("opts").clientHeight = 400;
+let shift = 0;
+c.doc().layout = function (e) {                                 /* 「許可」は置いたままの pointer の少し下 */
+  return e.dataset.key === "allow_once" ? { left: 0, top: 200 - shift, width: 300, height: 90, z: 1 } : null;
+};
+c.show(A);
+await c.run(600, function () { c.pointer(400, 400); });
+await c.run(1000, function () { c.pointer(50, 195); });         /* 釦の上の隙間に置いたまま */
+c.$("opts").scrollTop = 50; shift = 50;                         /* ホイールで列が送られた = pointer の下に「許可」が来た */
+await c.run(3000, function () { c.pointer(50, 195); });         /* ブラウザが配る、下の物が替わった知らせ */
+out.list = { resting: c.answers().length };
+await c.run(300, function () { c.pointer(400, 400); });
+await c.run(1300, function () { c.pointer(50, 195); });         /* 入り直す */
+out.list.reentered = choices(c);
+console.log(JSON.stringify(out));
+""", A=a)
+    for name in ("text", "fan"):
+        after = out[name]["after"]
+        assert len(after) == 1 and 1000 <= after[0] <= 1040, out          # 着いてから 1 秒 = 入り直さずに押せる
+    assert out["text"]["moved"] is True and out["fan"]["paged"] is True
+    assert out["list"] == {"resting": 0, "reentered": [{"type": "allow_once"}]}
+
+
+def test_a_scan_step_that_scrolls_nothing_keeps_the_dwell(tmp_path, clock):
+    """滞留と走査を両方入れた列で、走査の光が進んでも列が送られなかった時 (列が窓に収まる) は、見に来た釦の滞留を捨てない
+    (反証役の再現 = 光が進むたびに送りの守りが掛かり、止まった pointer で釦を見続けても押せなかった)。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+const c = await P.boot({ query: "?mode=large&lang=ja&dwell=1&scan=1.5" });
+c.doc().layout = function (e) {
+  if (e.dataset.key === "allow_once") return { left: 0, top: 0, width: 300, height: 100, z: 1 };
+  if (e.dataset.key === "deny") return { left: 0, top: 120, width: 300, height: 100, z: 1 };
+  return null;
+};
+c.show(A);
+await c.run(100);
+c.pointer(400, 400);                               /* 窓の中の釦の外に、止まったマウス */
+await c.run(3100);                                 /* 止まって 1.5 秒で走査が回る (光は 1.5 秒ごとに次へ) */
+const lit = c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; });
+c.pointer(50, 50);                                 /* 光が進んだ直後に「許可」へ動かして置く (以後は動かさない) */
+const arrived = c.clock.now;
+await c.run(2000);
+console.log(JSON.stringify({ lit: lit, after: c.answers().map(function (s) { return [Math.round(s.at - arrived), s.body.by]; }) }));
+""", A=a)
+    assert out["lit"] == ["deny"], out
+    assert len(out["after"]) == 1 and 1000 <= out["after"][0][0] <= 1040 and out["after"][0][1] == "dwell", out
+
+
+def test_the_undo_light_comes_on_when_undo_can_be_pressed(tmp_path, clock):
+    """走査の光は、取り消しが押せるようになった時から取り消しに当たる (光っていない物は押せない)。猶予の短い板 (--undo-ms 300)
+    では猶予の半分の 0.15 秒から、既定の猶予では 0.4 秒から (反証役の再現 = 猶予 300 ms の間、光は 1 度も出ないのに、
+    スイッチの押しは 0.15 秒から取り消しになった)。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const ms of [300, 3000]) {
+  const c = await P.boot({ query: "?mode=small&lang=ja&scan=0.5", undoMs: ms });
+  c.show(A);
+  await c.run(500);
+  await c.key("1", "Digit1");
+  c.show(deciding(A, null, ms / 1000));            /* 板が受けた = 猶予の内 */
+  const from = c.clock.now;
+  let first = null;
+  for (let i = 0; i < 60 && first === null; i++) {
+    await c.run(8);
+    if (c.$("undo-btn").classList.contains("scan")) first = Math.round(c.clock.now - from);
+  }
+  out[ms] = first;
+}
+console.log(JSON.stringify(out));
+""", A=a)
+    assert out["300"] is not None and 150 <= out["300"] <= 175, out
+    assert out["3000"] is not None and 400 <= out["3000"] <= 425, out
+
+
+def test_the_close_button_of_the_settings_answers_enter_and_space(tmp_path, clock):
+    """設定の板の「閉じる」に焦点が在る時は、Enter / Space で閉じる (反証役の再現 = Esc とマウスでしか閉じなかった)。
+    板の中の選択の上の Enter には触らない (板は開いたまま)。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const key of ["Enter", " "]) {
+  const c = await P.boot({ query: "?mode=small&lang=ja" });
+  c.show(A);
+  await c.run(500);
+  await c.key("Tab", "Tab");
+  c.$("gear-btn").focus();
+  await c.key("Enter", "Enter");                   /* 設定の板が開き、焦点は「閉じる」 */
+  const opened = { open: !c.$("overlay").hidden, focus: c.active() };
+  await c.run(600);
+  await c.key(key, key === " " ? "Space" : "Enter");
+  out[key === " " ? "space" : "enter"] = { opened: opened, closed: c.$("overlay").hidden, sent: c.answers().length };
+}
+const d = await P.boot({ query: "?mode=small&lang=ja" });
+d.show(A);
+await d.run(500);
+await d.key("Tab", "Tab");
+d.$("gear-btn").focus();
+await d.key("Enter", "Enter");
+d.$("panel-body").querySelector("select").focus();
+await d.key("Enter", "Enter");
+out.select = { open: !d.$("overlay").hidden, focus: d.active() };
+console.log(JSON.stringify(out));
+""", A=a)
+    want = {"opened": {"open": True, "focus": "close"}, "closed": True, "sent": 0}
+    assert out == {"enter": want, "space": want, "select": {"open": True, "focus": "select"}}
 
 
 def test_a_drag_into_a_blade_released_within_one_frame_is_not_pressed(tmp_path, clock):

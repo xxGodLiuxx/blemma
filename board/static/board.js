@@ -557,6 +557,18 @@
     releaseDwell();
   }
 
+  /* scroll の知らせ (capture = 要素の送りは泡立たない)。守るのは、文書そのものの送りと、押せる的 (滞留の釦) を含む列の送りだけ。
+     押せる的を含まない枠 (本文・和紙) の送りは素通し = 本文から釦へ視線を移す途中で本文が少し送られても、次に見た釦は
+     入り直さずに押せる (押せる物は動いていない) */
+  function onScroll(e) {
+    var box = e && e.target;
+    if (box && box.nodeType === 1 && box.querySelectorAll) {
+      var pressable = Array.prototype.some.call(box.querySelectorAll("[data-dwell]"), function (b) { return !b.hidden && !b.disabled; });
+      if (!pressable) return;
+    }
+    scrolled();
+  }
+
   /* 扇の周りを透かす = 題の帯と和紙は四角のまま、扇の外の角だけを窓から切る */
   function pushShape() {
     if (S.mode !== "small" || viewWindow !== window || S.shapeBusy) return;   /* 前の頼みの返事を待つ = 順が入れ替わらない */
@@ -1078,7 +1090,10 @@
     S.held[code] = true;
     S.lastInput = "key";
     if (S.overlay) {
-      if (e.key === "Escape") { e.preventDefault(); closeOverlay(); }
+      /* 板の中の選択や入力の Enter / Space には触らない。焦点が「閉じる」に在る時だけ、Enter / Space で閉じる
+         (ブラウザが鍵から起こす click は、直前に鍵が動いたので onClick が数えない) */
+      var onClose = (e.key === "Enter" || e.key === " ") && viewDocument.activeElement === $("panel-close");
+      if (e.key === "Escape" || onClose) { e.preventDefault(); closeOverlay(); }
       return;
     }
     var active = viewDocument.activeElement && viewDocument.activeElement.closest
@@ -1197,7 +1212,7 @@
       else if (S.scanPaused) { S.scanPaused = false; S.scan.restart(Math.max(now, S.genAt + scanQuiet() || 0)); }
       if (card && card.state === "deciding") {
         var u = $("undo-btn");                               /* 猶予のうち = 走査を止め、次の押下 = 取り消す */
-        target = u.hidden || now - S.genAt < SETTLE_MS ? null : u;   /* 出たばかりの間は光らせない (press の SETTLE_MS) */
+        target = u.hidden || now - S.genAt < settleFor("undo") ? null : u;   /* 出たばかりの間は光らせない = 押せる時から光る (press と同じ間) */
       } else if (card && card.state === "shown" && !S.overlay && !S.answering && inputActive() && !moving) {
         var i = S.scan.index(now, S.scanList.length);
         target = i >= 0 ? S.scanList[i] : null;
@@ -1207,8 +1222,12 @@
         if (target) {
           target.classList.add("scan");
           if (!S.fan && target.scrollIntoView) {            /* 列が窓より長い札 = 光を見える所へ送る */
+            var was = target.getBoundingClientRect();
             target.scrollIntoView({ block: "nearest" });
-            scrolled();                                     /* 送られて pointer の下に来た釦を、滞留で押さない */
+            var to = target.getBoundingClientRect();
+            /* 実際に送った時だけ (知らせを待たずに) 守る = 送られて pointer の下に来た釦を、滞留で押さない。
+               窓に収まる列で光が進むだけの時は守らない (見ている釦の滞留を光のたびに捨てない) */
+            if (to.top !== was.top || to.left !== was.left) scrolled();
           }
         }
         S.scanEl = target;
@@ -1271,7 +1290,7 @@
     d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; S.down = true; releaseDwell(); }), { passive: true, capture: true });
     d.addEventListener("pointerup", active(function () { S.down = false; releaseDwell(); }), { passive: true, capture: true });
     d.addEventListener("pointercancel", active(function () { S.down = false; releaseDwell(); }), { passive: true, capture: true });
-    d.addEventListener("scroll", active(scrolled), { passive: true, capture: true });
+    d.addEventListener("scroll", active(onScroll), { passive: true, capture: true });
     d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.overMore = false; S.lastX = -1; S.scrollRest = 0; }));
     d.addEventListener("pointerdown", active(startDrag));
     d.addEventListener("pointerup", active(endDrag));
@@ -1346,8 +1365,12 @@
   function closeOverlay() {
     S.overlay = null;
     $("overlay").hidden = true;
-    S.dwell.reset();
-    S.dwell.block(keyAtPointer());
+    /* 板の裏で置いたままの pointer の下に居た釦は、入り直すまで数えない (板を開いている間に札が替わっていても同じ)。
+       守る釦と S.over を揃える (揃えないと、次のこまの滞留の見張りが守りを解いてしまう)。閉じた後に最初に届いた pointer の
+       下の釦も同じ = 板が開いていた間の位置と、その下の物は信じない */
+    S.over = keyAtPointer();
+    S.firstPointer = true;
+    releaseDwell();
     fitWindow();
   }
 

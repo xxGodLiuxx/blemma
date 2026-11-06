@@ -453,6 +453,35 @@ async function closeCard(id) {
   await call('Emulation.setEmulatedMedia',{features:[{name:'forced-colors',value:'none'}]});
   await mouse({x:5,y:5});
   await closeCard(longRule);
+  // A wheel scrolls an element: in a wide window the list of a card that does not fit the fan is its own scrolling box,
+  // and the scroll event of an element does not bubble (only a capturing listener hears it). A pointer resting in a gap
+  // must not, by dwell, press the button the wheel brings under it.
+  await call('Emulation.setDeviceMetricsOverride',{width:940,height:370,deviceScaleFactor:1,mobile:false});
+  await open('mode=small&lang=ja&dwell=0.5');
+  const wheel=(await api('/ask',{kind:'elicitation',from:{cwd:'repo'},payload:{head:'blemma',text:'どれにしますか',fields:[{name:'choice',title:'どれにしますか',multi:false,required:true,
+    options:Array.from({length:12},(_,i)=>({label:'選択肢 '+(i+1)+' — 長めの文を入れて釦の高さを確かめる',value:String(i+1)}))}]}})).id;
+  await until(`document.querySelectorAll('#opts .btn').length >= 12 && ${READY}`);
+  const grid=await evaluate(`(() => { const o=document.querySelector('#opts'), r=o.getBoundingClientRect();
+    const bs=Array.from(o.querySelectorAll('.btn')).map(b=>{const q=b.getBoundingClientRect();return {top:q.top,bottom:q.bottom,left:q.left,right:q.right};});
+    return {scrolls:o.scrollHeight>o.clientHeight+2 && getComputedStyle(o).overflowY==='auto', top:r.top, bottom:r.bottom, bs}; })()`);
+  assert(grid.scrolls,'In a wide window the list is its own scrolling box: '+JSON.stringify(grid));
+  const column=grid.bs.filter(b=>b.left===grid.bs[0].left && b.top>=grid.top && b.bottom<=grid.bottom).sort((a,b)=>a.top-b.top);
+  let gapAt=null;
+  for (let i=0;i+1<column.length&&!gapAt;i++) { const g=column[i+1].top-column[i].bottom; if (g>=4) gapAt={x:(column[i].left+column[i].right)/2,y:column[i].bottom+g/2,pitch:column[i+1].top-column[i].top}; }
+  assert(gapAt,'The list has a gap between two rows to rest the pointer in: '+JSON.stringify(grid));
+  await mouse({x:gapAt.x,y:gapAt.y});
+  await sleep(800);                              // Resting in the gap presses nothing.
+  assert.equal((await api('/pending')).card.state,'shown','Resting in a gap presses nothing');
+  await call('Input.dispatchMouseEvent',{type:'mouseWheel',x:gapAt.x,y:gapAt.y,deltaX:0,deltaY:Math.round(gapAt.pitch/2)});
+  await until(`document.querySelector('#opts').scrollTop>0`);
+  await sleep(300);
+  assert(await evaluate(`!!document.elementFromPoint(${gapAt.x},${gapAt.y})?.closest('#opts .btn')`),'The wheel brought a button under the resting pointer');
+  await sleep(1500);                             // Three dwell times with the pointer left where it was.
+  assert.equal((await api('/pending')).card.state,'shown','A button the wheel scrolls in under a resting pointer is not pressed');
+  await key('Escape');
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  await sleep(1050); await api('/wait?id='+wheel);
+  await until(`document.body.classList.contains('idle')`);
   // The text size fitted to the window survives the replies of window calls (clear=on asks the board to cut the window).
   await call('Emulation.setDeviceMetricsOverride',{width:900,height:1000,deviceScaleFactor:1,mobile:false});
   await open('mode=small&lang=ja&dwell=0&clear=on&font=1.3');
