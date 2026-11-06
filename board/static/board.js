@@ -457,8 +457,8 @@
   }
 
   /* 待機中は閉じた扇の小さな窓にして、札が来たら元の大きさへ開く (app の窓だけ。普通のタブでは大きさは変わらない) */
-  var WIDGET = [178, 280];
-  var CLOSED = [[14, 4], [45, 0], [76, 4], [63, 290], [45, 298], [27, 290]];
+  var WIDGET = [320, 120];
+  var CLOSED = [[4, 14], [0, 45], [4, 76], [290, 63], [298, 45], [290, 27]];     /* 閉じた扇は横に寝かせて控える */
   function fitWindow() {
     if (S.mode !== "small" || viewWindow !== window || !isApp()) return;
     var idle = !S.card && !S.overlay;
@@ -483,7 +483,7 @@
     var shape = null;
     var side = (window.outerWidth - window.innerWidth) / 2, top = window.outerHeight - window.innerHeight - side;
     if (S.options.clear === "on" && !S.card && !S.overlay && S.options.scale === 1) {
-      var c = $("closed").querySelector("svg").getBoundingClientRect(), z = c.height / 300;   /* 待機中 = 閉じた扇だけ */
+      var c = $("closed").querySelector("svg").getBoundingClientRect(), z = c.width / 300;   /* 待機中 = 閉じた扇だけ */
       shape = { dpr: window.devicePixelRatio, left: side, top: top, keep: 0, bare: true, rects: [],
                 polygon: CLOSED.map(function (p) { return [c.left + p[0] * z, c.top + p[1] * z]; }) };
     } else if (S.options.clear === "on" && S.fan && !S.overlay && S.options.scale === 1 && S.fanOutline) {

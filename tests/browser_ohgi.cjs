@@ -233,7 +233,7 @@ async function closeCard(id) {
   await until(`window.__sizes.length>=1`);
   await closeCard(again);
   await until(`window.__sizes.length>=2`);
-  assert.deepEqual((await evaluate(`window.__sizes[window.__sizes.length-1]`)),[178,280],'Waiting shrinks to the closed fan');
+  assert.deepEqual((await evaluate(`window.__sizes[window.__sizes.length-1]`)),[320,120],'Waiting shrinks to the closed fan');
   await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
   await open();
   await click('#gear-btn');
