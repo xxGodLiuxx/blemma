@@ -652,6 +652,7 @@
     S.pointerType = e.pointerType || "mouse";
     S.lastX = e.clientX;
     S.lastY = e.clientY;
+    S.pointerAt = performance.now();
     S.over = dwellKeyOf(e.target);
     if (S.firstPointer) { S.dwell.block(S.over); S.firstPointer = false; }
     if (S.over) spotlight(S.btns[S.over]);
@@ -752,10 +753,15 @@
     if (S.scanMs > 0) {
       var card = S.card;
       var target = null;
+      /* 窓の中で pointer が動いている間は光を回さない = 視線で読み押す人の邪魔をしない。
+       * pointer が止まっているか窓の外なら回る (スイッチの人・OS の鍵盤を見ている時)。 */
+      var moving = now - (S.pointerAt || -1e9) < 1500;
+      if (moving) S.scanPaused = true;
+      else if (S.scanPaused) { S.scanPaused = false; S.scan.restart(now); }
       if (card && card.state === "deciding") {
         var u = $("undo-btn");                               /* 猶予のうち = 走査を止め、次の押下 = 取り消す */
         target = u.hidden ? null : u;
-      } else if (card && card.state === "shown" && !S.overlay && !S.answering && inputActive()) {
+      } else if (card && card.state === "shown" && !S.overlay && !S.answering && inputActive() && !moving) {
         var i = S.scan.index(now, S.scanList.length);
         target = i >= 0 ? S.scanList[i] : null;
       }
@@ -763,7 +769,7 @@
         if (S.scanEl) S.scanEl.classList.remove("scan");
         if (target) target.classList.add("scan");
         S.scanEl = target;
-        spotlight(target);
+        if (target) spotlight(target);
       }
     }
     gazeScroll(now);
