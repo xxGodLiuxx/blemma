@@ -994,9 +994,11 @@
       .then(function (r) {
         if (r.status === 200) return;
         giveBack(card.id, sent, batches);
-        /* 黙って答えが渡ると、取り消せたと取り違える。ほかの頁が先に取り消した時 (札は選ぶ所へ戻っている) は、
-           答えは渡っていない = 「間に合わなかった」とは言わず、取り直した表示に任せる */
-        if (r.status === 409 && !(r.data && r.data.state === "shown")) showNotice(L().undo_late);
+        /* 「間に合わなかった (答えは渡りました)」と言うのは、答えが実際に渡った時 (板が添える終わり方が answered か released)
+           だけ。ほかの頁が先に取り消した (shown)・まだ渡す途中 (deciding)・時間切れ・接続の終了・終わり方が分からない時は
+           言わず、取り直した表示と終わりの文に任せる = 渡っていない答えを渡ったと読ませない */
+        var end = r.data && r.data.end;
+        if (r.status === 409 && (end === "answered" || end === "released")) showNotice(L().undo_late);
         kick();
       }, function () {
         giveBack(card.id, sent, batches);

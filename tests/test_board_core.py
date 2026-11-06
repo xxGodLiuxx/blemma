@@ -251,6 +251,38 @@ def test_refused_undo_tells_whether_the_card_is_back(clock):
     assert b.undo("no-such-card", "click", 1) == (409, {"error": "not_undoable"})
 
 
+def test_refused_undo_says_how_an_ended_card_ended(clock):
+    """もう終わった札への取り消しの 409 には、/answer と同じく終わり方を添える = 頁は「答えは渡りました」を、答えが実際に
+    渡った時 (answered・released) だけ出せる (反証役の再現 = 時間切れ・切断の後の 409 に何も添えず、頁が「渡りました」と出した)。
+    判定の前に時間で進む物を確かめる = 接続が終わったはずの札を生きているとは答えず、取り消しも受けない。"""
+    b = new_board(clock)                             # 答えを渡し終えた札
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    assert b.answer(a, seq, {"type": "allow_once"}, "click", 1)[0] == 200
+    clock.advance(3.01)
+    _, _, card = b.wait(a)
+    b.delivered(card, True)
+    assert b.undo(a, "click", 1) == (409, {"error": "not_undoable", "end": "answered"})
+    b = new_board(clock)                             # 期限の直前に答え、1 枚目の頁が期限の後に取り消した (expired)
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    clock.advance(299.0)
+    keepalive(b, a)
+    assert b.answer(a, seq, {"type": "allow_once"}, "click", 1)[0] == 200
+    clock.advance(1.5)
+    assert b.undo(a, "click", 1) == (200, {"state": "expired"})
+    assert b.undo(a, "click", 1) == (409, {"error": "not_undoable", "end": "expired"})   # 2 枚目の頁
+    b = new_board(clock)                             # hook が居なくなった後に答えた札 (最後の /wait から 4 秒)
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    keepalive(b, a)
+    clock.advance(4.0)
+    assert b.answer(a, seq, {"type": "allow_once"}, "click", 1)[0] == 200
+    clock.advance(1.5)                               # 最後の /wait から 5.5 秒 (接続の終了は 5 秒)・猶予の内
+    assert b.undo(a, "click", 1) == (409, {"error": "not_undoable", "end": "disconnected"})
+    assert card_of(b, a).state == "disconnected"
+
+
 def test_answer_at_deadline_is_expired_and_409(clock):
     b = new_board(clock)
     a = ask(b)

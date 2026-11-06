@@ -559,13 +559,18 @@ class Board:
     def undo(self, cid: Any, by: Any, presses: Any, press_batches: Any = None) -> Tuple[int, dict]:
         with self.cond:
             now = self.clock()
+            self._advance(now)                          # 接続の終了・期限を先に確かめる (終わったはずの札を生きていると答えない)
             head = self._head()
             if head is None or head.id != cid or head.state != "deciding" or head.delivering \
                     or head.ready or head.undo_until is None or now >= head.undo_until:
-                # 同じ札がまだ頭に居る時は、今の状態を添える = 頁が「ほかの頁が先に取り消した (shown)」と
-                # 「答えが渡る (deciding)」を見分けられる。札が替わった後・無い時は添えない。
+                # 同じ札がまだ頭に居る時は今の状態を、もう終わった札には終わり方を添える = 頁が「ほかの頁が先に取り消した
+                # (shown)」「答えが渡る途中 (deciding)」「渡った (answered・released)」「渡っていない (expired・disconnected)」を
+                # 見分けられる (/answer の 409 と同じ形)。知らない札には添えない。
                 if head is not None and head.id == cid:
                     return 409, {"error": "not_undoable", "state": head.state}
+                d = self.done.get(cid) if isinstance(cid, str) else None
+                if d is not None:
+                    return 409, {"error": "not_undoable", "end": d.end}
                 return 409, {"error": "not_undoable"}
             by_s = by if by in INPUTS else "click"
             batches = _press_batches_of(by_s, presses, press_batches)

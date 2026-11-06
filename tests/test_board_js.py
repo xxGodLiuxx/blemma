@@ -1036,26 +1036,32 @@ setTimeout(function () {
 
 
 def test_undo_that_came_too_late_says_so(tmp_path, clock):
-    """取り消しが間に合わなかった (409) 時は、黙って答えを渡さずに知らせる。"""
+    """取り消しが間に合わず、答えが実際に渡った時 (板の 409 が終わり方 answered か released を添える) は、黙らずに知らせる。"""
     _, card = _board(clock)
     out = node(tmp_path, (PAGE_SETUP + r"""
-const t = loadPage(function (path, opt) {
-  sent.push(path);
-  return Promise.resolve(reply(409, { error: "too_late" }));
-});
-show(t);
-t.S.lang = "ja";
-t.S.card = Object.assign({}, card, { state: "deciding" });
-t.S.undoAt = performance.now() + 3000;
-t.press("undo", "key");
-setTimeout(function () { console.log(JSON.stringify({ sent: sent, notice: t.S.notice || "" })); }, 30);
+function run(body) {
+  const t = loadPage(function (path, opt) {
+    sent.push(path);
+    return Promise.resolve(reply(409, body));
+  });
+  show(t);
+  t.S.lang = "ja";
+  t.S.card = Object.assign({}, card, { state: "deciding" });
+  t.S.undoAt = performance.now() + 3000;
+  t.press("undo", "key");
+  return t;
+}
+const answered = run({ error: "not_undoable", end: "answered" }), released = run({ error: "not_undoable", end: "released" });
+setTimeout(function () { console.log(JSON.stringify({ sent: sent, answered: answered.S.notice || "", released: released.S.notice || "" })); }, 30);
 """).replace("__CARD__", json.dumps(card)))
-    assert out == {"sent": ["/undo"], "notice": "取り消しは間に合いませんでした (答えは渡りました)"}
+    late = "取り消しは間に合いませんでした (答えは渡りました)"
+    assert out == {"sent": ["/undo", "/undo"], "answered": late, "released": late}
 
 
 def test_undo_refused_because_another_page_undid_it_is_not_called_late(tmp_path, clock):
-    """ほかの頁が先に取り消した時の 409 (板が「札は選ぶ所へ戻っている」と添える) では、「答えは渡りました」と言わない
-    (外部のレビューの再現 = 2 枚の頁から続けて取り消すと、後の頁が、渡っていない答えを渡ったと表示した)。"""
+    """答えが渡っていない 409 では「答えは渡りました」と言わない = ほかの頁が先に取り消した (shown・外部のレビューの再現)・
+    まだ渡す途中 (deciding)・時間切れ (expired)・接続の終了 (disconnected・反証役の再現)・終わり方が分からない (札が替わった後の
+    形と、板が返さない形)。取り直した表示と終わりの文に任せる。"""
     _, card = _board(clock)
     out = node(tmp_path, (PAGE_SETUP + r"""
 function run(body) {
@@ -1067,10 +1073,16 @@ function run(body) {
   t.press("undo", "key");
   return t;
 }
-const undone = run({ error: "not_undoable", state: "shown" }), delivering = run({ error: "not_undoable", state: "deciding" });
-setTimeout(function () { console.log(JSON.stringify({ undone: undone.S.notice || "", delivering: delivering.S.notice || "" })); }, 30);
+const pages = { undone: run({ error: "not_undoable", state: "shown" }), delivering: run({ error: "not_undoable", state: "deciding" }),
+                expired: run({ error: "not_undoable", end: "expired" }), disconnected: run({ error: "not_undoable", end: "disconnected" }),
+                unknown: run({ error: "not_undoable" }), other: run({ error: "too_late" }) };
+setTimeout(function () {
+  const out = {};
+  Object.keys(pages).forEach(function (k) { out[k] = pages[k].S.notice || ""; });
+  console.log(JSON.stringify(out));
+}, 30);
 """).replace("__CARD__", json.dumps(card)))
-    assert out == {"undone": "", "delivering": "取り消しは間に合いませんでした (答えは渡りました)"}
+    assert out == {"undone": "", "delivering": "", "expired": "", "disconnected": "", "unknown": "", "other": ""}
 
 
 def test_a_failed_watch_is_not_kept_as_the_target_of_a_kick(tmp_path):
