@@ -320,6 +320,7 @@ def test_fan_geometry_fixed_exits_numbering_and_minimum_width(tmp_path, n):
     assert all(p["start"] >= -84 and p["end"] <= 84.0001 for p in parts)           # 要の下へ回り込まない = 円にならない
     assert all(abs(((p["label"][0] - out["cx"]) ** 2 +
                     (p["label"][1] - out["cy"]) ** 2) ** .5 - out["middle"]) < .001 for p in parts)
+    assert out["inner"] + 60 <= out["press"] < out["middle"] < out["outer"]        # 書の帯は押す帯の内側
     assert len(out["ribs"]) == n + 3
 
 
@@ -412,4 +413,47 @@ console.log(JSON.stringify({
     assert out["idle"] == "Claude が次の指示を待っています (端末へ)"
     assert out["ja"].endswith("日本語の補足")
     assert out["en"] == "Claude needs your permission"
+
+
+def test_fan_blades_carry_one_mark_only(tmp_path):
+    """羽根は一文字だけ = 全文は見つめた時に上へ出す。"""
+    out = node(tmp_path, r"""
+console.log(JSON.stringify({
+  ja: [0, 1, 5].map(i => core.fanMark(i, 'option', 'ja')),
+  fixed: [core.fanMark(undefined, 'fixed', 'ja'), core.fanMark(undefined, 'terminal', 'ja')],
+  en: [core.fanMark(0, 'option', 'en'), core.fanMark(undefined, 'fixed', 'en'), core.fanMark(undefined, 'terminal', 'en')],
+}));
+""")
+    assert out == {"ja": ["一", "二", "六"], "fixed": ["止", "端"], "en": ["1", "Esc", "0"]}
+
+
+def test_fan_script_fits_the_band_and_never_loses_the_full_text_silently(tmp_path):
+    out = node(tmp_path, r"""
+const lens = [360, 280];
+console.log(JSON.stringify([core.fanScript('許可 (今回)', lens), core.fanScript('あ'.repeat(24), lens), core.fanScript('あ'.repeat(40), lens)]));
+""")
+    assert out[0]["size"] == 28 and out[0]["lines"][1] == "" and not out[0]["clipped"]
+    assert out[1]["size"] == 20 and "".join(out[1]["lines"]) == "あ" * 24 and not out[1]["clipped"]
+    assert out[2]["clipped"] and out[2]["lines"][1].endswith("…")
+
+
+def test_newer_work_is_not_hidden_by_an_old_done(tmp_path):
+    out = node(tmp_path, r"""
+console.log(JSON.stringify([
+  core.priorityState([{state:'done',ago:3600,stale:false},{state:'working',ago:0,stale:false}]).state,
+  core.priorityState([{state:'working',ago:600,stale:false},{state:'done',ago:5,stale:false}]).state,
+  core.priorityState([{state:'working',ago:0,stale:false},{state:'waiting on you',ago:900,stale:false}]).state,
+]));
+""")
+    assert out == ["working", "done", "waiting on you"]
+
+
+def test_decline_stays_available_on_ask_board_outside_the_blades(tmp_path):
+    """MCP の決まり = 断ると閉じるの両方。ask_board でも断るは残し、羽根の数には数えない。"""
+    out = node(tmp_path, r"""
+const card = {kind:'elicitation', payload:{head:'blemma', fields:[{required:true, options:Array.from({length:6},(_, i)=>({label:'x'+i}))}]}};
+const ui = core.newUi(); const m = core.buildScreen(card, ui, 'ja');
+console.log(JSON.stringify({keys:m.options.map(o=>o.key), fits:core.fanEligible(card, ui, m)}));
+""")
+    assert "decline" in out["keys"] and out["fits"] is True
 

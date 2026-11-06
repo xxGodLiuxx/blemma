@@ -32,7 +32,7 @@
       set_lang: "言葉", set_sound: "音", off: "切", on: "入", auto: "自動",
       set_mode: "表示", set_scale: "全体の倍率", set_font: "字の倍率", set_theme: "配色", set_desc: "解説",
       set_key: "スイッチのキー", set_trail: "視線の点", small: "扇 (OhGi)", large: "大きな板",
-      light: "明るい", dark: "暗い", contrast: "高コントラスト", pip: "常に手前", pip_back: "元の窓へ",
+      to_light: "明るい配色へ", to_dark: "暗い配色へ", light: "明るい", dark: "暗い", contrast: "高コントラスト", pip: "常に手前", pip_back: "元の窓へ",
       pip_error: "常に手前を開けませんでした", idle_line: "Claude が訊くと、ここに表示します",
       no_token: "token がありません。server.py の端末に出た URL (#t= つき) で開いてください",
       bad_token: "token が違います。server を起こし直した時は、新しい URL で開いてください",
@@ -81,7 +81,7 @@
       set_lang: "Language", set_sound: "Sound", off: "off", on: "on", auto: "auto",
       set_mode: "View", set_scale: "Overall scale", set_font: "Text scale", set_theme: "Theme", set_desc: "Descriptions",
       set_key: "Switch key", set_trail: "Pointer trail", small: "OhGi", large: "Large board",
-      light: "Light", dark: "Dark", contrast: "High contrast", pip: "Always on top", pip_back: "Return to window",
+      to_light: "Switch to light", to_dark: "Switch to dark", light: "Light", dark: "Dark", contrast: "High contrast", pip: "Always on top", pip_back: "Return to window",
       pip_error: "Could not open always on top", idle_line: "Questions from Claude appear here",
       no_token: "No token. Open the URL (with #t=) printed by server.py",
       bad_token: "Wrong token. If the server was restarted, open the new URL",
@@ -333,16 +333,20 @@
   function fanEligible(card, ui, screen) {
     if (!card || !ui || !screen || screen.summary) return false;
     if (card.kind !== "permission" && (steps(card).length !== 1 || needConfirm(card) || ui.step !== 0)) return false;
-    return screen.options.length >= 2 && screen.options.length <= 6;
+    var blades = screen.options.filter(function (o) { return !o.aux; }).length;   /* 断るなどの補助は羽根の外 */
+    return blades >= 2 && blades <= 6;
   }
 
   /* 折り扇 = 要 (かなめ) を下に置き、骨が左から右へ開く。左端 = 止める・右端 = 端末で答える (どの n でも動かない)。
-   * 間に 1 番から左から右へ。半径の中ほどの幅を 84 CSS px 以上に保つ (足りない時は小さくせず扇を大きくする)。 */
+   * 地紙は内外 2 段。外の帯 = 押す羽根 (一文字)・内の帯 = 押せない書の帯 (見つめた羽根の全文が弧に沿って出る)。
+   * 全文を押せる所に書くと、読む視線が他の羽根を押す = 読む所と押す所を分ける。
+   * 羽根の字の位置で幅 84 CSS px 以上を保つ (足りない時は小さくせず扇を大きくする)。 */
   function fanLayout(n) {
     if (!Number.isInteger(n) || n < 2 || n > 6) return null;
     var total = n + 2, spread = 168, step = spread / total, first = -spread / 2;
-    var depth = 150, middle = Math.max(190, Math.ceil(84 / (2 * Math.sin(step * Math.PI / 360))));
-    var inner = middle - depth / 2, outer = inner + depth;
+    var band = 100, script = 90;
+    var middle = Math.max(210, Math.ceil(84 / (2 * Math.sin(step * Math.PI / 360))));
+    var outer = middle + band / 2, press = outer - band, inner = press - script, depth = band;
     var width = 2 * (outer + 10), height = outer + 40, cx = width / 2, cy = height - 28;
     function point(r, a) {
       return [cx + r * Math.sin(a * Math.PI / 180), cy - r * Math.cos(a * Math.PI / 180)];
@@ -350,6 +354,14 @@
     function ring(r, a0, a1) {
       var p0 = point(r, a0), p1 = point(r, a1);
       return "M " + p0.join(" ") + " A " + r + " " + r + " 0 0 1 " + p1.join(" ");
+    }
+    function band2(r0, r1, a0, a1) {
+      var points = [], count = Math.ceil((a1 - a0) / 3);
+      for (var j = 0; j <= count; j++) points.push(point(r1, a0 + (a1 - a0) * j / count));
+      for (var k = count; k >= 0; k--) points.push(point(r0, a0 + (a1 - a0) * k / count));
+      return "polygon(" + points.map(function (v) {
+        return (v[0] / width * 100).toFixed(4) + "% " + (v[1] / height * 100).toFixed(4) + "%";
+      }).join(",") + ")";
     }
     var parts = [];
     for (var i = 0; i < total; i++) {
@@ -360,12 +372,7 @@
       parts.push(part);
     }
     parts.forEach(function (p) {
-      var points = [], count = Math.ceil(step / 3);
-      for (var j = 0; j <= count; j++) points.push(point(outer, p.start + step * j / count));
-      for (var k = count; k >= 0; k--) points.push(point(inner, p.start + step * k / count));
-      p.polygon = "polygon(" + points.map(function (v) {
-        return (v[0] / width * 100).toFixed(4) + "% " + (v[1] / height * 100).toFixed(4) + "%";
-      }).join(",") + ")";
+      p.polygon = band2(press, outer, p.start, p.end);
       p.label = point(middle, p.angle);
       p.width = 2 * middle * Math.sin(step * Math.PI / 360);
       p.arc = ring(outer - 7, p.start + 0.8, p.end - 0.8);
@@ -376,25 +383,52 @@
       ribs.push({ main: main, from: point(main ? 8 : 12, a), to: point(main ? outer + 8 : inner, a) });
     }
     var folds = [];
-    for (var f = 0; f < total * 2 + 1; f++) {
-      folds.push({ from: point(inner, first + f * step / 2), to: point(outer, first + f * step / 2) });
+    for (var f = 0; f < total + 1; f++) {
+      folds.push({ from: point(press, first + f * step), to: point(outer, first + f * step) });
     }
+    var radii = [press - 28, press - 60];
     /* 左から右の順は visual で持つ。走査の順は option → 止める → 端末 (今の板と同じ) */
     var visual = parts.slice();
     parts.sort(function (x, y) {
       var rank = function (q) { return q.key === "option" ? q.index : q.key === "fixed" ? 100 : 101; };
       return rank(x) - rank(y);
     });
-    return { width: width, height: height, cx: cx, cy: cy, inner: inner, outer: outer, middle: middle,
-             depth: depth, step: step, parts: parts, visual: visual, ribs: ribs, folds: folds,
-             edges: [ring(outer, first, first + spread), ring(inner, first, first + spread)] };
+    return { width: width, height: height, cx: cx, cy: cy, inner: inner, press: press, outer: outer, middle: middle,
+             depth: depth, step: step, first: first, spread: spread, parts: parts, visual: visual, ribs: ribs, folds: folds,
+             paper: band2(inner, outer, first, first + spread),
+             edges: [ring(outer, first, first + spread), ring(inner, first, first + spread)],
+             seam: ring(press, first, first + spread),
+             arcs: radii.map(function (q) { return ring(q, -78, 78); }),
+             arcLengths: radii.map(function (q) { return q * 156 * Math.PI / 180; }) };
   }
 
-  /* 扇片の字 = 骨に沿った縦書きに入る長さへ切る (全文は上に出る) */
-  function fanLabel(text, kind, key) {
-    if (key === "fixed") return kind === "permission" ? "作業を止める" : kind === "question" ? "答えない" : "閉じる";
+  /* 書の帯に入れる字 = 短い字は大きく 1 行・長い字は 2 行・入らない分は「…」(全文は上に出す) */
+  function fanScript(text, lengths) {
     var t = String(text || "");
-    return t.length > 11 ? t.slice(0, 10) + "…" : t;
+    function units(c) { return c.charCodeAt(0) < 128 ? 0.56 : 1; }
+    function width(str) { var w = 0; for (var i = 0; i < str.length; i++) w += units(str.charAt(i)); return w; }
+    function fit(str, room) {
+      var w = 0;
+      for (var i = 0; i < str.length; i++) { w += units(str.charAt(i)); if (w > room) return i; }
+      return str.length;
+    }
+    if (width(t) * 28 <= lengths[0]) return { size: 28, lines: [t, ""], clipped: false };
+    if (width(t) * 22 <= lengths[0]) return { size: 22, lines: [t, ""], clipped: false };
+    var size = 20, n = fit(t, lengths[0] / size), rest = t.slice(n), m = fit(rest, lengths[1] / size);
+    var clipped = m < rest.length;
+    return { size: size, lines: [t.slice(0, n), clipped ? rest.slice(0, Math.max(0, m - 1)) + "…" : rest], clipped: clipped };
+  }
+
+  /* 羽根の印 = 一文字だけ。全文は見つめた時に上へ大きく出す (扇に字を詰めない) */
+  function fanMark(index, key, lang) {
+    if (lang === "ja") {
+      if (key === "fixed") return "止";
+      if (key === "terminal") return "端";
+      return "一二三四五六".charAt(index);
+    }
+    if (key === "fixed") return "Esc";
+    if (key === "terminal") return "0";
+    return String(index + 1);
   }
 
   /* 見つめて本文を送る向き = 枠の下寄りで下へ・上寄りで上へ・真ん中は止まる (視線の人は巻物を回せない) */
@@ -415,10 +449,12 @@
 
   function priorityState(states, card) {
     if (card) return { state: "waiting on you", reason: "card", stale: false };
-    var ranks = { "waiting on you": 3, done: 2, working: 1 };
+    /* あなたの番が最優先。作業中と完了は新しい方 (古い別の会話の「完了」が今の作業を隠さない) */
+    var ranks = { "waiting on you": 2, done: 1, working: 1 };
     return (Array.isArray(states) ? states : []).filter(function (s) { return s && ranks[s.state]; })
       .slice().sort(function (a, b) {
-        return ranks[b.state] - ranks[a.state] || Number(a.stale) - Number(b.stale) || (a.ago || 0) - (b.ago || 0);
+        return ranks[b.state] - ranks[a.state] || Number(a.stale) - Number(b.stale) || (a.ago || 0) - (b.ago || 0) ||
+          Number(b.state === "done") - Number(a.state === "done");
       })[0] || null;
   }
 
@@ -513,8 +549,7 @@
       out.options.push({ key: "send", label: L.send });
       out.options.push({ key: "restart", label: L.restart, aux: true });
     }
-    /* ask_board は必ず「ここで止める」を持つ = 断るは足さない (6 択が 7 つになって扇から外れる) */
-    if (card.kind === "elicitation" && p.head !== "blemma") out.options.push({ key: "decline", label: L.decline, aux: true });
+    if (card.kind === "elicitation") out.options.push({ key: "decline", label: L.decline, aux: true });
     return out;
   }
 
@@ -677,7 +712,7 @@
     parseDwell: parseDwell, parseScan: parseScan, mmss: mmss, Dwell: Dwell, Scan: Scan,
     reasonsOf: reasonsOf, visibleSuggestions: visibleSuggestions, suggestionLabel: suggestionLabel,
     steps: steps, needConfirm: needConfirm, newUi: newUi, uiAfterUndo: uiAfterUndo,
-    fanEligible: fanEligible, fanLayout: fanLayout, fanLabel: fanLabel, scrollDirection: scrollDirection, actionDescription: actionDescription,
+    fanEligible: fanEligible, fanLayout: fanLayout, fanMark: fanMark, fanScript: fanScript, scrollDirection: scrollDirection, actionDescription: actionDescription,
     priorityState: priorityState,
     parseOptions: parseOptions, OPTION_DEFAULTS: OPTION_DEFAULTS,
     buildScreen: buildScreen, pressKey: pressKey, choiceLabel: choiceLabel, viewKey: viewKey,

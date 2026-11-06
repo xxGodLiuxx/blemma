@@ -79,26 +79,26 @@ async function closeCard(id) {
   await new Promise((resolve,reject)=>{ ws.addEventListener('open',resolve,{once:true}); ws.addEventListener('error',reject,{once:true}); ws.addEventListener('close',()=>reject(new Error('DevTools closed before opening')),{once:true}); });
   await call('Runtime.enable'); await call('Page.enable');
   ready = true;
-  await call('Emulation.setDeviceMetricsOverride',{width:420,height:640,deviceScaleFactor:1,mobile:false});
+  await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
   await open();
   for (const n of [2,3,4,6]) {
     const id=await card(n);
-    await until(`document.querySelectorAll('#fan .btn').length === ${n+2}`);
-    const geometry=await evaluate(`Array.from(document.querySelectorAll('#fan .btn')).map(b=>{const s=getComputedStyle(b),r=b.getBoundingClientRect();
+    await until(`document.querySelectorAll('#fan > .btn').length === ${n+2}`);
+    const geometry=await evaluate(`Array.from(document.querySelectorAll('#fan > .btn')).map(b=>{const s=getComputedStyle(b),r=b.getBoundingClientRect();
       const x=r.x+parseFloat(s.getPropertyValue('--lx')),y=r.y+parseFloat(s.getPropertyValue('--ly'));
       return {key:b.dataset.key,x,y,hit:document.elementFromPoint(x,y)?.closest('button')?.dataset.key};})`);
     // Larger fans retain target size: inspect them in a wider isolated viewport too.
-    if (n===6) await call('Emulation.setDeviceMetricsOverride',{width:520,height:760,deviceScaleFactor:1,mobile:false});
+    if (n===6) await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
     await mouse(await point('#fan [data-key="opt:0"]'));
     await until(`document.querySelector('#spot-desc').textContent.includes('既存の説明 1')`);
-    assert.equal(await evaluate(`document.querySelector('#spot-label').textContent`),'変更を確かめてから進む');
+    assert.equal(await evaluate(`document.querySelector('#fan-script-0 textPath').textContent`),'変更を確かめてから進む');
     await evaluate(`document.activeElement.blur()`);
     await key('ArrowRight');
     assert.equal(await evaluate(`document.activeElement.dataset.key`),'opt:0');
     await key('ArrowRight');
     assert.equal(await evaluate(`document.activeElement.dataset.key`),'opt:1');
-    assert.equal(await evaluate(`document.querySelector('#spot-label').textContent`),'試験を実行する');
-    const hits=await evaluate(`Array.from(document.querySelectorAll('#fan .btn')).every(b=>{const s=getComputedStyle(b),r=b.getBoundingClientRect();
+    assert.equal(await evaluate(`document.querySelector('#fan-script-0 textPath').textContent`),'試験を実行する');
+    const hits=await evaluate(`Array.from(document.querySelectorAll('#fan > .btn')).every(b=>{const s=getComputedStyle(b),r=b.getBoundingClientRect();
       return document.elementFromPoint(r.x+parseFloat(s.getPropertyValue('--lx')),r.y+parseFloat(s.getPropertyValue('--ly')))?.closest('button')===b;})`);
     assert(hits,'Actual clip-path hit targets must agree with labels');
     await screenshot('ohgi-'+n);
@@ -108,9 +108,9 @@ async function closeCard(id) {
     assert(regions.undo.height>=96 && regions.undo.bottom<=regions.fan.top,'Undo must stay above the fan');
     if (n===2) await screenshot('ohgi-undo');
     await key('Escape');
-    await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan .btn').disabled`);
+    await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan > .btn').disabled`);
     await closeCard(id);
-    await call('Emulation.setDeviceMetricsOverride',{width:420,height:640,deviceScaleFactor:1,mobile:false});
+    await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
   }
   const multi=await card(3,true);
   assert(await evaluate(`document.querySelector('#fan-scroll').hidden`));
@@ -125,7 +125,7 @@ async function closeCard(id) {
   await mouse({x:5,y:5}); await mouse(await point('#fan [data-key="opt:0"]'));
   await until(`!document.querySelector('#undo-zone').hidden`);
   await key(' ','Space');
-  await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan .btn').disabled`);
+  await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan > .btn').disabled`);
   // Pointer has not re-entered: a second answer must not occur.
   await sleep(600); assert((await api('/pending')).card.state==='shown');
   await mouse({x:5,y:5});

@@ -28,12 +28,12 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #000000;
+    --bg: #0a0e1a;
     --fg: #ffffff;
     --muted: #d6d6d6;
     --line: #ffffff;
-    --btn-bg: #000000;
-    --aux-bg: #1a1a1a;
+    --btn-bg: #0a0e1a;
+    --aux-bg: #182034;
     --fill-color: #5c4a00;
     --mark-bg: #ffffff;
     --mark-fg: #000000;
@@ -273,9 +273,9 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
 .small .blocks section { margin: 0 0 4px; }
 .small .blocks pre, .small .blocks .plain { display: inline; border: 0; font-size: calc(16px * var(--font, 1)); padding: 0; margin: 0; max-height: none; overflow: visible; }
 .small .blocks .label { display: inline; margin-right: 6px; font-size: calc(14px * var(--font, 1)); }
-.small .spotlight { flex: none; min-height: 58px; max-height: 96px; overflow: auto; border-top: 2px solid var(--line); padding-top: 4px; overflow-wrap: anywhere; }
-.small #spot-label { font-weight: 700; font-size: calc(18px * var(--font, 1)); white-space: pre-wrap; }
-.small #spot-desc { font-size: calc(16px * var(--font, 1)); }
+.small .spotlight { flex: none; height: 86px; overflow: auto; border-top: 2px solid var(--line); padding-top: 4px; overflow-wrap: anywhere; }
+.small #spot-label { font-weight: 700; font-size: calc(24px * var(--font, 1)); line-height: 1.3; white-space: pre-wrap; }
+.small #spot-desc { font-size: calc(17px * var(--font, 1)); }
 .small .opts { grid-template-columns: 1fr; }
 .small .bottom { flex-direction: column; margin-top: 0; }
 .small .fixed-zone .btn, .small .term-zone .btn { min-width: 0; width: 100%; }
@@ -284,43 +284,48 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
 .small.has-fan .opts, .small.has-fan .bottom { display: none; }
 .small .fan-scroll { overflow: auto; flex: none; }
 .fan { position: relative; margin: 0 auto; }
-.small .fan .btn {
-  --p1: var(--sec-bg); --p2: var(--sec-bg2);
+.fan-paper {
+  position: absolute; inset: 0; pointer-events: none;
+  background: repeating-conic-gradient(from var(--a0) at var(--cx) var(--cy),
+    var(--sec-bg) 0deg, var(--sec-bg2) calc(var(--fold) / 2 - .01deg), var(--sec-bg) calc(var(--fold) / 2));
+}
+.small .fan > .btn {
   position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 0; padding: 0;
-  border: 0; border-radius: 0; color: var(--sec-fg); text-align: center;
-  background: conic-gradient(from var(--a0) at var(--cx) var(--cy),
-    var(--p1) 0deg, var(--p2) calc(var(--half) - .01deg), var(--p1) var(--half),
-    var(--p2) calc(var(--full) - .01deg), var(--p1) var(--full));
+  border: 0; border-radius: 0; color: var(--sec-fg); text-align: center; background: transparent;
 }
-.small .fan .btn[data-key="allow_once"] { --p1: var(--sec-go-bg); --p2: var(--sec-go-bg2); color: var(--sec-go-fg); }
-.small .fan .btn.fixed { --p1: var(--sec-stop-bg); --p2: var(--sec-stop-bg2); color: var(--sec-stop-fg); }
-.small .fan .btn.term { --p1: var(--sec-term-bg); --p2: var(--sec-term-bg2); color: var(--sec-term-fg); }
-.small .fan .btn:is(:hover, :focus-visible, .scan) { --p1: var(--sec-on-bg); --p2: var(--sec-on-bg2); color: var(--sec-on-fg); outline: none; }
-.small .fan .btn .fill, .small .fan .btn .desc, .small .fan .btn .def { display: none; }
-.small .fan .btn .fan-text {
+.small .fan > .btn.fixed { color: var(--seal); }
+.small .fan > .btn.term { color: var(--sec-term-fg); }
+.small .fan > .btn:is(:hover, :focus-visible, .scan) {
+  color: var(--sec-on-fg); outline: none;
+  background: conic-gradient(from var(--a0) at var(--cx) var(--cy), var(--sec-on-bg) 0deg, var(--sec-on-bg2) var(--full), var(--sec-on-bg) var(--full));
+}
+.small .fan > .btn .fill, .small .fan > .btn .desc, .small .fan > .btn .def, .small .fan > .btn .label, .small .fan > .btn .num { display: none; }
+.small .fan > .btn .fan-text {
   position: absolute; left: var(--lx); top: var(--ly); transform: translate(-50%, -50%) rotate(var(--rot));
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
   font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif;
+  font-size: calc(30px * var(--font, 1)); font-weight: 500; line-height: 1;
 }
-.small .fan .btn .label {
-  writing-mode: vertical-rl; text-orientation: mixed; max-height: 110px; max-width: 64px; overflow: hidden;
-  font-size: calc(17px * var(--font, 1)); line-height: 1.25; letter-spacing: .04em;
-}
-.small .fan .btn .num { position: static; font-size: calc(17px * var(--font, 1)); line-height: 1.1; font-weight: 700; opacity: 1; }
-.small .fan .btn .dwell-arc { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.spot-list { display: flex; flex-wrap: wrap; gap: 2px 16px; color: var(--muted); font-size: calc(15px * var(--font, 1)); line-height: 1.45; }
+.spot-list b { font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif; color: var(--fg); margin-right: 2px; }
+.small .fan > .btn .dwell-arc { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .dwell-arc path { fill: none; stroke: var(--arc); stroke-width: 14px; stroke-dasharray: 1; stroke-dashoffset: calc(1 - var(--p)); }
 .fan-bones { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .fan-bones .rib { stroke: var(--rib); stroke-width: 3px; stroke-linecap: round; }
 .fan-bones .rib.main { stroke-width: 8px; }
-.fan-bones .fold { stroke: var(--rib); stroke-width: 1px; opacity: .35; }
+.fan-bones .fold { stroke: var(--rib); stroke-width: 1px; opacity: .3; }
 .fan-bones .edge { fill: none; stroke: var(--rib); stroke-width: 2px; }
+.fan-bones .seam { fill: none; stroke: var(--rib); stroke-width: 1px; opacity: .3; }
 .fan-bones .pivot { fill: var(--pivot); stroke: var(--rib); stroke-width: 2px; }
+.fan-script { fill: var(--sec-fg); font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif; font-weight: 500; letter-spacing: .04em; }
 .fan-seal {
   position: absolute; left: 6px; bottom: 4px; width: 30px; height: 30px; display: grid; place-items: center;
   background: var(--seal); color: #fff; border-radius: 4px; pointer-events: none;
   font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif; font-weight: 700; font-size: 18px;
 }
-.fan-time { position: absolute; left: 50%; top: calc(var(--cy, 50%) - 62px); transform: translate(-50%, -50%); padding: 0 8px; background: var(--bg); border-radius: 6px; z-index: 1; font-size: calc(22px * var(--font, 1)); font-weight: 700; font-variant-numeric: tabular-nums; pointer-events: none; }
+.fan-aux { position: absolute; right: 0; bottom: 0; display: flex; gap: 6px; }
+.small .fan-aux .btn { min-width: 96px; min-height: 44px; padding: 4px 12px; font-size: calc(16px * var(--font, 1)); background: transparent; border-width: 1px; border-radius: 6px; }
+.small .fan-aux .btn .num, .small .fan-aux .btn .desc { display: none; }
+.fan-time { position: absolute; left: 50%; top: calc(var(--cy, 50%) - 40px); transform: translate(-50%, -50%); padding: 0 8px; background: var(--bg); border-radius: 6px; z-index: 1; font-size: calc(16px * var(--font, 1)); font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; pointer-events: none; }
 .small .undo-zone { top: 64px; padding: 6px; width: calc(100vw - 20px); max-height: 152px; overflow: auto; }
 .small .undo-label { font-size: calc(16px * var(--font, 1)); margin: 0 0 4px; max-height: 32px; overflow: auto; }
 .small .btn.undo { min-height: 96px; font-size: calc(28px * var(--font, 1)); }
@@ -348,6 +353,8 @@ body.glow { box-shadow: inset 0 0 0 12px var(--glow); }
   --band-bg: #fff; --band-fg: #000; --glow: #ffd400;
   --sec-bg: #1d2740; --sec-bg2: #141c30; --sec-fg: #eef1f8; --sec-go-bg: #1f3f75; --sec-go-bg2: #173059; --sec-go-fg: #e6eeff; --sec-stop-bg: #5a1c14; --sec-stop-bg2: #43130d; --sec-stop-fg: #ffdcd6; --sec-term-bg: #232833; --sec-term-bg2: #191d26; --sec-term-fg: #dcdfe6; --sec-on-bg: #f2e6c8; --sec-on-bg2: #dcc99c; --sec-on-fg: #1c1a17; --rib: #c9a227; --pivot: #e0bc6a; --seal: #d9483b; --arc: #1f5fc4;
 }
+:root[data-theme="dark"] { --bg: #0a0e1a; --btn-bg: #0a0e1a; --aux-bg: #182034; }
+:root[data-theme="contrast"] { --sec-bg: #000; --sec-bg2: #000; --sec-term-bg: #000; --sec-term-bg2: #000; --rib: #fff; }
 :root[data-theme="contrast"] { --fg: #ffff00; --line: #ffff00; --muted: #fff; --aux-bg: #000; --scan-bg: #ffff00; }
 .trail { pointer-events: none; }
 .trail i { position: fixed; width: 18px; height: 18px; border-radius: 50%; background: #e6007e; border: 2px solid #fff; opacity: .6; transform: translate(-50%, -50%); z-index: 100; pointer-events: none; left: -100px; top: -100px; }

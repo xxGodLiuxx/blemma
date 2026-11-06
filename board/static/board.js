@@ -245,10 +245,24 @@
     }
   }
 
+  /* 見つめた羽根の全文 = 押せない書の帯に出す。目を移しても消さない (読むために羽根を離れるので)。
+   * 入らない長さの時だけ上にも全文。何も見ていない時は選択肢の静かな一覧 */
   function spotlight(b) {
-    if (!b || S.mode !== "small") return;
-    setText($("spot-label"), b.dataset.label || "");
-    setText($("spot-desc"), S.desc ? b.dataset.description || "" : "");
+    if (S.mode !== "small" || !S.fan) return;
+    var on = !!(b && b.dataset && b.dataset.label);
+    var fit = C.fanScript(on ? b.dataset.label : "", S.fanArcs || [1, 1]);
+    [0, 1].forEach(function (i) {
+      var t = $("fan-script-" + i);
+      if (!t) return;
+      t.style.fontSize = fit.size + "px";
+      setText(t.firstChild, fit.lines[i]);
+    });
+    var desc = on && S.desc ? b.dataset.description || "" : "";
+    $("spot-list").hidden = on && (fit.clipped || !!desc);
+    $("spot-label").hidden = !(on && fit.clipped);
+    $("spot-desc").hidden = !desc;
+    setText($("spot-label"), on ? b.dataset.label : "");
+    setText($("spot-desc"), desc);
   }
 
   var SVG_NS = "http://www.w3.org/2000/svg";
@@ -268,11 +282,27 @@
     }
     layout.folds.forEach(function (f) { line(f.from, f.to, "fold"); });
     layout.ribs.forEach(function (r) { line(r.from, r.to, r.main ? "rib main" : "rib"); });
-    layout.edges.forEach(function (d) {
+    layout.edges.concat([layout.seam]).forEach(function (d, i) {
       var p = viewDocument.createElementNS(SVG_NS, "path");
       p.setAttribute("d", d);
-      p.setAttribute("class", "edge");
+      p.setAttribute("class", i < layout.edges.length ? "edge" : "seam");
       svg.appendChild(p);
+    });
+    layout.arcs.forEach(function (d, i) {
+      var arc = viewDocument.createElementNS(SVG_NS, "path");
+      arc.setAttribute("id", "fan-arc-" + i);
+      arc.setAttribute("d", d);
+      arc.setAttribute("fill", "none");
+      svg.appendChild(arc);
+      var t = viewDocument.createElementNS(SVG_NS, "text");
+      t.setAttribute("id", "fan-script-" + i);
+      t.setAttribute("class", "fan-script");
+      var tp = viewDocument.createElementNS(SVG_NS, "textPath");
+      tp.setAttribute("href", "#fan-arc-" + i);
+      tp.setAttribute("startOffset", "50%");
+      tp.setAttribute("text-anchor", "middle");
+      t.appendChild(tp);
+      svg.appendChild(t);
     });
     var c = viewDocument.createElementNS(SVG_NS, "circle");
     c.setAttribute("cx", layout.cx); c.setAttribute("cy", layout.cy); c.setAttribute("r", 9);
@@ -287,30 +317,31 @@
     $("fan-scroll").hidden = !S.fan;
     $("spotlight").hidden = !S.fan;
     if (!S.fan) return;
-    var layout = C.fanLayout(m.options.length);
+    var blades = m.options.filter(function (o) { return !o.aux; });
+    var layout = C.fanLayout(blades.length);
+    function buttonOf(p) { return S.btns[p.key === "option" ? blades[p.index].key : p.key]; }
     fan.style.width = layout.width + "px";
     fan.style.height = layout.height + "px";
     fan.style.setProperty("--cx", layout.cx + "px");
     fan.style.setProperty("--cy", layout.cy + "px");
+    fan.style.setProperty("--a0", layout.first + "deg");
+    fan.style.setProperty("--fold", layout.step + "deg");
+    S.fanArcs = layout.arcLengths;
+    var paper = el("div", "fan-paper");
+    paper.style.clipPath = layout.paper;
+    fan.appendChild(paper);
     S.scanList = [];
     layout.parts.forEach(function (p) {
-      var key = p.key === "option" ? S.optionKeys[p.index] : p.key;
-      var b = S.btns[key];
+      var b = buttonOf(p);
       b.style.clipPath = p.polygon;
       b.style.setProperty("--lx", p.label[0] + "px");
       b.style.setProperty("--ly", p.label[1] + "px");
       b.style.setProperty("--rot", p.angle + "deg");
       b.style.setProperty("--a0", p.start + "deg");
-      b.style.setProperty("--half", layout.step / 2 + "deg");
       b.style.setProperty("--full", layout.step + "deg");
       b.setAttribute("aria-label", b.dataset.label);
       b.title = b.dataset.label;
-      var text = el("span", "fan-text");
-      var label = b.querySelector(".label");
-      label.textContent = C.fanLabel(b.dataset.label, S.card.kind, p.key);
-      text.appendChild(b.querySelector(".num") || el("span", "num", p.key === "fixed" ? "Esc" : "0"));
-      text.appendChild(label);
-      b.appendChild(text);
+      b.appendChild(el("span", "fan-text", C.fanMark(p.index, p.key, S.lang)));
       var svg = viewDocument.createElementNS(SVG_NS, "svg");
       svg.setAttribute("viewBox", "0 0 " + layout.width + " " + layout.height);
       svg.setAttribute("aria-hidden", "true");
@@ -323,12 +354,28 @@
       fan.appendChild(b);
       if (!b.disabled) S.scanList.push(b);
     });
-    S.fanVisual = layout.visual.map(function (p) {
-      return S.btns[p.key === "option" ? S.optionKeys[p.index] : p.key];
-    }).filter(function (b) { return !b.disabled; });
+    S.fanVisual = layout.visual.map(buttonOf).filter(function (b) { return !b.disabled; });
     fan.appendChild(fanBones(layout));
     fan.appendChild(el("span", "fan-seal", "扇"));
-    spotlight(S.btns[S.optionKeys[0]]);
+    var aux = m.options.filter(function (o) { return o.aux; });
+    if (aux.length) {
+      var box = el("div", "fan-aux");
+      aux.forEach(function (o) {
+        var b = S.btns[o.key];
+        box.appendChild(b);
+        if (!b.disabled) { S.scanList.push(b); S.fanVisual.push(b); }
+      });
+      fan.appendChild(box);
+    }
+    var list = $("spot-list");
+    list.replaceChildren();
+    layout.visual.forEach(function (p) {
+      var item = el("span", "item");
+      item.appendChild(el("b", "", C.fanMark(p.index, p.key, S.lang)));
+      item.appendChild(viewDocument.createTextNode(" " + buttonOf(p).dataset.label));
+      list.appendChild(item);
+    });
+    spotlight(null);
   }
 
   /* 滞留を解く = 時計を止め、pointer の下の釦は一度外へ出て入り直すまで数えない (§4.2 の ①②)。
@@ -497,12 +544,13 @@
 
   /* ---- 押す ---- */
   function press(key, by) {
-    if (key === "reset" || key === "phone" || key === "gear" || key === "pip") {
+    if (key === "reset" || key === "phone" || key === "gear" || key === "pip" || key === "theme") {
       if (by !== "key" && by !== "click") return;          /* 視線では押さない (§4.5) */
       if (key === "reset") api("POST", "/stats/reset", {}).catch(function () { S.offline = true; });
       if (key === "phone") openPhone();
       if (key === "gear") openGear();
       if (key === "pip") openPip();
+      if (key === "theme") toggleTheme();
       return;
     }
     if (key === "close") { closeOverlay(); return; }
@@ -606,7 +654,7 @@
     S.lastY = e.clientY;
     S.over = dwellKeyOf(e.target);
     if (S.firstPointer) { S.dwell.block(S.over); S.firstPointer = false; }
-    spotlight(S.btns[S.over]);
+    if (S.over) spotlight(S.btns[S.over]);
     if (S.options.trail === "on") {
       var dots = $("trail").children;
       for (var i = 0; i < dots.length; i++) {
@@ -639,7 +687,7 @@
     var active = viewDocument.activeElement && viewDocument.activeElement.closest
       ? viewDocument.activeElement.closest("[data-key]") : null;
     if (!sw && active && (e.key === "Enter" || e.key === " ") &&
-        ["reset", "phone", "gear", "pip"].indexOf(active.dataset.key) >= 0) {
+        ["reset", "phone", "gear", "pip", "theme"].indexOf(active.dataset.key) >= 0) {
       e.preventDefault();
       press(active.dataset.key, "key");
       return;
@@ -769,7 +817,7 @@
     d.addEventListener("pointermove", active(onPointer), { passive: true });
     d.addEventListener("pointerover", active(onPointer), { passive: true });
     d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; }), { passive: true, capture: true });
-    d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; }));
+    d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.lastX = -1; S.scrollRest = 0; }));
     w.addEventListener("blur", active(releaseDwell));
     w.addEventListener("focus", active(function () { releaseDwell(); S.scan.restart(performance.now()); }));
     d.addEventListener("visibilitychange", active(releaseDwell));
@@ -905,6 +953,14 @@
     if (S.overlay) title.textContent = L().settings;
   }
 
+  /* 明るい / 暗いの切り替え = 歯車の「配色」と同じ鍵 (theme) を 1 回で替える */
+  function isDark() {
+    if (S.options.theme === "auto") return viewWindow.matchMedia("(prefers-color-scheme: dark)").matches;
+    return S.options.theme !== "light";
+  }
+
+  function toggleTheme() { setParam("theme", isDark() ? "light" : "dark"); }
+
   function setChrome() {
     var T = L();
     viewDocument.documentElement.lang = S.lang;
@@ -918,6 +974,9 @@
     $("panel-close").textContent = T.close;
     $("gear-btn").textContent = S.mode === "small" ? "⚙" : T.settings;
     $("gear-btn").setAttribute("aria-label", T.settings);
+    $("theme-btn").textContent = isDark() ? "☀" : "☾";
+    $("theme-btn").setAttribute("aria-label", isDark() ? T.to_light : T.to_dark);
+    $("theme-btn").title = isDark() ? T.to_light : T.to_dark;
     $("pip-btn").hidden = S.mode !== "small" || !window.documentPictureInPicture;
     $("pip-btn").textContent = viewWindow === window ? T.pip : T.pip_back;
     $("trail").hidden = S.options.trail !== "on";
