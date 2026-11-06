@@ -464,3 +464,23 @@ def test_script_and_arrow_keys_cannot_change_the_text_while_dwelling():
     assert "if (dwelling && S.spotKey !== r.target && S.btns[r.target]) spotlight(S.btns[r.target]);" in src
     assert "var moving = dwelling || now - (S.pointerAt || -1e9) < 1500;" in src
 
+
+def test_diff_range_finds_the_changed_part(tmp_path):
+    got = node(tmp_path, r"""
+console.log(JSON.stringify([core.diffRange('サーバーを起動', 'サーバを起動'), core.diffRange('同じ文', '同じ文'),
+  core.diffRange('まるで違う', 'abcdefghij'), core.diffRange('a😀b', 'a😁b')]));
+""")
+    assert got[0] == {"start": 3, "oldEnd": 4, "newEnd": 3}
+    assert got[1] is None and got[2] is None
+    assert got[3] == {"start": 1, "oldEnd": 3, "newEnd": 3}, "サロゲートの対を割らない"
+
+
+def test_edit_card_shows_the_change_first(tmp_path):
+    got = node(tmp_path, r"""
+const card = { kind: 'permission', payload: { head: 'Edit', text: 'README.md', blocks: [
+  { label: 'old_string', text: 'サーバーを起動', mono: true }, { label: 'new_string', text: 'サーバを起動', mono: true }] } };
+console.log(JSON.stringify(core.buildScreen(card, core.newUi(card), 'ja').blocks));
+""")
+    assert got[0]["label"] == "変更" and got[0]["text"] == "サーバー → サーバ" and got[0]["change"] is True
+    assert got[1]["mark"] == [3, 4] and got[1]["markKind"] == "del"
+    assert got[2]["mark"] == [3, 3] and got[2]["markKind"] == "ins"

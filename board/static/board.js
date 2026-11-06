@@ -171,6 +171,22 @@
     return [f.cwd, f.session, f.agent].filter(function (x) { return !!x; }).join(" · ");
   }
 
+  /* 本文の 1 節。Edit の変わった所には印を付ける (色だけに頼らない = 消す所は打ち消し線・足す所は下線) */
+  function blockEl(b) {
+    var sec = el("section", b.change ? "change" : "");
+    if (b.label) sec.appendChild(el("div", "label", b.label));
+    var body = el(b.mono ? "pre" : "div", b.mono ? "" : "plain");
+    if (b.mark && b.mark[1] > b.mark[0]) {
+      body.appendChild(viewDocument.createTextNode(b.text.slice(0, b.mark[0])));
+      body.appendChild(el("mark", b.markKind, b.text.slice(b.mark[0], b.mark[1])));
+      body.appendChild(viewDocument.createTextNode(b.text.slice(b.mark[1])));
+    } else {
+      body.textContent = b.text;
+    }
+    sec.appendChild(body);
+    return sec;
+  }
+
   function render() {
     var lang = S.lang;
     var T = L();
@@ -194,12 +210,7 @@
     $("text").textContent = m ? m.text : S.mode === "small" ? T.idle_line : T.empty;
     var blocks = $("blocks");
     blocks.replaceChildren();
-    (m ? m.blocks : []).forEach(function (b) {
-      var sec = el("section");
-      if (b.label) sec.appendChild(el("div", "label", b.label));
-      sec.appendChild(el(b.mono ? "pre" : "div", b.mono ? "" : "plain", b.text));
-      blocks.appendChild(sec);
-    });
+    (m ? m.blocks : []).forEach(function (b) { blocks.appendChild(blockEl(b)); });
     $("question").textContent = m && m.question ? m.question : "";
     var sum = $("summary");
     sum.replaceChildren();
@@ -451,6 +462,8 @@
   }
 
   function findBtn(key) {
+    if (key === "close" || key === "sheet-next") return $(key === "close" ? "panel-close" : "panel-next");
+    if (key === "sheet") return $("more");
     if (key === "undo") {
       var u = $("undo-btn");
       return u.hidden || u.disabled ? null : u;
@@ -495,6 +508,8 @@
       rem.classList.remove("low");
       setText($("fan-time"), "");
     }
+    if (S.sheet) updateSheet();
+    updateMore();
     var qn = S.snap ? S.snap.queue : 0;
     setText($("queue"), qn > 0 ? C.fmt(T.queue, { n: qn }) : "");
     if (S.snap && S.snap.stats) {
@@ -509,7 +524,9 @@
     var band = $("band");
     /* 小型の窓では札そのものが知らせ = 札の間は縁も帯も出さない。
        通知は札の約 6 秒後に来るので、帯が割り込むと見つめている羽根がずれる */
-    var lightOn = !!(S.snap && S.snap.light) && now < S.lightUntil && !(S.mode === "small" && S.card);
+    if (S.card) S.cardAt = now;                 /* 札と札の間の短い隙にも割り込ませない */
+    var lightOn = !!(S.snap && S.snap.light) && now < S.lightUntil &&
+      !(S.mode === "small" && (S.card || now - (S.cardAt || -1e9) < 1500));
     if (lightOn) {
       setText(band, C.lightText(S.snap.light, S.lang));
       band.hidden = false;
@@ -607,9 +624,22 @@
       if (key === "theme") toggleTheme();
       return;
     }
-    if (key === "close") { closeOverlay(); return; }
+    if (key === "close" || key === "sheet-next") {
+      if (S.sheet && by !== "key" && by !== "switch" && performance.now() < S.sheetArmAt) return;  /* 開いた直後の視線の click は受けない */
+      if (key === "close") { closeOverlay(); return; }
+      sheetPage(1);
+      S.dwell.reset();
+      S.dwell.block(S.over);                               /* 見つめ直すまで次の頁へ送らない */
+      setFill(null, 0);
+      return;
+    }
+    if (key === "sheet") {
+      if (performance.now() >= (S.guardUntil || 0)) openSheet();
+      return;
+    }
     var card = S.card;
     if (!card || S.overlay) return;
+    if (by === "click" && performance.now() < (S.guardUntil || 0)) return;  /* 紙を閉じた直後の視線の click では答えない */
     if (key === "undo") {                                  /* 写しが deciding なら、/answer の返りを待たずに取り消せる */
       if (!S.undoing && undoOpen()) doUndo(by);
       return;
@@ -708,6 +738,8 @@
     S.lastY = e.clientY;
     S.pointerAt = performance.now();
     S.over = dwellKeyOf(e.target);
+    var inCopy = !!(e.target && e.target.closest && e.target.closest("#copy"));
+    if (inCopy !== !!S.overCopy) { S.overCopy = inCopy; S.copyAt = S.pointerAt; }
     if (S.firstPointer) { S.dwell.block(S.over); S.firstPointer = false; }
     if (S.over) spotlight(S.btns[S.over]);
     if (S.options.trail === "on") {
@@ -737,6 +769,7 @@
     S.lastInput = "key";
     if (S.overlay) {
       if (e.key === "Escape") { e.preventDefault(); closeOverlay(); }
+      else if (S.sheet) sheetKey(e, sw);
       return;
     }
     var active = viewDocument.activeElement && viewDocument.activeElement.closest
@@ -787,6 +820,11 @@
   function onClick(e) {
     if (e.detail === 0) return;                             /* キーで起きた click は keydown で扱った */
     var b = e.target && e.target.closest ? e.target.closest("[data-key]") : null;
+    if (!b && e.target && e.target.closest && e.target.closest("#copy") && !$("more").hidden) {
+      var picked = viewWindow.getSelection();              /* 字を選んだだけの時は開かない */
+      if (!picked || picked.isCollapsed) press("sheet", "click");
+      return;
+    }
     if (!b || b.disabled) return;
     S.lastInput = S.pointerType === "touch" ? "touch" : "click";
     press(b.dataset.key, S.pointerType === "touch" ? "touch" : "click");
@@ -796,7 +834,7 @@
   function frame(now) {
     now = performance.now();  // Use one clock even after adopting the DOM into PiP.
     var dwelling = false;
-    if (S.dwellMs > 0 && S.pointerType !== "touch" && !S.overlay && inputActive()) {
+    if (S.dwellMs > 0 && S.pointerType !== "touch" && (!S.overlay || S.sheet) && inputActive()) {
       var r = S.dwell.update(S.over, now);
       setFill(r.target, r.progress);
       dwelling = !!r.target;
@@ -808,6 +846,9 @@
         press(r.target, "dwell");
       }
     }
+    /* 切れている左の文章を見つめたら全文の紙を開く。1 度閉じた札では見つめただけでは開かない */
+    if (S.overCopy && S.dwellMs > 0 && S.mode === "small" && !S.overlay && S.card && S.card.state === "shown" &&
+        S.sheetSeen !== S.card.id && now - S.copyAt >= 800 && !$("more").hidden) openSheet();
     if (S.scanMs > 0) {
       var card = S.card;
       var target = null;
@@ -881,11 +922,11 @@
     d.addEventListener("pointermove", active(onPointer), { passive: true });
     d.addEventListener("pointerover", active(onPointer), { passive: true });
     d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; }), { passive: true, capture: true });
-    d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.lastX = -1; S.scrollRest = 0; }));
+    d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.overCopy = false; S.lastX = -1; S.scrollRest = 0; }));
     w.addEventListener("blur", active(releaseDwell));
     w.addEventListener("focus", active(function () { releaseDwell(); S.scan.restart(performance.now()); }));
     d.addEventListener("visibilitychange", active(releaseDwell));
-    w.addEventListener("resize", active(fitFan));
+    w.addEventListener("resize", active(function () { fitFan(); if (S.sheet) fitSheet(); }));
     d.addEventListener("keydown", active(onKeyDown));
     d.addEventListener("keyup", active(function (e) { delete S.held[e.code || e.key]; }));
     d.addEventListener("click", active(onClick));
@@ -937,8 +978,82 @@
   function closeOverlay() {
     S.overlay = null;
     $("overlay").hidden = true;
+    if (S.sheet) {                                         /* 閉じた直後の視線の click で羽根を押さない */
+      S.sheet = null;
+      S.guardUntil = performance.now() + 1200;
+      $("overlay").classList.remove("sheet");
+      delete $("panel-close").dataset.dwell;
+      $("panel-next").hidden = true;
+      $("panel-body").style.fontSize = "";
+    }
     S.dwell.reset();
     S.dwell.block(keyAtPointer());
+  }
+
+  /* 全文の紙 = 左の文章を窓いっぱいの押せない紙に大きく出す。設定の面と同じ守りが効く (答え・走査は止まる)。
+     閉じるボタンは羽根の無い左に置き、視線が外れても勝手に閉じない (閉じた視線の下に羽根を出さない) */
+  function openSheet() {
+    var card = S.card;
+    if (!card || card.state !== "shown" || S.overlay || S.mode !== "small") return;
+    var m = C.buildScreen(card, S.ui, S.lang);
+    showPanel(L()["kind_" + card.kind], function (body) {
+      if (m.head) body.appendChild(el("h3", "sheet-head", m.head));
+      if (m.text) body.appendChild(el("p", "sheet-text", m.text));
+      m.blocks.forEach(function (b) { body.appendChild(blockEl(b)); });
+      if (m.question) body.appendChild(el("p", "sheet-question", m.question));
+    });
+    S.sheet = card.id;
+    S.sheetSeen = card.id;
+    S.sheetArmAt = performance.now() + 1200;
+    $("overlay").classList.add("sheet");
+    $("panel-close").dataset.dwell = "1";
+    updateSheet();
+    fitSheet();
+    S.dwell.block(keyAtPointer());
+  }
+
+  /* 紙に全部が収まる一番大きな字。18px でも収まらなければ「次へ」で送る */
+  function fitSheet() {
+    var body = $("panel-body"), size = 26;
+    do {
+      body.style.fontSize = (size * S.options.font) + "px";
+      size -= 2;
+    } while (size >= 18 && body.scrollHeight > body.clientHeight);
+    body.scrollTop = 0;
+    $("panel-next").hidden = body.scrollHeight <= body.clientHeight + 2;
+  }
+
+  function sheetPage(dir) {
+    var body = $("panel-body"), end = body.scrollHeight - body.clientHeight;
+    var step = Math.max(40, body.clientHeight - 40);
+    body.scrollTop = dir > 0 && body.scrollTop >= end - 2 ? 0 : body.scrollTop + dir * step;
+  }
+
+  function sheetKey(e, sw) {
+    var body = $("panel-body");
+    if (e.key === "PageDown" || e.key === "ArrowDown") { e.preventDefault(); sheetPage(1); }
+    else if (e.key === "PageUp" || e.key === "ArrowUp") { e.preventDefault(); sheetPage(-1); }
+    else if (sw || e.key === "Enter" || e.key === " ") {   /* 1 鍵の人 = 押すたびに次の頁・最後の頁で閉じる */
+      e.preventDefault();
+      if (body.scrollTop >= body.scrollHeight - body.clientHeight - 2) closeOverlay();
+      else sheetPage(1);
+    }
+  }
+
+  /* 紙の左上 = 残り時間。札が終わっても紙は勝手に閉じない (次の札の羽根を視線の下に出さない) */
+  function updateSheet() {
+    var live = S.card && S.card.id === S.sheet;
+    setText($("panel-title"), live ? L()["kind_" + S.card.kind] + "\n" + $("remain").textContent : L().sheet_over);
+  }
+
+  /* 左の文章が切れている時だけ「▼ 全文」を見せる */
+  function updateMore() {
+    var more = $("more"), c = $("copy");
+    var show = S.mode === "small" && !!S.card && S.card.state === "shown" && c.scrollHeight > c.clientHeight + 2;
+    if (more.hidden === show) more.hidden = !show;
+    var at = S.scanList.indexOf(more);
+    if (show && at < 0) S.scanList.push(more);
+    if (!show && at >= 0) S.scanList.splice(at, 1);
   }
 
   function openPhone() {
@@ -1037,6 +1152,8 @@
     $("phone-btn").textContent = T.phone;
     $("gear-btn").textContent = T.settings;
     $("panel-close").textContent = T.close;
+    $("panel-next").textContent = T.sheet_next;
+    $("more").textContent = T.more;
     $("gear-btn").textContent = S.mode === "small" ? "⚙" : T.settings;
     $("gear-btn").setAttribute("aria-label", T.settings);
     $("theme-btn").textContent = isDark() ? "☀" : "☾";

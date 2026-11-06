@@ -25,6 +25,7 @@
       in_dwell: "視線", in_key: "キー", in_switch: "スイッチ", in_touch: "触る", in_click: "クリック",
       per_card: "札ごとの秒", reset: "計を 0 に",
       phone: "携帯で開く", close: "閉じる",
+      more: "▼ 全文", sheet_next: "次へ ▼", sheet_over: "この問いは終わりました", change: "変更",
       phone_help: "携帯は利用者の転送で 127.0.0.1 へ届けます (例: USB の Android = adb reverse tcp:{port} tcp:{port})。" +
         "127.0.0.1 / localhost 以外の名で開く時は、server を --allow-host <名> で起こしてください。" +
         "転送の先へ札の本文と token が渡ります。token は起動ごとに替わります。",
@@ -74,6 +75,7 @@
       in_dwell: "gaze", in_key: "key", in_switch: "switch", in_touch: "touch", in_click: "click",
       per_card: "seconds per card", reset: "Reset counts",
       phone: "Open on a phone", close: "Close",
+      more: "▼ Full text", sheet_next: "Next ▼", sheet_over: "This question has ended", change: "Change",
       phone_help: "Reach 127.0.0.1 from the phone through your own forwarding (e.g. USB Android: adb reverse tcp:{port} tcp:{port}). " +
         "If you open it under a name other than 127.0.0.1 / localhost, start the server with --allow-host <name>. " +
         "The card text and the token travel to wherever you forward. The token changes on every launch.",
@@ -484,6 +486,33 @@
     });
   }
 
+  /* Edit の old と new の違い = 前後の共通部を除いた真ん中。大きく違う時は印を付けない */
+  function diffRange(a, b) {
+    var max = Math.min(a.length, b.length), p = 0, s = 0;
+    while (p < max && a.charAt(p) === b.charAt(p)) p++;
+    while (s < max - p && a.charAt(a.length - 1 - s) === b.charAt(b.length - 1 - s)) s++;
+    if (p > 0 && /[\uD800-\uDBFF]/.test(a.charAt(p - 1))) p--;        /* サロゲートの対を割らない */
+    if (s > 0 && /[\uDC00-\uDFFF]/.test(a.charAt(a.length - s))) s--;
+    var longest = Math.max(a.length, b.length), changed = longest - p - s;
+    if (changed <= 0 || changed > longest * 0.6) return null;
+    return { start: p, oldEnd: a.length - s, newEnd: b.length - s };
+  }
+
+  /* 権限の札 = old_string と new_string の違う所に印を付け、短い違いは「変更」の 1 行で先に見せる */
+  function markChange(blocks, label) {
+    var named = function (name) { return blocks.filter(function (b) { return b.label === name; })[0]; };
+    var o = named("old_string"), n = named("new_string");
+    if (!o || !n) return;
+    var r = diffRange(o.text, n.text);
+    if (!r) return;
+    o.mark = [r.start, r.oldEnd]; o.markKind = "del";
+    n.mark = [r.start, r.newEnd]; n.markKind = "ins";
+    var from = Math.max(0, r.start - 3);
+    var before = o.text.slice(from, r.oldEnd), after = n.text.slice(from, r.newEnd);
+    if (before.length > 40 || after.length > 40 || /\n/.test(before + after)) return;
+    blocks.unshift({ label: label, text: before + " → " + after, mono: false, change: true });
+  }
+
   function optionLabels(opts, picks, lang, emptyText) {
     var labels = (picks || []).map(function (i) { return tx(((opts || [])[i] || {}).label, lang); });
     return labels.length ? labels.join(", ") : emptyText;
@@ -499,6 +528,7 @@
       out.head = tx(p.head, lang);
       out.text = tx(p.text, lang);
       out.blocks = blocksOf(p.blocks, lang);
+      markChange(out.blocks, L.change);
       if (ui.sub === "deny") {
         out.question = L.deny_title;
         reasonsOf(p, lang).forEach(function (r, j) { out.options.push({ key: "reason:" + j, label: r }); });
@@ -714,7 +744,7 @@
     reasonsOf: reasonsOf, visibleSuggestions: visibleSuggestions, suggestionLabel: suggestionLabel,
     steps: steps, needConfirm: needConfirm, newUi: newUi, uiAfterUndo: uiAfterUndo,
     fanEligible: fanEligible, fanLayout: fanLayout, fanMark: fanMark, fanScript: fanScript, scrollDirection: scrollDirection, actionDescription: actionDescription,
-    priorityState: priorityState,
+    priorityState: priorityState, diffRange: diffRange,
     parseOptions: parseOptions, OPTION_DEFAULTS: OPTION_DEFAULTS,
     buildScreen: buildScreen, pressKey: pressKey, choiceLabel: choiceLabel, viewKey: viewKey,
     statsText: statsText, endText: endText, lightText: lightText, zeroPresses: zeroPresses,

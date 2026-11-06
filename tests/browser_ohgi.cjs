@@ -161,6 +161,37 @@ async function closeCard(id) {
   await mouse(await point('#undo-btn'));
   await until(`document.querySelector('#undo-zone').hidden`);
   await mouse({x:5,y:5}); await closeCard(dwell);
+  // A long Edit: the left text is cut off, looking at it opens the full sheet, and nothing on the sheet can answer.
+  await call('Emulation.setDeviceMetricsOverride',{width:924,height:361,deviceScaleFactor:1,mobile:false});
+  await open('mode=small&lang=ja&dwell=1');
+  const long='ローカルのサーバーを起動したあと、ブラウザでサーバの画面を開いて、表示された時刻を確かめてください。'.repeat(3);
+  const edit=(await api('/ask',{kind:'permission',from:{session:'demo01'},payload:{head:'Edit',text:'README.md',suggestions:[],
+    blocks:[{label:'old_string',text:long,mono:true},{label:'new_string',text:long.replace('サーバーを','サーバを'),mono:true}]}})).id;
+  await until(`!document.querySelector('#more').hidden`);
+  assert(await evaluate(`document.querySelector('#blocks .change .plain').textContent.includes('→')`),'The change comes first');
+  assert(await evaluate(`document.querySelector('#blocks mark.del') !== null`),'The removed part is marked');
+  const blade=await point('#fan [data-key="allow_once"]');
+  const text=await point('#copy');
+  await mouse({x:5,y:5}); await mouse(text);
+  await until(`document.querySelector('#overlay').classList.contains('sheet') && !document.querySelector('#overlay').hidden`);
+  await screenshot('ohgi-sheet');
+  await key('1','Digit1');
+  await mouse(blade,'mousePressed'); await mouse(blade,'mouseReleased'); await mouse({x:5,y:5});
+  await sleep(150);
+  assert.equal((await api('/pending')).card.state,'shown','Nothing on the sheet can answer');
+  const shut=await point('#panel-close');
+  await mouse(shut,'mousePressed'); await mouse(shut,'mouseReleased');
+  assert(await evaluate(`!document.querySelector('#overlay').hidden`),'A click right after opening is ignored');
+  await sleep(1300);
+  await mouse(shut,'mousePressed'); await mouse(shut,'mouseReleased');
+  await until(`document.querySelector('#overlay').hidden`);
+  await mouse(blade,'mousePressed'); await mouse(blade,'mouseReleased'); await mouse({x:5,y:5});
+  await sleep(150);
+  assert.equal((await api('/pending')).card.state,'shown','The click after closing cannot press a blade');
+  await mouse(text); await sleep(1000);
+  assert(await evaluate(`document.querySelector('#overlay').hidden`),'Closed once, looking alone does not reopen it');
+  await mouse({x:5,y:5}); await closeCard(edit);
+  await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
   await open();
   await click('#gear-btn');
   await evaluate(`(() => {const s=document.querySelector('[name="theme"]');s.value='dark';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);

@@ -338,7 +338,7 @@ body.small.glow { box-shadow: inset 0 0 0 2px var(--rib); }
 .small .overlay { font-size: calc(16px * var(--font, 1)); }
 .small .panel-body select { font-size: calc(16px * var(--font, 1)); max-width: 60%; }
 .small .panel-title { font-size: calc(22px * var(--font, 1)); }
-.small .band { position: static; font-size: calc(16px * var(--font, 1)); padding: 4px 10px; }
+.small .band { font-size: calc(16px * var(--font, 1)); padding: 4px 10px; z-index: 5; }
 .small.idle .card { height: auto; }
 .small.idle .bottom, .small.idle .opts { display: none; }
 .work-state { border: 2px solid currentColor; border-radius: 5px; padding: 1px 5px; font-weight: 700; }
@@ -381,17 +381,18 @@ body.small.glow { box-shadow: inset 0 0 0 2px var(--rib); }
   .small:not(.has-fan):not(.idle) .app { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); grid-template-rows: auto auto minmax(0, 1fr) auto; column-gap: 14px; row-gap: 6px; height: 100vh; min-height: 0; }
   .small:not(.has-fan):not(.idle) .top { grid-column: 1; grid-row: 1; }
   .small:not(.has-fan):not(.idle) .status { grid-column: 1; grid-row: 2; }
-  .small:not(.has-fan):not(.idle) .card { grid-column: 1; grid-row: 3 / 5; min-height: 0; overflow: hidden; }
-  .small:not(.has-fan):not(.idle) .copy { max-height: 100%; }
+  .small:not(.has-fan):not(.idle) .card { grid-column: 1; grid-row: 3 / 5; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .small:not(.has-fan):not(.idle) .copy { flex: 1 1 auto; min-height: 0; max-height: none; }
   .small:not(.has-fan):not(.idle) .opts { grid-column: 2; grid-row: 1 / 4; grid-template-columns: 1fr 1fr; align-content: start; gap: 8px; overflow: auto; }
   .small:not(.has-fan):not(.idle) .bottom { grid-column: 2; grid-row: 4; flex-direction: row; gap: 8px; }
   .small:not(.has-fan):not(.idle) .bottom > * { flex: 1 1 0; }
-  .small.has-fan .spotlight { height: auto; max-height: 55%; }
+  .small.has-fan .spotlight { height: auto; max-height: 40%; }
 }
 .small .copy, .small .spotlight { scrollbar-width: none; }
 
-/* ボタン類は上の帯に pointer が来た時か、焦点がある時だけ見せる */
-.small .top-right { opacity: 0; transition: opacity .15s; }
+/* ボタン類は上の帯に pointer が来た時か、焦点がある時だけ見せる。隠れている間は幅も取らない */
+.small .top { position: relative; }
+.small .top-right { position: absolute; top: 0; right: 0; background: var(--bg); padding-left: 6px; opacity: 0; transition: opacity .15s; }
 .small .top:hover .top-right, .small .top-right:focus-within { opacity: 1; }
 
 /* 札が来た時に扇が要から開く */
@@ -412,3 +413,47 @@ body.small.glow { box-shadow: inset 0 0 0 2px var(--rib); }
 .small .fan .btn.undo:is(:hover, :focus-visible, .scan) { background: var(--sec-bg2); outline: none; }
 .small .fan .btn.undo .fill { opacity: .5; }
 .fan-script.note { fill: var(--pivot); }
+
+/* 左の文章が切れている印 = 見つめるか押すと全文の紙が開く */
+.more {
+  display: block; flex: none; width: 100%; min-height: 34px; padding: 2px 8px; text-align: right; cursor: pointer;
+  font: inherit; font-size: calc(15px * var(--font, 1)); color: var(--fg); border: 0; border-top: 1px dashed var(--line);
+  background: linear-gradient(to right, var(--sec-on-bg) calc(var(--p, 0) * 100%), transparent 0);
+}
+.more[hidden] { display: none; }
+.more:is(:focus-visible, .scan) { outline: 3px solid var(--focus); outline-offset: -3px; }
+
+/* Edit の変わった所。色だけに頼らない = 消す所は打ち消し線・足す所は下線 */
+mark { background: var(--sec-on-bg); color: var(--sec-on-fg); padding: 0 .1em; }
+mark.del { text-decoration: line-through; }
+mark.ins { text-decoration: underline; text-underline-offset: .15em; }
+.small .blocks .change .plain { font-weight: 700; }
+
+/* 全文の紙 = 窓いっぱいの平らな紙。閉じるボタンは羽根の無い左に置く */
+.overlay.sheet { padding: 0; overflow: hidden; }
+.overlay.sheet .panel {
+  max-width: none; height: 100%; box-sizing: border-box; display: grid; gap: 8px 16px; padding: 12px 14px; border: 2px solid var(--rib);
+  grid-template-columns: 168px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto auto;
+}
+.overlay.sheet .panel-title { grid-column: 1; grid-row: 1; margin: 0; font-size: calc(17px * var(--font, 1)); line-height: 1.4; white-space: pre-line; }
+.overlay.sheet .panel-body { grid-column: 2; grid-row: 1 / 5; min-height: 0; overflow: auto; line-height: 1.5; overflow-wrap: anywhere; scrollbar-width: thin; }
+.overlay.sheet #panel-next { grid-column: 1; grid-row: 3; }
+.overlay.sheet #panel-close { grid-column: 1; grid-row: 4; margin-top: 0; }
+#panel-next[hidden] { display: none; }
+.overlay.sheet .mini {
+  position: static; width: 100%; min-height: 72px; font-size: calc(20px * var(--font, 1));
+  background: linear-gradient(to right, var(--sec-on-bg) calc(var(--p, 0) * 100%), transparent 0);
+}
+.overlay.sheet .panel-body section { margin: 0 0 .4em; }
+.overlay.sheet .panel-body .label { display: block; font-size: .58em; line-height: 1.3; color: var(--muted); }
+.overlay.sheet .panel-body pre, .overlay.sheet .panel-body .plain { margin: 0; padding: 0; border: 0; max-height: none; overflow: visible; font-family: inherit; font-size: 1em; white-space: pre-wrap; background: none; }
+.overlay.sheet .panel-body .change .plain { font-weight: 700; }
+.sheet-head, .sheet-text, .sheet-question { margin: 0 0 .3em; font-size: 1em; }
+.sheet-head { font-weight: 700; }
+@media (max-aspect-ratio: 3/2) {
+  .overlay.sheet .panel { grid-template-columns: 1fr 1fr; grid-template-rows: auto auto minmax(0, 1fr); }
+  .overlay.sheet .panel-title { grid-column: 1 / -1; }
+  .overlay.sheet .panel-body { grid-column: 1 / -1; grid-row: 3; }
+  .overlay.sheet #panel-close { grid-column: 1; grid-row: 2; }
+  .overlay.sheet #panel-next { grid-column: 2; grid-row: 2; }
+}
