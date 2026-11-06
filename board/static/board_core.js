@@ -25,7 +25,8 @@
       in_dwell: "視線", in_key: "キー", in_switch: "スイッチ", in_touch: "触る", in_click: "クリック",
       per_card: "札ごとの秒", reset: "計を 0 に",
       phone: "携帯で開く", close: "閉じる",
-      more: "▼ 全文", sheet_next: "次へ ▼", sheet_over: "この問いは終わりました", change: "変更",
+      more: "▼ 続き", more_top: "▲ 先頭へ", change: "変更", double_hint: "もう 1 回で決まります",
+      set_click: "押し方", click_double: "2 回で決まる", click_single: "1 回で決まる",
       phone_help: "携帯は利用者の転送で 127.0.0.1 へ届けます (例: USB の Android = adb reverse tcp:{port} tcp:{port})。" +
         "127.0.0.1 / localhost 以外の名で開く時は、server を --allow-host <名> で起こしてください。" +
         "転送の先へ札の本文と token が渡ります。token は起動ごとに替わります。",
@@ -75,7 +76,8 @@
       in_dwell: "gaze", in_key: "key", in_switch: "switch", in_touch: "touch", in_click: "click",
       per_card: "seconds per card", reset: "Reset counts",
       phone: "Open on a phone", close: "Close",
-      more: "▼ Full text", sheet_next: "Next ▼", sheet_over: "This question has ended", change: "Change",
+      more: "▼ More", more_top: "▲ Back to top", change: "Change", double_hint: "Click again to confirm",
+      set_click: "Confirm with", click_double: "Two clicks", click_single: "One click",
       phone_help: "Reach 127.0.0.1 from the phone through your own forwarding (e.g. USB Android: adb reverse tcp:{port} tcp:{port}). " +
         "If you open it under a name other than 127.0.0.1 / localhost, start the server with --allow-host <name>. " +
         "The card text and the token travel to wherever you forward. The token changes on every launch.",
@@ -152,7 +154,7 @@
   }
 
   var OPTION_DEFAULTS = { dwell: "1", scan: "off", key: "Space", lang: "auto", sound: "off",
-    mode: "large", scale: 1, font: 1, theme: "auto", desc: "on", trail: "off" };
+    mode: "large", scale: 1, font: 1, theme: "auto", desc: "on", trail: "off", click: "double" };
 
   function parseOptions(query, saved) {
     var q = new URLSearchParams(query), out = {};
@@ -161,7 +163,7 @@
       var fallback = OPTION_DEFAULTS[key];
       var v = q.has(key) ? q.get(key) : Object.prototype.hasOwnProperty.call(saved, key) ? saved[key] : fallback;
       var s = typeof v === "string" || typeof v === "number" ? String(v) : "!invalid";
-      var enums = {mode: ["small", "large"], lang: ["auto", "ja", "en"], theme: ["auto", "light", "dark", "contrast"]};
+      var enums = {click: ["double", "single"], mode: ["small", "large"], lang: ["auto", "ja", "en"], theme: ["auto", "light", "dark", "contrast"]};
       if (enums[key]) out[key] = enums[key].indexOf(s) >= 0 ? s : fallback;
       else if (["sound", "desc", "trail"].indexOf(key) >= 0) {
         out[key] = ["on", "true", "1", ""].indexOf(s) >= 0 ? "on" :
@@ -507,8 +509,8 @@
     if (!r) return;
     o.mark = [r.start, r.oldEnd]; o.markKind = "del";
     n.mark = [r.start, r.newEnd]; n.markKind = "ins";
-    var from = Math.max(0, r.start - 3);
-    var before = o.text.slice(from, r.oldEnd), after = n.text.slice(from, r.newEnd);
+    var from = Math.max(0, r.start - 3), tail = r.oldEnd > r.start && r.newEnd > r.start ? 1 : 0;  /* 語の途中で切らない */
+    var before = o.text.slice(from, r.oldEnd + tail), after = n.text.slice(from, r.newEnd + tail);
     if (before.length > 40 || after.length > 40 || /\n/.test(before + after)) return;
     blocks.unshift({ label: label, text: before + " → " + after, mono: false, change: true });
   }

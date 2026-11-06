@@ -237,7 +237,7 @@ def test_flags_and_passthrough(tmp_path, demo):
     assert L.claude_command(None, paths, args) == expected + extra
     assert args.mode == "large" and args.port == 12345
     defaults = L.parse_args([])
-    assert defaults.mode == "small" and defaults.window_size == (940, 400)
+    assert defaults.mode == "small" and defaults.window_size == (640, 720)
     assert defaults.window_position is None and defaults.claude_args == []
 
 

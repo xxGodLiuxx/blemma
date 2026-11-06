@@ -36,7 +36,7 @@ HOOKS = (
     ("UserPromptSubmit", None, "state.py", 5),
     ("Stop", None, "state.py", 5),
 )
-PAGE_KEYS = frozenset(("dwell", "scan", "key", "lang", "sound", "mode", "scale", "font", "theme", "desc", "trail"))
+PAGE_KEYS = frozenset(("dwell", "scan", "key", "lang", "sound", "mode", "scale", "font", "theme", "desc", "trail", "click"))
 
 
 def page_options(environment: str, assignments: list[str]) -> dict[str, str]:
@@ -109,9 +109,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="板と設定を用意し、Claude の起動行だけ表示 (板を残すには --keep-board)\n"
                              "Prepare the board/configs and print the Claude command (--keep-board retains the board)")
     parser.add_argument("--window-size", type=size_value,
-                        default=os.environ.get("BLEMMA_WINDOW_SIZE", "940,400"), metavar="W,H",
-                        help="小窓の幅,高さ (BLEMMA_WINDOW_SIZE・既定 940,400)\n"
-                             "Window size (BLEMMA_WINDOW_SIZE; default: 940,400)")
+                        default=os.environ.get("BLEMMA_WINDOW_SIZE", "640,720"), metavar="W,H",
+                        help="小窓の幅,高さ (BLEMMA_WINDOW_SIZE・既定 640,720)\n"
+                             "Window size (BLEMMA_WINDOW_SIZE; default: 640,720)")
     parser.add_argument("--window-position", type=position_value,
                         default=os.environ.get("BLEMMA_WINDOW_POSITION", "bottom-right"), metavar="X,Y",
                         help="小窓の位置 (BLEMMA_WINDOW_POSITION・既定 右下)\n"

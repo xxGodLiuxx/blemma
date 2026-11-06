@@ -328,6 +328,7 @@
   }
 
   function renderFan(m) {
+    disarm();
     var fan = $("fan"), clock = $("fan-time"), undoZone = $("undo-zone");
     if (undoZone.parentNode !== $("surface")) $("surface").appendChild(undoZone);
     $("undo-btn").style.clipPath = "";
@@ -462,8 +463,7 @@
   }
 
   function findBtn(key) {
-    if (key === "close" || key === "sheet-next") return $(key === "close" ? "panel-close" : "panel-next");
-    if (key === "sheet") return $("more");
+    if (key === "more") return $("more");
     if (key === "undo") {
       var u = $("undo-btn");
       return u.hidden || u.disabled ? null : u;
@@ -508,7 +508,6 @@
       rem.classList.remove("low");
       setText($("fan-time"), "");
     }
-    if (S.sheet) updateSheet();
     updateMore();
     var qn = S.snap ? S.snap.queue : 0;
     setText($("queue"), qn > 0 ? C.fmt(T.queue, { n: qn }) : "");
@@ -624,22 +623,16 @@
       if (key === "theme") toggleTheme();
       return;
     }
-    if (key === "close" || key === "sheet-next") {
-      if (S.sheet && by !== "key" && by !== "switch" && performance.now() < S.sheetArmAt) return;  /* 開いた直後の視線の click は受けない */
-      if (key === "close") { closeOverlay(); return; }
-      sheetPage(1);
+    if (key === "close") { closeOverlay(); return; }
+    if (key === "more") {                                  /* 和紙の続きを 1 画面分送る。最後まで読んだら先頭へ */
+      copyPage();
       S.dwell.reset();
-      S.dwell.block(S.over);                               /* 見つめ直すまで次の頁へ送らない */
+      S.dwell.block(S.over);                               /* 見つめ直すまで次へ送らない */
       setFill(null, 0);
-      return;
-    }
-    if (key === "sheet") {
-      if (performance.now() >= (S.guardUntil || 0)) openSheet();
       return;
     }
     var card = S.card;
     if (!card || S.overlay) return;
-    if (by === "click" && performance.now() < (S.guardUntil || 0)) return;  /* 紙を閉じた直後の視線の click では答えない */
     if (key === "undo") {                                  /* 写しが deciding なら、/answer の返りを待たずに取り消せる */
       if (!S.undoing && undoOpen()) doUndo(by);
       return;
@@ -738,8 +731,6 @@
     S.lastY = e.clientY;
     S.pointerAt = performance.now();
     S.over = dwellKeyOf(e.target);
-    var inCopy = !!(e.target && e.target.closest && e.target.closest("#copy"));
-    if (inCopy !== !!S.overCopy) { S.overCopy = inCopy; S.copyAt = S.pointerAt; }
     if (S.firstPointer) { S.dwell.block(S.over); S.firstPointer = false; }
     if (S.over) spotlight(S.btns[S.over]);
     if (S.options.trail === "on") {
@@ -769,7 +760,6 @@
     S.lastInput = "key";
     if (S.overlay) {
       if (e.key === "Escape") { e.preventDefault(); closeOverlay(); }
-      else if (S.sheet) sheetKey(e, sw);
       return;
     }
     var active = viewDocument.activeElement && viewDocument.activeElement.closest
@@ -798,6 +788,7 @@
     }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.key === "Escape") { e.preventDefault(); press("fixed", "key"); return; }
+    if (e.key === "PageDown" && !$("more").hidden) { e.preventDefault(); copyPage(); return; }
     if (e.key === "0") { e.preventDefault(); press("terminal", "key"); return; }
     if (S.fan && /^Arrow(Left|Right|Up|Down)$/.test(e.key)) {
       e.preventDefault();
@@ -820,21 +811,22 @@
   function onClick(e) {
     if (e.detail === 0) return;                             /* キーで起きた click は keydown で扱った */
     var b = e.target && e.target.closest ? e.target.closest("[data-key]") : null;
-    if (!b && e.target && e.target.closest && e.target.closest("#copy") && !$("more").hidden) {
-      var picked = viewWindow.getSelection();              /* 字を選んだだけの時は開かない */
-      if (!picked || picked.isCollapsed) press("sheet", "click");
-      return;
-    }
     if (!b || b.disabled) return;
-    S.lastInput = S.pointerType === "touch" ? "touch" : "click";
-    press(b.dataset.key, S.pointerType === "touch" ? "touch" : "click");
+    var how = S.pointerType === "touch" ? "touch" : "click";
+    S.lastInput = how;
+    if (S.fan && S.options.click !== "single" && (b.parentNode === $("fan") || b.closest(".fan-aux"))) {
+      var at = performance.now();
+      if (S.armKey !== b.dataset.key || at - S.armAt > ARM_MS) { armChoice(b, at); return; }
+      disarm();
+    }
+    press(b.dataset.key, how);
   }
 
   /* 毎こま = 滞留・走査・表示の秒 */
   function frame(now) {
     now = performance.now();  // Use one clock even after adopting the DOM into PiP.
     var dwelling = false;
-    if (S.dwellMs > 0 && S.pointerType !== "touch" && (!S.overlay || S.sheet) && inputActive()) {
+    if (S.dwellMs > 0 && S.pointerType !== "touch" && !S.overlay && inputActive()) {
       var r = S.dwell.update(S.over, now);
       setFill(r.target, r.progress);
       dwelling = !!r.target;
@@ -846,9 +838,7 @@
         press(r.target, "dwell");
       }
     }
-    /* 切れている左の文章を見つめたら全文の紙を開く。1 度閉じた札では見つめただけでは開かない */
-    if (S.overCopy && S.dwellMs > 0 && S.mode === "small" && !S.overlay && S.card && S.card.state === "shown" &&
-        S.sheetSeen !== S.card.id && now - S.copyAt >= 800 && !$("more").hidden) openSheet();
+    if (S.armKey && now - S.armAt > ARM_MS) { disarm(); if (S.spotBtn) spotlight(S.spotBtn); }
     if (S.scanMs > 0) {
       var card = S.card;
       var target = null;
@@ -886,6 +876,7 @@
 
   /* 見つめて本文を送る = 視線だけの人は巻物を回せない (§4.1)。本文の枠の下寄りで下へ・上寄りで上へ */
   function scrollerAt(x, y) {
+    if (S.fan) return null;                                /* 和紙の文章は読む間に動かさない。続きは「▼ 続き」で送る */
     var n = viewDocument.elementFromPoint(x, y);
     while (n && n !== viewDocument.body) {
       var named = n.id === "copy" || n.id === "card" || n.id === "spotlight" || n.tagName === "PRE" ||
@@ -922,11 +913,11 @@
     d.addEventListener("pointermove", active(onPointer), { passive: true });
     d.addEventListener("pointerover", active(onPointer), { passive: true });
     d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; }), { passive: true, capture: true });
-    d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.overCopy = false; S.lastX = -1; S.scrollRest = 0; }));
+    d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.lastX = -1; S.scrollRest = 0; }));
     w.addEventListener("blur", active(releaseDwell));
     w.addEventListener("focus", active(function () { releaseDwell(); S.scan.restart(performance.now()); }));
     d.addEventListener("visibilitychange", active(releaseDwell));
-    w.addEventListener("resize", active(function () { fitFan(); if (S.sheet) fitSheet(); }));
+    w.addEventListener("resize", active(fitFan));
     d.addEventListener("keydown", active(onKeyDown));
     d.addEventListener("keyup", active(function (e) { delete S.held[e.code || e.key]; }));
     d.addEventListener("click", active(onClick));
@@ -937,8 +928,8 @@
     if (viewWindow !== window) { viewWindow.close(); return; }
     if (!window.documentPictureInPicture || S.pipOpening) return;
     S.pipOpening = true;
-    var width = Math.max(940, S.fan ? parseFloat($("fan").style.width) * S.options.scale + 320 : 0);
-    var height = Math.max(400, S.fan ? parseFloat($("fan").style.height) * S.options.scale + 40 : 0);
+    var width = Math.max(640, S.fan ? parseFloat($("fan").style.width) * S.options.scale + 20 : 0);
+    var height = Math.max(720, S.fan ? parseFloat($("fan").style.height) * S.options.scale + 380 : 0);
     window.documentPictureInPicture.requestWindow({ width: width, height: height }).then(function (w) {
       var surface = $("surface");
       w.addEventListener("pagehide", function () {
@@ -978,79 +969,43 @@
   function closeOverlay() {
     S.overlay = null;
     $("overlay").hidden = true;
-    if (S.sheet) {                                         /* 閉じた直後の視線の click で羽根を押さない */
-      S.sheet = null;
-      S.guardUntil = performance.now() + 1200;
-      $("overlay").classList.remove("sheet");
-      delete $("panel-close").dataset.dwell;
-      $("panel-next").hidden = true;
-      $("panel-body").style.fontSize = "";
-    }
     S.dwell.reset();
     S.dwell.block(keyAtPointer());
   }
 
-  /* 全文の紙 = 左の文章を窓いっぱいの押せない紙に大きく出す。設定の面と同じ守りが効く (答え・走査は止まる)。
-     閉じるボタンは羽根の無い左に置き、視線が外れても勝手に閉じない (閉じた視線の下に羽根を出さない) */
-  function openSheet() {
-    var card = S.card;
-    if (!card || card.state !== "shown" || S.overlay || S.mode !== "small") return;
-    var m = C.buildScreen(card, S.ui, S.lang);
-    showPanel(L()["kind_" + card.kind], function (body) {
-      if (m.head) body.appendChild(el("h3", "sheet-head", m.head));
-      if (m.text) body.appendChild(el("p", "sheet-text", m.text));
-      m.blocks.forEach(function (b) { body.appendChild(blockEl(b)); });
-      if (m.question) body.appendChild(el("p", "sheet-question", m.question));
-    });
-    S.sheet = card.id;
-    S.sheetSeen = card.id;
-    S.sheetArmAt = performance.now() + 1200;
-    $("overlay").classList.add("sheet");
-    $("panel-close").dataset.dwell = "1";
-    updateSheet();
-    fitSheet();
-    S.dwell.block(keyAtPointer());
-  }
-
-  /* 紙に全部が収まる一番大きな字。18px でも収まらなければ「次へ」で送る */
-  function fitSheet() {
-    var body = $("panel-body"), size = 26;
-    do {
-      body.style.fontSize = (size * S.options.font) + "px";
-      size -= 2;
-    } while (size >= 18 && body.scrollHeight > body.clientHeight);
-    body.scrollTop = 0;
-    $("panel-next").hidden = body.scrollHeight <= body.clientHeight + 2;
-  }
-
-  function sheetPage(dir) {
-    var body = $("panel-body"), end = body.scrollHeight - body.clientHeight;
-    var step = Math.max(40, body.clientHeight - 40);
-    body.scrollTop = dir > 0 && body.scrollTop >= end - 2 ? 0 : body.scrollTop + dir * step;
-  }
-
-  function sheetKey(e, sw) {
-    var body = $("panel-body");
-    if (e.key === "PageDown" || e.key === "ArrowDown") { e.preventDefault(); sheetPage(1); }
-    else if (e.key === "PageUp" || e.key === "ArrowUp") { e.preventDefault(); sheetPage(-1); }
-    else if (sw || e.key === "Enter" || e.key === " ") {   /* 1 鍵の人 = 押すたびに次の頁・最後の頁で閉じる */
-      e.preventDefault();
-      if (body.scrollTop >= body.scrollHeight - body.clientHeight - 2) closeOverlay();
-      else sheetPage(1);
+  /* 扇の選択肢 = 1 回目の click は選ぶだけ。同じ羽根をもう 1 回押すと決まる (ダブルクリックもこの形) */
+  var ARM_MS = 1500;
+  function armChoice(b, now) {
+    disarm();
+    S.armKey = b.dataset.key;
+    S.armBtn = b;
+    S.armAt = now;
+    b.classList.add("armed");
+    spotlight(b);
+    var t = $("fan-script-1");
+    if (t && !t.firstChild.textContent) {
+      t.style.fontSize = "18px";
+      setText(t.firstChild, L().double_hint);
     }
   }
 
-  /* 紙の左上 = 残り時間。札が終わっても紙は勝手に閉じない (次の札の羽根を視線の下に出さない) */
-  function updateSheet() {
-    var live = S.card && S.card.id === S.sheet;
-    setText($("panel-title"), live ? L()["kind_" + S.card.kind] + "\n" + $("remain").textContent : L().sheet_over);
+  function disarm() {
+    if (S.armBtn) S.armBtn.classList.remove("armed");
+    S.armKey = null;
+    S.armBtn = null;
   }
 
-  /* 左の文章が切れている時だけ「▼ 全文」を見せる */
+  function copyPage() {
+    var c = $("copy"), end = c.scrollHeight - c.clientHeight;
+    c.scrollTop = c.scrollTop >= end - 2 ? 0 : c.scrollTop + Math.max(40, c.clientHeight - 36);
+  }
+
+  /* 和紙の文章が切れている時だけ「▼ 続き」を見せる */
   function updateMore() {
     var more = $("more"), c = $("copy");
     var show = S.mode === "small" && !!S.card && S.card.state === "shown" && c.scrollHeight > c.clientHeight + 2;
     if (more.hidden === show) more.hidden = !show;
+    if (show) setText(more, c.scrollTop >= c.scrollHeight - c.clientHeight - 2 ? L().more_top : L().more);
     var at = S.scanList.indexOf(more);
     if (show && at < 0) S.scanList.push(more);
     if (!show && at >= 0) S.scanList.splice(at, 1);
@@ -1112,6 +1067,7 @@
       addSelect(body, T.set_theme, "theme", [["auto", T.auto], ["light", T.light], ["dark", T.dark], ["contrast", T.contrast]], o.theme);
       addSelect(body, T.set_desc, "desc", [["on", T.on], ["off", T.off]], o.desc);
       addSelect(body, T.set_trail, "trail", [["off", T.off], ["on", T.on]], o.trail);
+      addSelect(body, T.set_click, "click", [["double", T.click_double], ["single", T.click_single]], o.click);
     });
   }
 
@@ -1152,8 +1108,6 @@
     $("phone-btn").textContent = T.phone;
     $("gear-btn").textContent = T.settings;
     $("panel-close").textContent = T.close;
-    $("panel-next").textContent = T.sheet_next;
-    $("more").textContent = T.more;
     $("gear-btn").textContent = S.mode === "small" ? "⚙" : T.settings;
     $("gear-btn").setAttribute("aria-label", T.settings);
     $("theme-btn").textContent = isDark() ? "☀" : "☾";
