@@ -562,6 +562,10 @@ class Board:
             head = self._head()
             if head is None or head.id != cid or head.state != "deciding" or head.delivering \
                     or head.ready or head.undo_until is None or now >= head.undo_until:
+                # 同じ札がまだ頭に居る時は、今の状態を添える = 頁が「ほかの頁が先に取り消した (shown)」と
+                # 「答えが渡る (deciding)」を見分けられる。札が替わった後・無い時は添えない。
+                if head is not None and head.id == cid:
+                    return 409, {"error": "not_undoable", "state": head.state}
                 return 409, {"error": "not_undoable"}
             by_s = by if by in INPUTS else "click"
             batches = _press_batches_of(by_s, presses, press_batches)

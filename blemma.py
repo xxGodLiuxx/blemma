@@ -497,6 +497,17 @@ class Clients:
             return
         if others:
             return                         # ほかの回の Claude Code が、まだこの板を使っている
+        self._stop_used(session)
+        # 自分が使っていた板と、今の run.json の板が食い違う事がある (--stop で止めた後に、別の回が新しい板を起こした)。
+        # その回は「まだ使い手 (自分) が居る」と見て新しい板を残して終わる = 最後の使い手の自分が止めないと、誰も使わない
+        # 板が残る。止めるのは、印 (起こし方が起こした板) と token つきの応答が合う板だけ = 使い回した板と同じ照合。
+        current = read_run(session.run_file)
+        if current is not None and session.info is not None and \
+                (current.pid, current.token) != (session.info.pid, session.info.token):
+            self._stop_used(BoardSession(session.run_file, current))
+
+    def _stop_used(self, session: BoardSession) -> None:
+        """最後の使い手として、板 1 つを止める (自分の子はそのまま止め、使い回した板は印と応答が合う時だけ)。"""
         marked = self._marked(session.info)
         if session.process is not None:    # 自分が起こした子 = 今の止め方 (印が読めない時も)
             if marked is False:

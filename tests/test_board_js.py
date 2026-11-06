@@ -812,6 +812,75 @@ setTimeout(function () { console.log(JSON.stringify({ early: early, edge: edge, 
     assert out == {"early": 0, "edge": 0, "sent": [{"path": "/answer", "by": "switch"}]}
 
 
+def test_a_click_right_after_the_view_changes_does_not_arm_a_blade(tmp_path, clock):
+    """扇の 2 回押し: 表示が替わった直後 0.4 秒の click は、選ぶ 1 回目にも数えない (外部のレビューの再現 = 替わって 0.1 秒後と
+    0.5 秒後の click で許可が送られた)。前の札へ向けた 2 回押しの 2 回目が新しい札の羽根を選ぶと、人が見てから押す click は
+    1 回で決まってしまう。過ぎた後は今までどおり 2 回で決まる。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + r"""
+const t = loadPage(function (path, opt) {
+  sent.push({ path: path, by: JSON.parse(opt.body).by });
+  return Promise.resolve(reply(200, { undo_ms: 3000, undo_remaining: 3 }));
+});
+show(t);
+const fan = {};
+const blade = { dataset: { key: "allow_once" }, disabled: false, parentNode: fan,
+                classList: { add: function () {}, remove: function () {} },
+                closest: function (sel) { return sel === "[data-key]" ? blade : null; } };
+t.S.btns = { allow_once: blade };
+t.S.fan = true;
+t.S.options = core.parseOptions("", {});
+t.selectWindow({ document: { getElementById: function (id) { return id === "fan" ? fan : null; } } });
+function click(at) { now = at; t.onClick({ detail: 1, target: blade }); return { armed: t.S.armKey || null, sent: sent.length }; }
+t.S.genAt = 5000;                                      /* 板から表示が替わった */
+const seen = [click(5100), click(5500), click(5700)];  /* 0.1 秒後 = 数えない・0.5 秒後 = 選ぶだけ・0.7 秒後 = 決まる */
+setTimeout(function () { console.log(JSON.stringify({ seen: seen, sent: sent })); }, 20);
+""").replace("__CARD__", json.dumps(card)))
+    assert out["seen"] == [{"armed": None, "sent": 0}, {"armed": "allow_once", "sent": 0}, {"armed": None, "sent": 1}]
+    assert out["sent"] == [{"path": "/answer", "by": "click"}]
+
+
+def test_undo_can_be_pressed_inside_a_short_grace(tmp_path, clock):
+    """取り消しの猶予が短い板 (--undo-ms 300) でも、猶予の間に取り消しが押せる (外部のレビューの再現 = 0.4 秒の「数えない間」に
+    猶予がまるごと埋まり、10 ms 刻みで押しても 1 度も送られなかった)。数えない間は猶予の半分まで。既定の 3 秒では 0.4 秒のまま。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + r"""
+function run(undoMs, times) {
+  const posted = [];
+  const t = loadPage(function (path) { posted.push(path); return Promise.resolve(reply(200, { state: "shown" })); });
+  show(t);
+  t.S.card = Object.assign({}, card, { state: "deciding" });
+  t.S.snap = { undo_ms: undoMs };
+  t.S.genAt = 5000;                                    /* 取り消しの画面が出た */
+  t.S.undoAt = 5000 + undoMs;
+  return times.map(function (at) { now = at; t.S.undoing = false; t.press("undo", "switch"); return posted.length; });
+}
+function clickUndo(undoMs, at) {                       /* マウスの道 (onClick)。取り消しは扇の中の帯に居るが、羽根ではない */
+  const posted = [];
+  const t = loadPage(function (path) { posted.push(path); return Promise.resolve(reply(200, { state: "shown" })); });
+  show(t);
+  const fan = {}, zone = { parentNode: fan };
+  const undo = { dataset: { key: "undo" }, disabled: false, parentNode: zone,
+                 closest: function (sel) { return sel === "[data-key]" ? undo : null; } };
+  t.S.fan = true;
+  t.S.options = core.parseOptions("", {});
+  t.selectWindow({ document: { getElementById: function (id) { return id === "fan" ? fan : null; } } });
+  t.S.card = Object.assign({}, card, { state: "deciding" });
+  t.S.snap = { undo_ms: undoMs };
+  t.S.genAt = 5000;
+  t.S.undoAt = 5000 + undoMs;
+  now = at;
+  t.onClick({ detail: 1, target: undo });
+  return posted.length;
+}
+console.log(JSON.stringify({ short: run(300, [5100, 5149, 5150, 5299, 5300]), usual: run(3000, [5100, 5399, 5400]),
+                             click: [clickUndo(300, 5100), clickUndo(300, 5150), clickUndo(3000, 5399), clickUndo(3000, 5400)] }));
+""").replace("__CARD__", json.dumps(card)))
+    assert out["short"] == [0, 0, 1, 2, 2]             # 0.15 秒から押せる・猶予が切れた 0.3 秒では送らない
+    assert out["usual"] == [0, 0, 1]
+    assert out["click"] == [0, 1, 0, 1]                # click の取り消しも同じ線・1 回で送る (2 回押しにしない)
+
+
 def test_quiet_moment_is_only_for_changes_from_the_board(tmp_path):
     """板から来た替わり (新しい札・取り消しで戻った) の時だけ、押しを数えない間と、走査の静かな 1 こまを置く。
     札の中で人が画面を進めた時 (拒否 → 理由) は置かない = 続けて打つ 2 打目を捨てない。"""
@@ -982,6 +1051,26 @@ t.press("undo", "key");
 setTimeout(function () { console.log(JSON.stringify({ sent: sent, notice: t.S.notice || "" })); }, 30);
 """).replace("__CARD__", json.dumps(card)))
     assert out == {"sent": ["/undo"], "notice": "取り消しは間に合いませんでした (答えは渡りました)"}
+
+
+def test_undo_refused_because_another_page_undid_it_is_not_called_late(tmp_path, clock):
+    """ほかの頁が先に取り消した時の 409 (板が「札は選ぶ所へ戻っている」と添える) では、「答えは渡りました」と言わない
+    (外部のレビューの再現 = 2 枚の頁から続けて取り消すと、後の頁が、渡っていない答えを渡ったと表示した)。"""
+    _, card = _board(clock)
+    out = node(tmp_path, (PAGE_SETUP + r"""
+function run(body) {
+  const t = loadPage(function () { return Promise.resolve(reply(409, body)); });
+  show(t);
+  t.S.lang = "ja";
+  t.S.card = Object.assign({}, card, { state: "deciding" });
+  t.S.undoAt = performance.now() + 3000;
+  t.press("undo", "key");
+  return t;
+}
+const undone = run({ error: "not_undoable", state: "shown" }), delivering = run({ error: "not_undoable", state: "deciding" });
+setTimeout(function () { console.log(JSON.stringify({ undone: undone.S.notice || "", delivering: delivering.S.notice || "" })); }, 30);
+""").replace("__CARD__", json.dumps(card)))
+    assert out == {"undone": "", "delivering": "取り消しは間に合いませんでした (答えは渡りました)"}
 
 
 def test_a_failed_watch_is_not_kept_as_the_target_of_a_kick(tmp_path):

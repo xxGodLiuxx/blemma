@@ -822,6 +822,12 @@
 
   /* ---- 押す ---- */
   var SETTLE_MS = 400;                /* 表示が替わってから、押しを数え始めるまで */
+  /* 取り消しは、猶予の短い板 (--undo-ms が 0.8 秒より短い) では猶予の半分まで = 許された猶予なら、その間に必ず押せる時間が残る
+     (0.4 秒のままだと、猶予 0.4 秒以下の板では取り消しが 1 度も押せない) */
+  function settleFor(key) {
+    var undoMs = key === "undo" && S.snap ? S.snap.undo_ms : 0;
+    return undoMs > 0 ? Math.min(SETTLE_MS, undoMs / 2) : SETTLE_MS;
+  }
   function press(key, by) {
     if (key === "reset" || key === "phone" || key === "gear" || key === "pip" || key === "theme" || key === "copy") {
       if (by !== "key" && by !== "click") return;          /* 視線では押さない (§4.5) */
@@ -837,7 +843,7 @@
     /* 表示が替わった直後の押しは数えない (線 3) = 前の表示へ向けた遅れた 1 押しや、スイッチ・鍵のばたつきが、
        新しい札の先頭 (許可) や出たばかりの「取り消す」に当たらない。人が新しい表示を見て押すには、これより長く掛かる。
        滞留は「入り直すまで数えない」(bumpGen の releaseDwell) が別に守る */
-    if (by !== "dwell" && performance.now() - S.genAt < SETTLE_MS) return;
+    if (by !== "dwell" && performance.now() - S.genAt < settleFor(key)) return;
     if (key === "more") {                                  /* 和紙の続きを 1 画面分送る。最後まで読んだら先頭へ */
       copyPage(1);
       S.moreNext = performance.now() + 1500;
@@ -961,7 +967,9 @@
       .then(function (r) {
         if (r.status === 200) return;
         giveBack(card.id, sent, batches);
-        if (r.status === 409) showNotice(L().undo_late);     /* 黙って答えが渡ると、取り消せたと取り違える */
+        /* 黙って答えが渡ると、取り消せたと取り違える。ほかの頁が先に取り消した時 (札は選ぶ所へ戻っている) は、
+           答えは渡っていない = 「間に合わなかった」とは言わず、取り直した表示に任せる */
+        if (r.status === 409 && !(r.data && r.data.state === "shown")) showNotice(L().undo_late);
         kick();
       }, function () {
         giveBack(card.id, sent, batches);
@@ -1083,6 +1091,9 @@
     S.lastInput = how;
     if (!assist && S.fan && S.options.click !== "single" && (b.parentNode === $("fan") || b.closest(".fan-aux"))) {
       var at = performance.now();
+      /* 表示が替わった直後の click は、選ぶ 1 回目にも数えない (press の SETTLE_MS と同じ線 3)。数えると、前の札へ向けた
+         2 回押しの 2 回目が新しい札の羽根を選び、人が見てから押す click は 1 回で決まってしまう */
+      if (at - S.genAt < SETTLE_MS) return;
       var step = C.armStep(S.armKey ? { key: S.armKey, at: S.armAt } : null, b.dataset.key, at, ARM_MS);
       if (!step.confirm) { armChoice(b, at); return; }
       disarm();

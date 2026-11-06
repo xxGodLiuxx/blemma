@@ -235,7 +235,20 @@ def test_undo_after_grace_is_refused(clock):
     seq = b.pending(-1)["card"]["view_seq"]
     b.answer(a, seq, {"type": "allow_once"}, "dwell", 1)
     clock.advance(3.01)
-    assert b.undo(a, "key", 1)[0] == 409
+    assert b.undo(a, "key", 1) == (409, {"error": "not_undoable", "state": "deciding"})   # 答えが渡る所
+
+
+def test_refused_undo_tells_whether_the_card_is_back(clock):
+    """断った取り消しは、同じ札がまだ頭に居る時だけ今の状態を添える = 頁が「ほかの頁が先に取り消した (shown = 答えは
+    渡っていない)」と「答えが渡る」を見分けられる。札が替わった後・無い札には添えない。"""
+    b = new_board(clock)
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    assert b.answer(a, seq, {"type": "allow_once"}, "click", 1)[0] == 200
+    assert b.undo(a, "click", 1) == (200, {"state": "shown"})                # 1 枚目の頁の取り消し
+    assert b.undo(a, "click", 1) == (409, {"error": "not_undoable", "state": "shown"})   # 2 枚目の頁 = もう戻っている
+    assert card_of(b, a).state == "shown" and card_of(b, a).undos == 1
+    assert b.undo("no-such-card", "click", 1) == (409, {"error": "not_undoable"})
 
 
 def test_answer_at_deadline_is_expired_and_409(clock):

@@ -887,6 +887,37 @@ def test_stop_while_a_launcher_runs_clears_the_marker(isolated_repo, sessions, l
     assert client_files(isolated_repo) == []
 
 
+def test_a_board_started_after_stop_does_not_outlive_its_users(isolated_repo, sessions, launchers, capsys):
+    """回 A が走っている間に --stop → 別の回 B が新しい板を起こす → B が先に終わる (A が居るので板を残す) → A が終わる。
+    最後の使い手の A が、今の run.json の板 (B が起こした・印つき) を止める = 誰も使わない板が残らない。"""
+    launchers.start("a")
+    first = run_info(isolated_repo)
+    capsys.readouterr()
+    assert L.main(["--stop"]) == 0
+    assert capsys.readouterr() == (STOPPED, "")
+    assert not L.board_responds(first, timeout=0.05)
+    launchers.start("b")
+    second = run_info(isolated_repo)
+    assert second.pid != first.pid and L.board_responds(second)
+    launchers.end("b")
+    assert L.board_responds(second) and f"board-{second.pid}.json" in client_files(isolated_repo)   # A が居る = 残す
+    launchers.end("a")
+    sessions[1].process.wait(10)
+    assert not L.board_responds(second, timeout=0.05)
+    assert client_files(isolated_repo) == [] and not sessions[1].run_file.exists()
+
+
+def test_the_last_user_leaves_a_hand_started_board_alone(isolated_repo, sessions, launchers, capsys):
+    """上と同じ順でも、止めた後の板が手で起こした物 (印が無い) なら、最後の使い手は止めない (手で起こした板は手で止める)。"""
+    launchers.start("a")
+    capsys.readouterr()
+    assert L.main(["--stop"]) == 0
+    capsys.readouterr()
+    by_hand = L.ensure_board(isolated_repo, launchers.port)       # 印を置かない = 手で起こした板と同じ
+    launchers.end("a")
+    assert by_hand.process.poll() is None and L.board_responds(by_hand.info)
+
+
 def test_stop_needs_the_token_answer(isolated_repo, sessions, monkeypatch, capsys):
     """run.json の token で照会に答えない板は止めない (別の鍵の板・同じ port の別の server)。"""
     monkeypatch.setattr(L, "ROOT", isolated_repo)
