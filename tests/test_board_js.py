@@ -1388,13 +1388,15 @@ setTimeout(function () { console.log(JSON.stringify({ byRepeat: byRepeat, byKeyu
 
 def test_a_new_card_forgets_a_send_that_never_came_back(tmp_path, clock):
     """札が替わったら、前の札への送信の印を持ち越さない。板の写しを当てる所 (apply) から入れて確かめる
-    (返らない送信が残っていても、新しい札は押せる)。"""
+    (返らない送信が残っていても、新しい札は押せる)。新しい札は最後まで描けている (描画の途中で止まって後半を通らない形にしない)。"""
     _, card = _board(clock)
     out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + r"""
 const t = loadPage(function (path, opt) { sent.push(JSON.parse(opt.body).id); return new Promise(function () {}); });   /* 返らない送信 */
 show(t);
 const el = { hidden: true, style: {}, classList: { add: function () {}, remove: function () {}, toggle: function () {} }, dataset: {}, appendChild: function () {},
-             replaceChildren: function () {}, setAttribute: function () {}, querySelector: function () { return null; }, querySelectorAll: function () { return []; } };
+             insertBefore: function () {}, replaceChildren: function () {}, setAttribute: function () {}, querySelector: function () { return null; },
+             querySelectorAll: function () { return []; } };
+el.parentNode = el;
 t.selectWindow({ document: { hidden: false, body: el, documentElement: el, activeElement: el, elementFromPoint: function () { return null; },
                              getElementById: function () { return el; }, createElement: function () { return Object.assign({}, el, { dataset: {}, style: {} }); },
                              querySelector: function () { return null; }, querySelectorAll: function () { return []; }, contains: function () { return true; } },
@@ -1413,6 +1415,7 @@ setTimeout(function () { console.log(JSON.stringify({ stuck: stuck, cleared: cle
 """).replace("__CARD__", json.dumps(card)))
     assert out["stuck"] is True and out["cleared"] is False, out
     assert out["sent"] == [card["id"], "card-2"], out
+    assert out["drawn"] == "", out
 
 
 def test_omitted_optional_fields_are_announced_on_the_card(tmp_path):
@@ -1608,3 +1611,120 @@ console.log(JSON.stringify({ first: first.blocks, second: second.blocks, last: l
     assert out["second"] == []
     assert out["last"] == [{"label": "Confirm", "text": "Delete all records permanently?", "mono": False}]
     assert out["summary"] == ["Confirm: Yes", "Mode: safe"] and "send" in out["keys"]
+
+
+# ---- 5 巡目 (3・4 巡目の差分の反証): 頁を init() ごと DOM の代用品の中で回し、入口 (板の写し・鍵・click・pointer) から入れる ----
+
+PAGE_DOM = Path(__file__).resolve().parent / "page_dom.cjs"
+PERM_PAYLOAD = {"head": "Bash", "text": "ls", "blocks": [{"label": "command", "text": "ls", "mono": True}]}
+TWO_QUESTIONS = {"questions": [
+    {"header": "一", "question": "最初の問い", "options": [{"label": "a"}, {"label": "b"}]},
+    {"header": "二", "question": "次の問い", "options": [{"label": "c"}, {"label": "d"}]}]}
+
+PAGE_HELPERS = r"""
+function deciding(card, choice, left) {          /* 板が答えを受けた写し = 猶予の内 */
+  return Object.assign({}, card, { state: "deciding", choice: choice || { type: "allow_once" },
+                                   undo_remaining: left === undefined ? 3 : left });
+}
+function reshown(card) {                         /* 取り消せた写し = 選ぶ画面へ戻る (表示の seq が進む) */
+  return Object.assign({}, card, { state: "shown", view_seq: card.view_seq + 1, choice: null, undo_remaining: null });
+}
+function choices(c) { return c.answers().map(function (s) { return s.body.choice; }); }
+"""
+
+
+def _rule(command: str) -> list:
+    return [{"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": command}],
+             "behavior": "allow", "destination": "localSettings"}]
+
+
+def _card(clock, kind: str = "permission", payload=None) -> dict:
+    """本物の板が頁へ渡す形の札 (1 枚ごとに新しい板 = id は札ごとに別)。"""
+    lim = replace(board_server.Limits(), wait_hold=0.0, pending_hold=0.0, viewer=None)
+    board = board_server.Board(lim, clock=clock)
+    assert board.ask(kind, {"cwd": "repo"}, payload or dict(PERM_PAYLOAD))[0] == 200
+    return board.pending(-1)["card"]
+
+
+def page(tmp_path: Path, body: str, **cards):
+    """頁を init() ごと DOM の代用品 (page_dom.cjs) の中で回す筋書き。body は async の中身 (P = 代用品の道具)。
+    cards = 筋書きの中の名前 → 札。"""
+    script = "const P = require(" + json.dumps(str(PAGE_DOM)) + ");\n" + PAGE_HELPERS
+    script += "".join(f"const {name} = {json.dumps(card, ensure_ascii=False)};\n" for name, card in cards.items())
+    script += ("(async () => {\n" + body +
+               "\n})().catch(function (e) { console.error(e && e.stack || e); process.exit(1); });\n")
+    return node(tmp_path, script)
+
+
+def test_a_drag_into_a_blade_released_within_one_frame_is_not_pressed(tmp_path, clock):
+    """押したまま (羽根の外で押し始めて) 羽根へ来て、同じこまの内に離した時も、入り直すまで滞留で押さない (外したら押された =
+    離したその場の守りだけが、この筋を見張る)。押しが途中で取り消された時 (pointercancel) も同じ。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const end of ["pointerup", "pointercancel"]) {
+  const c = await P.boot({ query: "?mode=small&lang=ja&dwell=1" });
+  c.doc().layout = function (e) { return e.dataset.key === "allow_once" ? { left: 0, top: 0, width: 100, height: 100, z: 1 } : null; };
+  c.show(A);
+  await c.run(800, function () { c.pointer(300, 300); });          /* 羽根の外 */
+  c.pointer(300, 300, { type: "pointerdown", buttons: 1 });         /* 外で押し始める */
+  await c.run(200, function () { c.pointer(300, 300, { buttons: 1 }); });
+  c.pointer(50, 50, { buttons: 1 });                                /* 押したまま羽根へ */
+  c.pointer(50, 50, { type: end, buttons: 0 });                     /* 同じこまの内に離す */
+  await c.run(3000, function () { c.pointer(50, 50); });           /* 羽根の上で止まる */
+  const resting = c.answers().length;
+  await c.run(300, function () { c.pointer(300, 300); });
+  await c.run(1300, function () { c.pointer(50, 50); });           /* 入り直す */
+  out[end] = { resting: resting, reentered: c.answers().length };
+}
+console.log(JSON.stringify(out));
+""", A=a)
+    assert out == {"pointerup": {"resting": 0, "reentered": 1}, "pointercancel": {"resting": 0, "reentered": 1}}
+
+
+def test_moving_to_pip_while_presses_settle_clears_the_mark_on_the_first_page(tmp_path, clock):
+    """押しを数えない間の印 (body.settling) を付けた後、その間に PiP の窓へ移っても、間が終われば元の頁の印も消す
+    (残ると、外の道具や試験が「まだ押せない」と読み続ける)。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+const c = await P.boot({ query: "?mode=small&lang=ja", pip: true });
+c.show(A);                                         /* 替わった = 数えない間の印が付く */
+const marked = c.win.document.body.classList.contains("settling");
+await c.key("Tab", "Tab");
+c.$("pip-btn").focus();
+await c.key("Enter", "Enter");                     /* 数えない間の内に PiP へ移る */
+await c.run(20);
+const inPip = c.vwin() !== c.win;
+await c.run(600);                                  /* 数えない間が終わる */
+console.log(JSON.stringify({ marked: marked, inPip: inPip, home: c.win.document.body.classList.contains("settling"),
+                             pip: c.doc().body.classList.contains("settling") }));
+""", A=a)
+    assert out == {"marked": True, "inPip": True, "home": False, "pip": False}
+
+
+def test_a_window_reply_that_breaks_still_lets_the_next_shape_go(tmp_path):
+    """窓の形の頼みの返りを扱う所が例外で終わっても (固定の釦がまだ無い頁など)、待ちの印を残さない = 次の形を送れる。"""
+    out = node(tmp_path, r"""
+const reqs = [];
+const t = loadPage(function (path, opt) {
+  reqs.push(JSON.parse(opt.body));
+  return Promise.resolve({ status: 200, json: function () { return Promise.resolve({ found: true, ok: true, pin: false }); } });
+});
+const svg = { getBoundingClientRect: function () { return { left: 10, top: 10, width: 300 }; } };
+let pipButton = null;                                  /* 最初の返りの時は固定の釦が無い = 返りの扱いが例外で終わる */
+const els = { closed: { querySelector: function () { return svg; } } };
+const w = t.window;
+w.document = { getElementById: function (id) { return id === "pip-btn" ? pipButton : els[id] || null; } };
+t.selectWindow(w);
+t.S.mode = "small"; t.S.token = "x"; t.S.options = core.parseOptions("clear=on", {}); t.S.shapeSig = "null";
+w.devicePixelRatio = 1.5; w.outerWidth = 320; w.outerHeight = 120; w.innerWidth = 306; w.innerHeight = 83;
+t.pushShape();
+setTimeout(function () {
+  const busy = t.S.shapeBusy;
+  pipButton = {};
+  svg.getBoundingClientRect = function () { return { left: 20, top: 10, width: 300 }; };
+  t.pushShape();                                       /* 次の形 */
+  setTimeout(function () { console.log(JSON.stringify({ busy: busy, sent: reqs.length })); }, 20);
+}, 20);
+""")
+    assert out == {"busy": False, "sent": 2}
