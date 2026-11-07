@@ -167,7 +167,10 @@
   function refreshView(leaveFocus) {
     var k = C.viewKey(S.card, S.ui, S.lang);
     if (k !== S.key) {
-      S.ui.marks = [];
+      /* 複数選択の印を消すのは、表示が替わった時だけ (§4.2 ①)。S.key が "" = 強いた描き直し (配色・設定・PiP の窓の出入り) は
+         同じ画面 = 印を残す (消すと、印 0 個でも「次へ」が押せる MCP の任意の欄で、空の答えが送れた・最終デバッグ 1 巡目 #27)。
+         世代は今までどおり進める (押しを数えない間・滞留の解き・走査の頭出しは残す) */
+      if (S.key !== "") S.ui.marks = [];
       S.key = k;
       render();
       /* 取り消しの枠と「▼ 続き」を先に出し入れする = この後に消える物を pointer の下 (滞留の守り) と焦点の在処に数えない */
@@ -1009,11 +1012,12 @@
     S.ui = r.ui;
     var k = C.viewKey(card, S.ui, S.lang);
     var moved = r.gen || k !== S.key;                      /* 印を付けただけ = 世代は進めない */
+    var lit = S.scanEl;                                    /* 描き直しは走査の光を外して手放す = 先に覚える */
     S.key = k;
     if (moved) focusUsed();                                /* 自分の押しで札の中を進めた = 札の釦に在った焦点は使われた */
     render();
     updateSide(performance.now());
-    if (!moved) return;
+    if (!moved) { keepLight(lit, performance.now()); return; }   /* 印で「次へ」が出入りした = 光は同じ釦に */
     S.stepAt = performance.now();                          /* 札の中を進めた時刻 (名指しで進めた直後の、焦点任せの押しを数えない) */
     setSettling(true);                                     /* その間も頁の印を付ける (外の道具が「もう押せる」を読み違えない) */
     /* 「前の画面へ」で戻った = 鍵の焦点は先頭 (許可) でなく、来た元の「拒否 …」へ (押し直しが許可に当たらない) */
@@ -1305,6 +1309,7 @@
         now - (S.focusAt || -1e9) >= SETTLE_MS) setSettling(false);
     if (S.armKey && now - S.armAt > ARM_MS) { disarm(); if (S.spotBtn) spotlight(S.spotBtn); }
     if (S.overMore) hoverMore(now);
+    var scanning = false;                                    /* 走査が押す番か (光っている時と、光の前の静かな 1 こま) */
     if (S.scanMs > 0) {
       var card = S.card;
       var target = null;
@@ -1321,6 +1326,7 @@
       } else if (card && card.state === "shown" && !S.overlay && !S.answering && inputActive() && !moving) {
         var i = S.scan.index(now, S.scanList.length);
         target = i >= 0 ? S.scanList[i] : null;
+        scanning = true;
       }
       if (S.scanEl !== target) {
         if (S.scanEl) S.scanEl.classList.remove("scan");
@@ -1339,6 +1345,11 @@
         if (target) spotlight(target);
       }
     }
+    /* 走査が回っている間 (光っている時と静かな 1 こま = pointer が止まっている時) は、pointer の載った羽根を光らせず、鍵の焦点は
+       光と別の形にする (CSS の body.scanning) = 光って見えるのは、次の 1 押しで押される羽根だけ (最終デバッグ 1 巡目 #3)。
+       今見ている文書の印を毎こま揃える = 走査を切った後も、PiP の窓へ移った・戻った後も、印が古いまま残らない */
+    var page = viewDocument.body;
+    if (page && page.classList) page.classList.toggle("scanning", scanning || !!S.scanEl);
     gazeScroll(now);
     if (now - S.sideAt > 250) {
       S.sideAt = now;
@@ -1633,6 +1644,32 @@
     var at = S.scanList.indexOf(more);
     if (show && at < 0) S.scanList.push(more);
     if (!show && at >= 0) S.scanList.splice(at, 1);
+    if (show !== at >= 0) keepLight(S.scanEl, performance.now());
+  }
+
+  /* 走査の列の長さだけが変わった (複数選択の印で「次へ」が出入りした・「▼ 続き」が出入りした) = 光っていた釦が列に残って
+     いれば、その位置に合わせて頭の時刻を置き直す (こまの区切りの位相は保つ)。置き直さないと、新しい長さで割り直した光が同じ
+     こまの中で別の釦へ跳び、跳ぶ前の光へ向けたスイッチが跳んだ先 (扇の許可・大きな板の「端末で答える」) を押す。作り直した
+     釦は鍵で探して、すぐ光を付け直す。光っていた釦が列から消えた時は、静かな 1 こまの後に頭から。光が無い時と静かな間の
+     内は触らない。世代は進めない (印は残す・§4.2) */
+  function keepLight(lit, now) {
+    if (!lit || !(S.scanMs > 0) || now < S.scan.t0 || !S.card || S.card.state !== "shown") return;
+    var key = lit.dataset ? lit.dataset.key : null, at = -1;
+    for (var i = 0; i < S.scanList.length && at < 0; i++) {
+      if (S.scanList[i] === lit || (key && S.scanList[i].dataset.key === key)) at = i;
+    }
+    if (at < 0) {
+      S.scan.restart(now + scanQuiet());
+      if (S.scanEl) { S.scanEl.classList.remove("scan"); S.scanEl = null; }
+      return;
+    }
+    S.scan.restart(now - (now - S.scan.t0) % S.scan.ms - at * S.scan.ms);
+    var b = S.scanList[at];
+    if (S.scanEl !== b) {
+      if (S.scanEl) S.scanEl.classList.remove("scan");
+      b.classList.add("scan");
+      S.scanEl = b;
+    }
   }
 
   function openPhone() {

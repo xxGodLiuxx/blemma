@@ -3708,3 +3708,229 @@ console.log(JSON.stringify(out));
         assert out[error] == {"sent": 1, "kicked": True, "idle": "時間切れ。端末で答えてください", "next": ""}, out
     assert out["stale"]["sent"] == 1 and out["stale"]["kicked"] is True, out
     assert out["stale"]["idle"] == "画面が古くなっていました。もう一度選んでください", out
+
+
+# ---- 最終デバッグ 1 巡目の組 B (走査の光・複数選択の印・閉じるのダブルクリック) ----
+
+SCAN_HELPERS = r"""
+function lit(c) { return c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; }); }
+function step(c) { return Math.floor((c.clock.now - c.S.scan.t0) / c.S.scan.ms); }     /* 走査の何こま目か */
+async function until(c, fn) { for (let i = 0; i < 4000 && !fn(); i++) await c.run(16); return fn(); }
+"""
+MULTI_THREE = {"questions": [{"header": "一", "question": "どれですか", "multiSelect": True,
+                              "options": [{"label": "a"}, {"label": "b"}, {"label": "c"}]}]}
+
+
+def test_a_mark_that_brings_next_in_or_out_keeps_the_scan_light_on_the_same_button(tmp_path, clock):
+    """複数選択の印で「次へ」が押せる・押せないに替わると、走査の列の長さだけが変わる (大きな板・3 択 = 5 ⇄ 6)。光は同じこまの
+    中で同じ釦に留まる (最終デバッグ 1 巡目 #21 = 列の長さで割り直して、こま 5 で印を付けた光が opt:0 から「端末で答える」へ跳び、
+    0.3 秒後の 2 押し目が terminal を送った・こま 18 で印を外すと「止」へ跳び、2 押し目が skip を送った)。次のこまで次の釦へ進む。
+    対照 = こま 1 は列の長さが替わっても同じ釦 (今までどおり)。"""
+    q = _card(clock, "question", MULTI_THREE)
+    out = page(tmp_path, SCAN_HELPERS + r"""
+const out = {};
+let c = await P.boot({ query: "?mode=large&lang=ja&scan=1.5" });
+c.show(Q);
+await until(c, function () { return step(c) === 5; });
+await c.run(16);
+const a = { at5: lit(c), n: c.S.scanList.length };       /* 5 % 5 = 頭の opt:0 (「次へ」は押せない = 列は 5) */
+await c.key(" ", "Space");                                 /* 印を付ける = 「次へ」が列に入る */
+a.marks = c.S.ui.marks.slice(); a.n2 = c.S.scanList.length; a.same = lit(c);
+await c.run(16);
+a.frame = lit(c);
+await c.run(300);
+await c.key(" ", "Space");                                 /* 0.3 秒後の 2 押し目 = 同じ opt:0 の印を外すだけ */
+await c.run(16);
+a.marks2 = c.S.ui.marks.slice(); a.after = lit(c); a.sent = choices(c);
+await until(c, function () { return lit(c)[0] !== "opt:0"; });
+a.next = lit(c);
+out.a = a;
+
+c = await P.boot({ query: "?mode=large&lang=ja&scan=1.5" });
+c.show(Q);
+await c.run(500);
+await c.key("1", "Digit1");                                /* 光の出る前に数字で印 = 列は初めから 6 */
+const b = { marks: c.S.ui.marks.slice(), n: c.S.scanList.length };
+await until(c, function () { return step(c) === 18; });
+await c.run(16);
+b.at18 = lit(c);                                           /* 18 % 6 = opt:0 */
+await c.key(" ", "Space");                                 /* 印を外す = 「次へ」が列から出る */
+b.marks2 = c.S.ui.marks.slice(); b.n2 = c.S.scanList.length;
+await c.run(16);
+b.after = lit(c);
+await c.run(300);
+await c.key(" ", "Space");                                 /* 2 押し目 = 同じ opt:0 に印を付け直すだけ */
+await c.run(16);
+b.marks3 = c.S.ui.marks.slice(); b.sent = choices(c);
+out.b = b;
+
+c = await P.boot({ query: "?mode=large&lang=ja&scan=1.5" });
+c.show(Q);
+await until(c, function () { return step(c) === 1; });
+await c.run(16);
+const k = { at1: lit(c) };                                 /* 1 % 5 = opt:1 */
+await c.key(" ", "Space");
+await c.run(16);
+k.after = lit(c); k.marks = c.S.ui.marks.slice();
+await until(c, function () { return lit(c)[0] !== "opt:1"; });
+k.next = lit(c);
+out.k1 = k;
+console.log(JSON.stringify(out));
+""", Q=q)
+    assert out["a"] == {"at5": ["opt:0"], "n": 5, "marks": [0], "n2": 6, "same": ["opt:0"], "frame": ["opt:0"],
+                        "marks2": [], "after": ["opt:0"], "sent": [], "next": ["opt:1"]}, out
+    assert out["b"] == {"marks": [0], "n": 6, "at18": ["opt:0"], "marks2": [], "n2": 5, "after": ["opt:0"],
+                        "marks3": [0], "sent": []}, out
+    assert out["k1"] == {"at1": ["opt:1"], "after": ["opt:1"], "marks": [1], "next": ["opt:2"]}, out
+
+
+def test_more_coming_into_the_scan_list_keeps_the_scan_light_on_the_same_blade(tmp_path, clock):
+    """扇の権限の札で、光が「二」(拒否 …) に居るこま 5 に本文が溢れて「▼ 続き」が列の末尾に入っても (列 4 → 5)、光は「二」に
+    留まり、スイッチは「拒否 …」を押す (最終デバッグ 1 巡目 #21 = 5 % 5 で頭の「一」(許可) へ跳び、Space が allow_once を送った)。"""
+    perm = _card(clock)
+    out = page(tmp_path, SCAN_HELPERS + r"""
+const c = await P.boot({ query: "?mode=small&lang=ja&scan=1.5" });
+c.show(PERM);
+await until(c, function () { return step(c) === 5; });
+await c.run(16);
+const r = { at5: lit(c), n: c.S.scanList.length };        /* 一・二・止・戻 = 5 % 4 = 二 */
+c.$("copy").scrollHeight = 900; c.$("copy").clientHeight = 180;   /* 本文が溢れた */
+await c.run(300);                                          /* 横の見直し (0.25 秒ごと) が「▼ 続き」を出して列に入れる */
+r.more = !c.$("more").hidden; r.n2 = c.S.scanList.length; r.after = lit(c);
+await c.key(" ", "Space");
+await c.run(16);
+r.sent = choices(c); r.reasons = !!c.btn("back");
+console.log(JSON.stringify(r));
+""", PERM=perm)
+    assert out == {"at5": ["deny"], "n": 4, "more": True, "n2": 5, "after": ["deny"], "sent": [], "reasons": True}, out
+
+
+MCP_OPTIONAL_MULTI = {"head": "srv", "text": "どれを付けますか",
+                      "fields": [{"name": "tags", "title": "札", "multi": True, "required": False,
+                                  "options": [{"label": "a", "value": "a"}, {"label": "b", "value": "b"}]}]}
+
+
+def test_marks_survive_the_theme_the_settings_and_the_pip_window(tmp_path, clock):
+    """複数選択の印は、配色の ☀ / ☾ (鍵と click・大きな板も)・設定の変更・「常に手前」の窓 (PiP) へ移る・戻るの描き直しで消えない
+    (最終デバッグ 1 巡目 #27 = 強いた描き直しが印を消し、印 0 個でも「次へ」が押せる MCP の任意の複数選択では、配色を替えた後の
+    「次へ」→「送る」で空の答えが送れた)。対照 = 新しい札では消える (§4.2 ①)。"""
+    q, q2 = _card(clock, "question", MULTI_SELECT), _card(clock, "question", MULTI_SELECT)
+    e = _card(clock, "elicitation", MCP_OPTIONAL_MULTI)
+    out = page(tmp_path, r"""
+function marks(c) {
+  return { marks: c.S.ui.marks.slice(), pressed: ["opt:0", "opt:1"].map(function (k) { return c.btn(k).getAttribute("aria-pressed"); }) };
+}
+async function marked(card, query, more) {          /* 札を出して opt:0・opt:1 に印 */
+  const c = await P.boot(Object.assign({ query: query }, more || {}));
+  c.show(card);
+  await c.run(500);
+  await c.click(c.btn("opt:0"));
+  await c.click(c.btn("opt:1"));
+  await c.run(50);
+  return c;
+}
+const out = {};
+let c = await marked(Q, "?mode=small&lang=ja");
+await c.key("Tab", "Tab");
+c.$("theme-btn").focus();
+await c.key("Enter", "Enter");                       /* 配色を鍵で */
+await c.run(50);
+out.themeKey = marks(c);
+c = await marked(Q, "?mode=small&lang=ja");
+await c.click(c.$("theme-btn"));                     /* 配色を click で */
+await c.run(50);
+out.themeClick = marks(c);
+c = await marked(Q, "?mode=large&lang=ja");
+await c.click(c.$("theme-btn"));                     /* 大きな板の配色 */
+await c.run(50);
+out.themeLarge = marks(c);
+c = await marked(Q, "?mode=small&lang=ja");
+await c.click(c.$("gear-btn"));
+await c.run(500);
+const trail = c.$("panel-body").querySelectorAll("select").filter(function (s) { return s.name === "trail"; })[0];
+trail.value = "on";
+trail.listeners.fire("change", { target: trail });   /* 設定の変更 (pointer の点) */
+await c.run(50);
+out.settings = marks(c);
+c = await marked(Q, "?mode=small&lang=ja", { pip: true });
+await c.click(c.$("pip-btn"));                       /* 「常に手前」= 窓が見つからず PiP の窓へ移る */
+await c.run(50);
+out.pip = Object.assign({ moved: c.vwin() !== c.win }, marks(c));
+await c.run(600);
+await c.click(c.$("pip-btn"));                       /* 「元の窓へ」 */
+await c.run(50);
+out.back = Object.assign({ home: c.vwin() === c.win }, marks(c));
+c.show(Q2);                                          /* 対照 = 新しい札 */
+await c.run(50);
+out.newCard = marks(c);
+const m = await marked(E, "?mode=small&lang=ja");    /* MCP の任意の複数選択 = 印 0 個でも「次へ」が押せる */
+await m.click(m.$("theme-btn"));
+await m.run(500);
+await m.click(m.btn("next"));
+await m.run(500);
+const summary = m.$("summary").textContent;
+await m.click(m.btn("send"));
+out.mcp = { summary: summary, sent: choices(m) };
+console.log(JSON.stringify(out));
+""", Q=q, Q2=q2, E=e)
+    kept = {"marks": [0, 1], "pressed": ["true", "true"]}
+    assert out["themeKey"] == kept and out["themeClick"] == kept and out["themeLarge"] == kept, out
+    assert out["settings"] == kept, out
+    assert out["pip"] == dict(kept, moved=True) and out["back"] == dict(kept, home=True), out
+    assert out["newCard"] == {"marks": [], "pressed": ["false", "false"]}, out
+    assert out["mcp"] == {"summary": "札: a, b", "sent": [{"type": "accept", "picks": [[0, 1]]}]}, out
+
+
+def test_a_double_click_on_close_does_not_press_the_card_button_that_comes_under_it(tmp_path, clock):
+    """「携帯で開く」・設定の板の「閉じる」をダブルクリックすると、2 回目の click (detail 2) は、閉じた後に pointer の下へ来た
+    札の釦に届く。閉じた直後の 0.4 秒は数えない (closeOverlay の bumpGen・37134be。最終デバッグ 1 巡目 #20 = 試験は Space の
+    2 打目だけで、click の経路が無かった)。大きな板と扇 (click=single)・間 50 / 150 / 300 ms、設定を下端まで送って閉じた所に
+    「作業を止める」が来る形 (大きな板の左下) も。扇では「携帯で開く」は見えない (CSS) ので設定だけ。対照 = 閉じて 0.6 秒より
+    後の click は今までどおり 1 回で送る。"""
+    perm = _card(clock)
+    out = page(tmp_path, r"""
+async function second(c, b) {                       /* ダブルクリックの 2 回目 = 押す → 焦点 → 離す → click (detail 2) */
+  const at = { target: b, clientX: 1, clientY: 1, screenX: 1, screenY: 1, button: 0, pointerType: "mouse", pointerId: 1 };
+  c.event("pointerdown", Object.assign({}, at, { buttons: 1 }));
+  b.focus();
+  c.event("pointerup", Object.assign({}, at, { buttons: 0 }));
+  c.event("click", { target: b, detail: 2 });
+  await P.settle();
+}
+const out = {};
+const cases = [["large", "phone-btn", "allow_once"], ["large", "gear-btn", "allow_once"], ["large", "gear-btn", "fixed"],
+               ["small&click=single", "gear-btn", "allow_once"]];
+for (const [mode, panel, hit] of cases) for (const gap of [50, 150, 300]) {
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(PERM);
+  await c.run(500);
+  await c.click(c.$(panel));                        /* 板を開く */
+  await c.run(500);
+  await c.click(c.$("panel-close"));                /* 1 回目 = 閉じる */
+  const closed = c.$("overlay").hidden;
+  await c.run(gap);
+  await second(c, c.btn(hit));                       /* 2 回目 = 閉じた後に pointer の下へ来た札の釦 */
+  await c.run(100);
+  out[[mode, panel, hit, gap].join(" ")] = { closed: closed, sent: choices(c) };
+}
+for (const mode of ["large", "small&click=single"]) {
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(PERM);
+  await c.run(500);
+  await c.click(c.$("gear-btn"));
+  await c.run(500);
+  await c.click(c.$("panel-close"));
+  await c.run(600);
+  await c.click(c.btn("allow_once"));                /* 対照 = 閉じて 0.6 秒後の click */
+  out["later " + mode] = choices(c);
+}
+console.log(JSON.stringify(out));
+""", PERM=perm)
+    nothing = {"closed": True, "sent": []}
+    assert out == dict({f"{m} {p} {h} {g}": nothing for m, p, h in (("large", "phone-btn", "allow_once"),
+                                                                       ("large", "gear-btn", "allow_once"),
+                                                                       ("large", "gear-btn", "fixed"),
+                                                                       ("small&click=single", "gear-btn", "allow_once"))
+                        for g in (50, 150, 300)},
+                       **{"later large": [{"type": "allow_once"}],
+                          "later small&click=single": [{"type": "allow_once"}]}), out

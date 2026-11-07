@@ -749,7 +749,7 @@
         if (at >= 0) m.splice(at, 1); else m.push(i);
         m.sort(function (a, b) { return a - b; });
         u.marks = m;
-        return { ui: u, gen: false };          /* 印を付けるだけ = 並びは変わらない */
+        return { ui: u, gen: false };          /* 印を付けるだけ = 世代は進めない。走査の列は「次へ」の分だけ伸び縮みする = 光は keepLight で保つ */
       }
       return advance([i]);
     }
