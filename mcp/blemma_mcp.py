@@ -69,7 +69,7 @@ SERVER_INSTRUCTIONS = (
     "five of your own. Never guess: index = do that choice; declined = offer other choices or ask in prose; "
     "cancelled, or an isError timeout = stop and wait for instructions without asking again. "
     "Not for free-text-only questions (names, prose, numbers) or permission checks: "
-    "Claude Code asks for permission itself."
+    "Claude Code asks for permission itself. free_text or note = the human's own words; follow them."
 )
 
 MSG_DECLINED = "人はどれも選びませんでした。別の案を出すか、文で訊いてください。"
@@ -277,11 +277,18 @@ class Server:
                 other = content.get("other_text", "")
                 if not isinstance(other, str) or len(other) > 200:
                     return tool_text("other_text must be a string of at most 200 characters", is_error=True)
+                if not other.strip():
+                    # 「ほかの答え」を選んで何も書かなかった (端末の form は空でも送れる) = 選ばなかったと同じ戻り
+                    return tool_text(json.dumps({"answer": None, "declined": True}) + "\n" + MSG_DECLINED)
                 return tool_text(json.dumps({"answer": other, "free_text": True},
                                             ensure_ascii=False))
             if isinstance(choice, str) and choice in {str(i) for i in range(1, len(choices) + 1)}:
                 i = int(choice)
-                return tool_text(json.dumps({"answer": choices[i - 1], "index": i}, ensure_ascii=False))
+                answer = {"answer": choices[i - 1], "index": i}
+                note = content.get("other_text")
+                if isinstance(note, str) and note.strip() and len(note) <= 200:
+                    answer["note"] = note.strip()      # 番号と一緒に書いた文 (端末の form) を黙って捨てない
+                return tool_text(json.dumps(answer, ensure_ascii=False))
             return tool_text("choice must match a requested option", is_error=True)
         if action == "decline":
             return tool_text(json.dumps({"answer": None, "declined": True}) + "\n" + MSG_DECLINED)

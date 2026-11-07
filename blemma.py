@@ -180,6 +180,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     option_mode = args.page_options.pop("mode", "small")
     args.mode = args.mode or (option_mode if option_mode in ("small", "large") else "small")
     args.claude_args = argv[split + 1:]
+    # Claude Code の --settings は値を 1 つだけ持ち、後に出た物が勝つ = -- の後ろに渡すと、生成した設定 (hooks 6 本と
+    # ask_board の許可) が丸ごと外れ、扇に札が来ないまま端末だけで動く。黙って効かなくせず断る。値は写さない (頼みの文を
+    # 含みうる)。判定は語の完全一致と --settings= の前置だけ = 頼みの文の 1 語や --setting-sources には当たらない。
+    if any(value == "--settings" or value.startswith("--settings=") for value in args.claude_args):
+        raise LaunchError("--settings は -- の後ろに渡せません (BLEMMA の設定と置き換わります)。"
+                          "hooks などは .claude/settings.json に書いてください / "
+                          "--settings cannot follow -- (it would replace BLEMMA's settings); "
+                          "put hooks in .claude/settings.json")
     return args
 
 
@@ -313,14 +321,14 @@ class BoardSession:
             return                         # An existing board belongs to its caller.
         stop_process(self.process)
         # TerminateProcess on Windows cannot run the server's finally/atexit cleanup.
+        # 消せない時 (Windows で別の process が run.json を開いている一瞬の PermissionError など) も止まらない =
+        # stop_reused_board と同じ扱い。残った run.json の pid は死んでいるので、後の回は使い回さずに上書きする。
         try:
             data = json.loads(self.run_file.read_text(encoding="utf-8"))
             if (isinstance(data, dict) and data.get("pid") == self.process.pid and
                     (self.info is None or data.get("token") == self.info.token)):
                 self.run_file.unlink()
-        except FileNotFoundError:
-            pass
-        except (ValueError, UnicodeError):
+        except (OSError, ValueError):      # FileNotFoundError・PermissionError は OSError、UnicodeError は ValueError の子
             pass
 
 
@@ -356,9 +364,11 @@ def ensure_board(root: Path, port: int, timeout: float = START_TIMEOUT) -> Board
             return session
         _check_start_deadline(deadline)
         launched = time.time() - 1.0  # run.json がこの時刻より後なら、自分が起こした板 (pid が転送役で合わない時)
+        # cwd は置き場 = 起こした端末の作業フォルダーを継がない (板は全部の路を自分の置き場から組む。Windows では cwd に
+        # している process が居る間、そのフォルダーの改名・削除が「使用中」で失敗する = --keep-board の板が掴み続けた)。
         session.process = subprocess.Popen(
             [python_executable(), "-I", str(root / "board" / "server.py"), "--no-browser", "--port", str(port)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(root),
             **background_options())
         while True:
             _check_start_deadline(deadline)
@@ -744,7 +754,8 @@ def open_board(info: RunInfo, mode: str, size: tuple[int, int],
                           f"--window-position={position[0]},{position[1]}", f"--user-data-dir={profile}",
                           "--no-first-run", "--no-default-browser-check"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, **background_options())
+                         stderr=subprocess.DEVNULL, cwd=str(ROOT),     # 板と同じく作業フォルダーを継がない
+                         **background_options())
     elif not webbrowser.open(url):
         raise LaunchError("ブラウザを開けません / Could not open the board browser")
 
@@ -832,7 +843,16 @@ def launch(args: argparse.Namespace, root: Path) -> int:
         paths = write_configs(root)
         command = claude_command(executable, paths, args)
         if args.print_only:
-            print(format_command(command))
+            # 命令の行だけは書けない字を ? に替えない (harden_streams の replace は案内の行のため) = pipe や file へ
+            # 向けた時 (Windows は ANSI の code page) に、黙って違う頼み・違う路の命令を出さず、理由つきで止まる。
+            line = format_command(command)
+            try:
+                line.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+            except UnicodeEncodeError:
+                raise LaunchError("この 1 行は今の出力先の文字コードで書けません。console に表示して写してください / "
+                                  "The command line cannot be encoded for this output; "
+                                  "print it to the console and copy it") from None
+            print(line)
             result = 0
         else:
             result = run_claude(command)

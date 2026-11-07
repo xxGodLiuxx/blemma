@@ -346,6 +346,33 @@ def test_optional_free_text(client, other, valid):
         assert json.loads(text_result(result)) == {"answer": other, "free_text": True}
 
 
+@pytest.mark.parametrize("content", [
+    {"choice": "other", "other_text": ""}, {"choice": "other", "other_text": "   "},
+    {"choice": "other", "other_text": "　"}, {"choice": "other"},
+])
+def test_empty_other_text_is_treated_as_declined(client, content):
+    """「ほかの答え」を選んで文を書かずに送った (端末の form は other_text が空でも送れる) = 選ばなかったと同じ戻り。
+    空の文を自由記述の答えとして Claude に返さない (2 巡目 i25)。全角の空白だけ・欄なしも同じ。"""
+    rid = client.call({**ARGS, "allow_free_text": True})
+    client.answer(client.elicit(), {"action": "accept", "content": content})
+    result = client.result(rid)
+    assert result["isError"] is False
+    head, instruction = text_result(result).split("\n", 1)
+    assert json.loads(head) == {"answer": None, "declined": True} and instruction == DECLINED
+
+
+def test_other_text_with_a_numbered_choice_is_returned_as_a_note(client):
+    """番号を選び、文の欄にも書いて送った (端末の form) = 番号の答えに、書いた文を note として添える (黙って捨てない)。
+    文の欄が空の時は今までの形 ({answer, index}) のまま (2 巡目 i25)。"""
+    for other_text, expected in (("試験は速い物だけ", {"answer": "試験を回す", "index": 2, "note": "試験は速い物だけ"}),
+                                 ("", {"answer": "試験を回す", "index": 2})):
+        rid = client.call({**ARGS, "allow_free_text": True})
+        client.answer(client.elicit(), {"action": "accept", "content": {"choice": "2", "other_text": other_text}})
+        result = client.result(rid)
+        assert result["isError"] is False
+        assert json.loads(text_result(result)) == expected
+
+
 @pytest.mark.parametrize("capabilities, supported", [
     ({}, False), ({"elicitation": {"url": {}}}, False),
     ({"elicitation": None}, False), ({"elicitation": {}}, True),

@@ -335,6 +335,25 @@ def test_flags_and_passthrough(tmp_path, demo):
     assert defaults.window_position is None and defaults.claude_args == []
 
 
+@pytest.mark.parametrize("extra", [["--settings", "my.json"], ["--settings=my.json"], ["--settings", "{}"]])
+def test_settings_after_the_separator_is_refused(monkeypatch, capsys, extra):
+    """`--` の後ろの --settings は断る (2 巡目 i8)。Claude Code の --settings は後に出た物が勝つ = 渡すと生成した設定
+    (hooks 6 本と ask_board の許可) が丸ごと外れ、扇に札が来ないまま端末だけで動く。断る文は 1 行で、値は写さない。
+    --setting-sources (前が同じ別の旗) は今までどおり通す。"""
+    def unexpected(*args, **kwargs):
+        pytest.fail("--settings を断る時は何も起こさない")
+
+    monkeypatch.setattr(L, "launch", unexpected)
+    with pytest.raises(L.LaunchError, match="--settings"):
+        L.parse_args(["--large", "--", "--continue", *extra])
+    assert L.main(["--", "--continue", *extra]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and len(captured.err.splitlines()) == 1
+    assert "--settings" in captured.err and "my.json" not in captured.err and "{}" not in captured.err
+    args = L.parse_args(["--", "--setting-sources", "project,local", "--continue"])
+    assert args.claude_args == ["--setting-sources", "project,local", "--continue"]
+
+
 def test_geometry_env_and_argument_precedence(monkeypatch):
     monkeypatch.setenv("BLEMMA_WINDOW_SIZE", "640x400")
     monkeypatch.setenv("BLEMMA_WINDOW_POSITION", "-200,20")
@@ -512,6 +531,32 @@ def test_print_only_prepares_real_board_without_claude(isolated_repo, sessions, 
     assert L.board_responds(session.info, timeout=0.05) == keep
 
 
+def test_print_only_refuses_to_write_a_mangled_command(isolated_repo, sessions, monkeypatch):
+    """--print-only の 1 行を pipe や file へ向けた時 (Windows は ANSI の code page = 日本語の Windows は cp932) に、書けない字
+    (é など) を ? に替えた命令を黙って出さず、理由つきの 1 行で止まる (2 巡目 i29)。stream は main の harden_streams が
+    errors="replace" に替える本物の道を通す。書ける行 (日本語の頼み) は今までどおり出る。"""
+    import io
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "_which", lambda name: "claude.exe" if name == "claude" else None)
+    monkeypatch.setattr(L.webbrowser, "open", lambda url: True)
+
+    def print_only(prompt):
+        out, err = io.BytesIO(), io.BytesIO()
+        for name, raw in (("stdout", out), ("stderr", err)):
+            monkeypatch.setattr(sys, name, io.TextIOWrapper(raw, encoding="cp932", errors="strict", write_through=True))
+        code = L.main(["--large", "--print-only", "--port", str(unused_port()), "--", prompt])
+        return code, out.getvalue(), err.getvalue().decode("cp932")
+
+    code, out, err = print_only("café の案を 3 つ")
+    assert code == 1 and out == b"" and b"caf?" not in out
+    assert len(err.splitlines()) == 1 and "console に表示して" in err and "print it to the console" in err
+    assert "caf" not in err                                    # 頼みの文は写さない
+    code, out, err = print_only("日本語の案を 3 つ")
+    assert code == 0 and err == ""
+    assert len(out.splitlines()) == 1 and "日本語の案を 3 つ" in out.decode("cp932")
+    assert len(sessions) == 2 and all(session.process.poll() is not None for session in sessions)
+
+
 def test_real_server_start_reuse_and_stop(isolated_repo, sessions, monkeypatch):
     # A bogus proxy must not intercept even the launcher's readiness check.
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
@@ -538,6 +583,32 @@ def test_cleanup_preserves_another_servers_run_file(isolated_repo, sessions):
     session.close()
     assert session.process.poll() is not None
     assert json.loads(session.run_file.read_text(encoding="utf-8")) == replacement
+
+
+def test_close_survives_a_permission_error_on_run_json(isolated_repo, sessions, monkeypatch, capsys):
+    """Windows では、別の process (名簿の外の回の hook・別の --print-only の read_run) が run.json を開いている一瞬に、
+    unlink が PermissionError になる。後始末 (close) はそれで止まらない = Claude Code の終わりの値を返し、名簿の後始末
+    (自分の名乗りと板の印の消し) も最後まで走る (2 巡目 i33・前は「起動処理に失敗しました」・exit 1 で、印が残った)。"""
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")
+    monkeypatch.setattr(L, "open_board", lambda *args, **kwargs: None)
+    monkeypatch.setattr(L, "run_claude", lambda command: 0)
+    original = Path.unlink
+    refused = []
+
+    def unlink_in_use(self, missing_ok=False):
+        if self.name == "run.json" and not refused:        # 最初の 1 回だけ = 試験の後始末では消せる
+            refused.append(self)
+            raise PermissionError(13, "in use")
+        return original(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink_in_use)
+    assert L.main(["--port", str(unused_port())]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "" and "起動処理に失敗しました" not in captured.err
+    assert len(refused) == 1                                  # 消せない道を通った
+    assert sessions[0].process.poll() is not None              # 自分が起こした板は止まった
+    assert client_files(isolated_repo) == []                   # 名乗りと板の印も消えた = 後始末が途中で止まらない
 
 
 def test_run_record_shape_is_checked_but_not_its_age(tmp_path):
@@ -652,6 +723,32 @@ def test_claude_exit_code_and_caller_working_directory(isolated_repo, sessions, 
     assert sessions[0].process.poll() is not None and not sessions[0].run_file.exists()
     assert client_files(isolated_repo) == []
     assert capsys.readouterr() == ("", "")
+
+
+def test_children_do_not_inherit_the_callers_cwd(isolated_repo, sessions, monkeypatch, tmp_path):
+    """Claude Code は起こした端末の作業フォルダーで動く (上の試験) が、板と小窓のブラウザはそれを cwd に継がない
+    (2 巡目 i31)。Windows では cwd にしている process が居る間、そのフォルダーの改名・削除が「使用中」で失敗する
+    (--keep-board で残した板が、最初に起こしたフォルダーを掴み続けた)。"""
+    caller = tmp_path / "作業 フォルダー"
+    caller.mkdir()
+    monkeypatch.chdir(caller)
+    original = L.subprocess.Popen
+    started = []
+
+    def record(*args, **kwargs):
+        started.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(L.subprocess, "Popen", record)
+    session = L.ensure_board(isolated_repo, unused_port())
+    assert session.process is not None and len(started) == 1
+    assert started[0].get("cwd") == str(isolated_repo.resolve())
+    opened = []
+    monkeypatch.setattr(L.subprocess, "Popen", lambda command, **kwargs: opened.append(kwargs))
+    monkeypatch.setattr(L, "find_app_browser", lambda: "chrome")
+    monkeypatch.setattr(L, "work_area", lambda: (0, 0, 1920, 1080))
+    L.open_board(L.RunInfo(18770, "test-placeholder", 123), "small", (640, 720), None)
+    assert len(opened) == 1 and opened[0].get("cwd") == str(L.ROOT)
 
 
 def test_config_write_failure_stops_before_claude(isolated_repo, sessions, monkeypatch, capsys):
