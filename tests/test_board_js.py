@@ -3143,7 +3143,8 @@ def test_a_number_key_takes_two_presses_only_for_dont_ask_again(tmp_path, clock)
     (札 #216 B)。1 回目は選ぶだけ (釦に選んだ印・大きな板は上の帯に案内)。扇に鍵の焦点が在るまま端末を見て打った数字が、
     扇の番号で恒久の規則を書かない (頁の点検 F2 の再現 = 選択肢 2 件の札で「3」が 1 回で allow_always を送った)。
     1.5 秒を過ぎた 2 回目と、別の数字を挟んだ後は選び直し。今回の許可は 1 回のまま。札が出た直後・窓が焦点を得た直後の
-    0.4 秒の数字は、選ぶ 1 回目にも数えない。"""
+    0.4 秒の数字は、選ぶ 1 回目にも数えない。答えが決まった後 (同じ数字の 2 打目・別の数字の名指し) は「同じ数字を
+    もう 1 回」の案内を残さない (2 巡目 i20 = 猶予の帯の上に最長 1.5 秒残った)。"""
     two = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("git status") + _rule("npm test")))
     out = page(tmp_path, r"""
 function armed(c) { return c.doc().querySelectorAll(".armed").map(function (b) { return b.dataset.key; }); }
@@ -3158,6 +3159,15 @@ for (const mode of ["small", "large"]) {
   await c.run(300);
   await c.key("3", "Digit3");                      /* 0.3 秒後の同じ数字 = 決まる */
   r.second = choices(c);
+  c.show(deciding(TWO, { type: "allow_always", suggestion: 1 })); await c.run(300);
+  r.secondStatus = c.$("status").textContent;      /* 決まった後に案内を残さない */
+  c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(TWO); await c.run(500);
+  await c.key("3", "Digit3");                      /* 選ぶだけ = 案内が出る */
+  await c.key("1", "Digit1");                      /* 許可 (今回) を名指し = 送られる */
+  r.named = choices(c);
+  c.show(deciding(TWO, { type: "allow_once" })); await c.run(300);
+  r.afterDecide = c.$("status").textContent;       /* 別の数字で決まった後も案内を残さない */
   c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
   c.show(TWO); await c.run(500);
   await c.key("2", "Digit2");
@@ -3197,7 +3207,8 @@ console.log(JSON.stringify(out));
     always0 = [{"type": "allow_always", "suggestion": 0}]
     always1 = [{"type": "allow_always", "suggestion": 1}]
     want = {"keys": ["allow_once", "sugg:0", "sugg:1", "deny"],
-            "first": {"sent": 0, "armed": ["sugg:1"], "notice": True}, "second": always1,
+            "first": {"sent": 0, "armed": ["sugg:1"], "notice": True}, "second": always1, "secondStatus": "",
+            "named": [{"type": "allow_once"}], "afterDecide": "",
             "lapsed": {"sent": 0, "armed": ["sugg:0"]}, "switched": {"sent": 0, "armed": ["sugg:1"]}, "switchedThen": always1,
             "once": [{"type": "allow_once"}],
             "fresh": {"sent": 0, "armed": ["sugg:0"]}, "freshThen": always0,

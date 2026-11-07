@@ -20,7 +20,7 @@
     lastX: -1, lastY: -1, over: null, pointerType: "mouse", lastInput: "",
     held: {}, deadlineAt: null, undoAt: null,
     lightUntil: 0, lightKey: "", lastSeen: "", endText: "", endUntil: 0,
-    notice: "", noticeUntil: 0, problem: "", offline: false,
+    notice: "", noticeUntil: 0, noticeKind: null, problem: "", offline: false,
     abort: null, kicked: false, retry: 0, stopped: false, overlay: null, sideAt: 0, ac: null,
     health: new C.Health(3), stoppedAt: null, fontFit: 1
   };
@@ -913,6 +913,7 @@
   function showNotice(t) {
     S.notice = t;
     S.noticeUntil = performance.now() + 5000;
+    S.noticeKind = null;              /* 別の知らせ = 数字の案内の印を外す (disarm では消さない) */
   }
 
   function onNewLight() {
@@ -1531,11 +1532,15 @@
     armChoice(b, at, "digit");
     S.notice = L().digit_again;
     S.noticeUntil = at + ARM_MS;
+    S.noticeKind = "digit_again";     /* 選んだ物と一緒に消す印 (disarm)・言葉を替えた後も効く */
     updateSide(at);
     return false;
   }
 
+  /* 選んだ印を解く = 決まった (2 回目)・選び直し・描き直し (猶予の写し・新しい札・設定)。数字の案内も一緒に消す = 答えが
+     決まった後の猶予の帯の上に「同じ数字をもう 1 回」を残さない */
   function disarm() {
+    if (S.noticeKind === "digit_again") { S.notice = ""; S.noticeUntil = 0; S.noticeKind = null; }
     if (S.armBtn) S.armBtn.classList.remove("armed");
     S.armKey = null;
     S.armBtn = null;
