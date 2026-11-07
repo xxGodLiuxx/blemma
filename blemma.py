@@ -505,13 +505,15 @@ def stop_reused_board(session: BoardSession) -> None:
 
 
 CLIENT_FILE = re.compile(r"client-([0-9]{1,10})-[0-9a-f]{8}\.json")
-LOCK_WAIT = 15.0     # 名簿の錠 (clients/.lock) を待つ最長 (秒)。待ち切れない時は守る区間に入らない (起こす側は止まり、終わる側は板を残す)
-LOCK_STALE = 60.0    # 持ち主の記録 (pid) の無い錠を、後始末なしに消えた回の物として回収するまでの秒 (pid の在る錠は pid の生死だけで決める)
+LOCK_WAIT = 15.0          # 名簿の錠 (clients/.lock) を待つ秒 (見ている錠を回収できる時刻までは伸ばす・上限 LOCK_STALE + 5)。
+                          # 待ち切れない時は守る区間に入らない (起こす側は止まり、終わる側は板を残す)
+LOCK_STALE = 60.0         # Windows で、生きている pid の錠を回収しに行くまでの秒 (持ち主が開いたままの錠は OS が消させない)
+LOCK_STALE_NO_PID = 5.0   # 持ち主の記録 (pid) の無い錠を回収するまでの秒 (持ち主は作った直後に pid を書くので、数秒で足りる)
 ROSTER_BUSY = (
     "名簿の錠が取れません。別の端末の blemma.py が起動か終わりの途中です。少し待ってから起こし直してください "
-    "(ほかに blemma.py が動いていないのに 1 分を過ぎても続く時は、board/state/clients/.lock を消します)。\n"
+    "(ほかに blemma.py が動いていないのに、起こし直しても続く時は、board/state/clients/.lock を消します)。\n"
     "Could not lock the launcher list: another blemma.py is starting or ending. Wait a moment and start again "
-    "(if no other blemma.py is running and this lasts over a minute, delete board/state/clients/.lock).")
+    "(if no other blemma.py is running and it happens again, delete board/state/clients/.lock).")
 ROSTER_LEFT = ("BLEMMA: 名簿の錠が取れないため、板を止めずに残しました (止める時は python blemma.py --stop) / "
                "Could not lock the launcher list, so the board was left running (stop it with python blemma.py --stop)")
 ROSTER_OFF = ("BLEMMA: 名簿 (board/state/clients) に書けないため、名簿を使わずに続けます (終わる時は、この回が起こした板だけを"
@@ -537,15 +539,16 @@ class Clients:
     def _lock(self):
         """名簿の錠 (clients/.lock) = 名乗り (join) と、最後の使い手の「ほかの使い手を数える → 板を止める」(leave) を互いに
         割り込ませない (外の目の 8 巡目 = A が 0 人と数えた直後に B が名乗って板を使い回し、その後で A が板を止めた)。
-        錠は file の作成の原子性 (O_EXCL) で取り、持ち主の pid と時刻を書く。取れたら True を渡す。取れない時は LOCK_WAIT まで
-        待ち、待ち切れたら取れなかった事 (False) を渡す = 呼び手は守る区間に入らない (9 巡目 = 錠なしで進むと、数え終えて止める
-        直前の回の板を使い回せた)。錠を作れない置き場 (書けない dir・読み取り専用の checkout) の時は待たずに None を渡す = 呼び手は
-        名簿を使わない今までの動きに戻る (UltraReview の件 1 = 前はこれも使用中と見て 15 秒待ち、毎回止まった)。古い錠の回収は
-        経過時間だけで決めない (_stale)。"""
+        錠は file の作成の原子性 (O_EXCL) で取り、持ち主の pid と時刻を書く。取れたら True を渡す。取れない時は LOCK_WAIT (見て
+        いる錠を回収できる時刻までは伸ばす) まで待ち、待ち切れたら取れなかった事 (False) を渡す = 呼び手は守る区間に入らない
+        (9 巡目 = 錠なしで進むと、数え終えて止める直前の回の板を使い回せた)。錠を作れない置き場 (書けない dir・読み取り専用の
+        checkout) の時は待たずに None を渡す = 呼び手は名簿を使わない今までの動きに戻る (UltraReview の件 1 = 前はこれも使用中
+        と見て 15 秒待ち、毎回止まった)。古い錠の回収は経過時間だけで決めない (_stale)。"""
         path = self.dir / ".lock"
         fd = None
         held: bool | None = False
-        deadline = time.monotonic() + LOCK_WAIT
+        start = time.monotonic()
+        deadline = start + LOCK_WAIT
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
             while True:
@@ -557,14 +560,21 @@ class Clients:
                     # 在る錠と同じく待つ。ほか (POSIX の EACCES・Windows の書けない dir) は錠を作れない置き場 = 下の退化へ
                     if isinstance(error, PermissionError) and not (os.name == "nt" and os.path.lexists(path)):
                         raise
-                    if self._stale(path):
+                    wait = self._stale(path)
+                    if wait is not None and wait <= 0:
                         try:
                             path.unlink(missing_ok=True)
                         except OSError:
                             pass           # 別の回が開いている一瞬 (Windows) = 次の回で
                         else:
                             continue
-                    if time.monotonic() >= deadline:
+                    # 待つのは LOCK_WAIT。見ている錠を回収できる時刻 (記録の無い錠は LOCK_STALE_NO_PID・Windows の生きている
+                    # pid の錠は LOCK_STALE) までは伸ばす = 待ち切って止まった直後に回収できる錠で、起こし直しを繰り返させない
+                    # (UltraReview の件 2)。上限は LOCK_STALE + 5 秒 (時計が戻った後の錠などで待ち続けない)
+                    limit = deadline
+                    if wait is not None:
+                        limit = max(limit, min(start + LOCK_STALE + 5, time.monotonic() + wait + 0.25))
+                    if time.monotonic() >= limit:
                         break
                     time.sleep(0.05)
         except OSError:
@@ -576,39 +586,40 @@ class Clients:
                     os.write(fd, json.dumps({"pid": os.getpid(), "at": datetime.now().astimezone().isoformat(
                         timespec="seconds")}).encode("utf-8"))
                 except OSError:
-                    pass                   # 記録の無い錠も錠 (ほかの回は LOCK_STALE を過ぎるまで待つ)
+                    pass                   # 記録の無い錠も錠 (ほかの回が回収するのは LOCK_STALE_NO_PID を過ぎてから)
             yield held
         finally:
             if fd is not None:
                 self._unlock(path, fd)
 
     @staticmethod
-    def _stale(path: Path) -> bool:
-        """回収してよい古い錠か。持ち主の pid が書いてあれば、その生死だけで決める = 生きている pid の錠は、どれだけ古くても
-        奪わない (止まっているだけの持ち主の名簿の区間に割り込まない・外の目の 9 巡目)。記録の無い錠 (作った直後でまだ
-        書いていない・書けなかった・消せずに残った・前の版の錠) は、LOCK_STALE を過ぎた時だけ。読めない時は回収しない。"""
+    def _stale(path: Path) -> float | None:
+        """見ている錠を回収できるまでの秒 (0 以下 = 今・None = 古さでは回収しない)。持ち主の pid が書いてあれば、その生死で
+        決める = pid が死んだ錠は今。生きている pid の錠は、どれだけ古くても奪わない (止まっているだけの持ち主の名簿の区間に
+        割り込まない・外の目の 9 巡目)。ただし Windows は LOCK_STALE を過ぎた時 (下)。記録の無い錠 (作った直後でまだ書いて
+        いない・書けなかった・消せずに残った・前の版の錠) は LOCK_STALE_NO_PID を過ぎた時。読めない時は None。"""
         try:
             age = time.time() - path.stat().st_mtime
             raw = path.read_bytes()
         except OSError:
-            return False
+            return None
         try:
             pid = json.loads(raw.decode("utf-8")).get("pid")
         except (ValueError, AttributeError, RecursionError):
             pid = None
         if type(pid) is int and 0 < pid < 2 ** 31:
             if not pid_alive(pid):
-                return True
+                return 0.0
             # Windows = 持ち主が開いたままの錠は OS が消させない (共有の決まり) ので、生きている pid の錠でも LOCK_STALE を
             # 過ぎたら回収を試みる = kill された回の pid を別の process が使い回しても 1 分で外れる (生きている持ち主の錠は
             # 消せずに「在る錠」として待つ)。POSIX は pid の生死だけ = 消せてしまうので、古さでは奪わない
-            return os.name == "nt" and age > LOCK_STALE
-        return age > LOCK_STALE
+            return LOCK_STALE - age if os.name == "nt" else None
+        return LOCK_STALE_NO_PID - age
 
     @staticmethod
     def _unlock(path: Path, fd: int) -> None:
-        # 記録を先に空にする = 消せずに残った錠も、記録の無い錠として LOCK_STALE で回収される (空にしないと、生きている
-        # この process の pid のまま残り、回の終わりまで、ほかの起こし方が待ち切って止まる)。
+        # 記録を先に空にする = 消せずに残った錠も、記録の無い錠として LOCK_STALE_NO_PID で回収される (空にしないと、生きて
+        # いるこの process の pid のまま残り、回の終わりまで、POSIX では回収されず、Windows でも LOCK_STALE まで待たせる)。
         try:
             os.ftruncate(fd, 0)
         except OSError:

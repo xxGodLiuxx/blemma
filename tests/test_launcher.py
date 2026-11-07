@@ -1315,8 +1315,8 @@ def test_the_roster_lock_covers_joining_and_the_last_users_stop(isolated_repo, m
 
 def test_a_held_roster_lock_delays_the_stop_and_a_stale_lock_is_broken(isolated_repo, monkeypatch):
     """別の回が錠を持っている間は、最後の使い手の止めは待つ (錠が外れてから止める)。持ち主の記録 (pid) の無い錠は、
-    LOCK_STALE を過ぎた時だけ、後始末なしに消えた回の古い錠として壊して進む (外の目の 9 巡目の後 = pid の在る錠は
-    pid の生死だけで決める・下の試験。この試験の錠は平文なので、記録の無い錠の枝を通る)。"""
+    LOCK_STALE_NO_PID を過ぎた時だけ、後始末なしに消えた回の古い錠として壊して進む (外の目の 9 巡目の後 = pid の在る錠は
+    pid の生死で決める・下の試験。この試験の錠は平文なので、記録の無い錠の枝を通る)。"""
     state = isolated_repo / "board" / "state"
     (state / "clients").mkdir(parents=True)
     lock = state / "clients" / ".lock"
@@ -1334,7 +1334,7 @@ def test_a_held_roster_lock_delays_the_stop_and_a_stale_lock_is_broken(isolated_
     a.leave(L.BoardSession(state / "run.json", L.RunInfo(1, "t", 1)), keep=False)
     assert order == ["release", "stop"] and not lock.exists()
     lock.write_text("stale", encoding="utf-8")                          # 持ち主が死んで残った古い錠
-    old = time.time() - L.LOCK_STALE - 5
+    old = time.time() - L.LOCK_STALE_NO_PID - 5
     os.utime(lock, (old, old))
     started = time.monotonic()
     a.leave(L.BoardSession(state / "run.json", L.RunInfo(1, "t", 1)), keep=False)
@@ -1379,6 +1379,7 @@ def test_a_launcher_that_cannot_take_the_roster_lock_starts_nothing(isolated_rep
     monkeypatch.setattr(L, "ROOT", isolated_repo)
     monkeypatch.setattr(L, "find_claude", lambda: "claude")
     monkeypatch.setattr(L, "LOCK_WAIT", 0.3)
+    monkeypatch.setattr(L, "LOCK_STALE", 0.5)   # Windows の待ち手は、生きている pid の錠を LOCK_STALE まで待つ = 試験では短く
 
     def unexpected(*args, **kwargs):
         pytest.fail("名簿の錠が無いまま、板・窓・claude へ進んだ")
@@ -1405,6 +1406,7 @@ def test_a_last_user_that_cannot_take_the_roster_lock_leaves_the_board_running(i
     止めの道は実物 (_stop_used・実の子の板)。自分の登録は消す (数を減らすだけ = 錠なしでも誰の板も止めない)。"""
     state = isolated_repo / "board" / "state"
     monkeypatch.setattr(L, "LOCK_WAIT", 0.3)
+    monkeypatch.setattr(L, "LOCK_STALE", 0.5)   # Windows の待ち手は、生きている pid の錠を LOCK_STALE まで待つ = 試験では短く
     session = L.ensure_board(isolated_repo, unused_port())                      # 自分が起こした板 (実の子 process)
     a = L.Clients(state)
     a.join()
@@ -1422,10 +1424,11 @@ def test_a_last_user_that_cannot_take_the_roster_lock_leaves_the_board_running(i
 
 
 def test_a_live_holders_roster_lock_is_never_broken_but_a_dead_holders_lock_is(isolated_repo, monkeypatch):
-    """古い錠の回収は経過時間だけで決めない = 錠に持ち主の pid を書き、生きている pid の錠は LOCK_STALE (60 秒) を
-    過ぎても奪わない (止まっているだけの持ち主の名簿の区間に割り込まない)。pid が死んだ錠 (錠の中で後始末なしに消えた
-    回) は、待たずに回収して進む。記録の無い錠の決まり (60 秒) は上の試験。実の持ち主 (錠を開いたまま) は、Windows では
-    OS も消させない (共有の決まり・実測) = 誰も開いていない錠の段が、pid の決まりそのものを見る。"""
+    """古い錠の回収は経過時間だけで決めない = 錠に持ち主の pid を書き、生きている pid の錠は、POSIX ではどれだけ古くても
+    奪わない (止まっているだけの持ち主の名簿の区間に割り込まない)。Windows は LOCK_STALE (60 秒) を過ぎた錠を回収しに行く
+    (下)。pid が死んだ錠 (錠の中で後始末なしに消えた回) は、待たずに回収して進む。記録の無い錠の決まり (5 秒) は上と下の
+    試験。実の持ち主 (錠を開いたまま) は、Windows では OS も消させない (共有の決まり・実測) = 誰も開いていない錠の段が、
+    pid の決まりそのものを見る。"""
     state = isolated_repo / "board" / "state"
     lock = state / "clients" / ".lock"
     a = L.Clients(state)
@@ -1442,25 +1445,60 @@ def test_a_live_holders_roster_lock_is_never_broken_but_a_dead_holders_lock_is(i
     os.utime(lock, (old, old))
     if os.name == "nt":
         # Windows = 持ち主が開いたままの錠は OS が消させないので、生きている pid でも 60 秒を過ぎた錠は回収する
-        # (kill された回の pid の使い回しで止まり続けない)。若い錠 (60 秒の内) は pid が生きていれば奪わない。
+        # (kill された回の pid の使い回しで止まり続けない)。若い錠は LOCK_STALE を過ぎるまで奪わず、待ち手は LOCK_WAIT で
+        # 諦めずにその時まで待って回収する (UltraReview の件 2 = 起こし直しを繰り返させない・試験では LOCK_STALE を短く)。
         b = L.Clients(state)
         b.join()
         assert b.me is not None and b.me.exists() and not lock.exists()
+        monkeypatch.setattr(L, "LOCK_STALE", 1.5)
         lock.write_text(record, encoding="utf-8")
-        with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
-            L.Clients(state).join()
-        assert lock.read_text(encoding="utf-8") == record
+        started = time.monotonic()
+        c = L.Clients(state)
+        c.join()
+        assert 1.0 < time.monotonic() - started < 5 and c.me is not None and c.me.exists() and not lock.exists()
     else:
         with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
             a.join()
         assert a.me is None and lock.read_text(encoding="utf-8") == record
-    lock.unlink()
+        lock.unlink()
     monkeypatch.setattr(L, "LOCK_WAIT", 3.0)
     with roster_lock_held(state, "die") as dead:
         assert lock.exists() and not L.pid_alive(dead.pid)
         started = time.monotonic()
         a.join()
         assert time.monotonic() - started < 2 and a.me is not None and a.me.exists() and not lock.exists()
+
+
+def test_a_lock_without_a_record_is_reclaimed_within_the_wait(isolated_repo):
+    """記録 (pid) の無い錠 (作った直後に kill された回の錠・消せずに残った錠) は、LOCK_STALE_NO_PID (5 秒) を過ぎたら回収
+    する = 待ち (LOCK_WAIT 15 秒) の内に外れて進む (UltraReview の件 2 = 前は 60 秒で、待ち手は 15 秒で諦め、起こす回は
+    止まり、終わる回は板を残した)。持ち主は作った直後に pid を書くので、5 秒の内の錠は奪わない。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b"")                                       # O_EXCL の直後 (pid を書く前) に消えた回の錠
+    a = L.Clients(state)
+    started = time.monotonic()
+    a.join()
+    assert L.LOCK_STALE_NO_PID - 1 < time.monotonic() - started < L.LOCK_WAIT
+    assert a.me is not None and a.me.exists() and not lock.exists()
+
+
+def test_the_extended_wait_for_a_lock_has_a_cap(isolated_repo, monkeypatch):
+    """待ち手が伸ばす待ち (見ている錠を回収できる時刻まで) には上限 (LOCK_STALE + 5 秒) がある = 時計が戻った後の錠
+    (更新の時刻が未来) でも、回収できる時刻まで待ち続けずに止まる。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    monkeypatch.setattr(L, "LOCK_WAIT", 0.3)
+    monkeypatch.setattr(L, "LOCK_STALE", 0.2)                   # 上限 = 0.2 + 5 秒
+    lock.write_bytes(b"")
+    future = time.time() + 30
+    os.utime(lock, (future, future))                            # 記録の無い錠を回収できるのは 35 秒後
+    started = time.monotonic()
+    with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+        L.Clients(state).join()
+    assert 4.5 < time.monotonic() - started < 10 and lock.exists()
 
 
 def test_a_roster_folder_that_cannot_be_written_falls_back_to_the_old_way(isolated_repo, sessions, launchers,
