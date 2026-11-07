@@ -67,9 +67,14 @@ CLAUDE_MISSING = (
     "run python blemma.py --print-only and run the printed line (PowerShell on Windows).")
 
 PAGE_OPEN = ("BLEMMA: 扇は既に開いています。この端末の確認も同じ扇に出ます "
-             "(見当たらない時は、開いている板の頁を閉じてから起こし直してください) / "
+             "(見当たらない時は、開いている板の頁を閉じてから起こし直してください)。"
+             "設定 (--set・BLEMMA_OPTS・--large/--small・窓の大きさと位置) は、開いている扇のままです "
+             "(変える時は、扇の窓を閉じてから設定を付けて起こし直すか、窓の歯車で替えます。歯車はキーかクリックで押します) / "
              "The fan is already open; prompts from this terminal appear there too "
-             "(if you cannot find it, close the open board page and start again)")
+             "(if you cannot find it, close the open board page and start again). "
+             "Settings (--set, BLEMMA_OPTS, --large/--small, window size and position) stay as the open fan has them "
+             "(to change them, close the fan window and start again with the new settings, or use the gear in the window; "
+             "press the gear with a key or a click)")
 
 
 class LaunchError(Exception):
