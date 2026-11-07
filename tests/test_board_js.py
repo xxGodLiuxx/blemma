@@ -3708,3 +3708,98 @@ console.log(JSON.stringify(out));
         assert out[error] == {"sent": 1, "kicked": True, "idle": "時間切れ。端末で答えてください", "next": ""}, out
     assert out["stale"]["sent"] == 1 and out["stale"]["kicked"] is True, out
     assert out["stale"]["idle"] == "画面が古くなっていました。もう一度選んでください", out
+
+
+# ---- 最終デバッグ 1 巡目の組 B (走査の光・複数選択の印・閉じるのダブルクリック) ----
+
+SCAN_HELPERS = r"""
+function lit(c) { return c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; }); }
+function step(c) { return Math.floor((c.clock.now - c.S.scan.t0) / c.S.scan.ms); }     /* 走査の何こま目か */
+async function until(c, fn) { for (let i = 0; i < 4000 && !fn(); i++) await c.run(16); return fn(); }
+"""
+MULTI_THREE = {"questions": [{"header": "一", "question": "どれですか", "multiSelect": True,
+                              "options": [{"label": "a"}, {"label": "b"}, {"label": "c"}]}]}
+
+
+def test_a_mark_that_brings_next_in_or_out_keeps_the_scan_light_on_the_same_button(tmp_path, clock):
+    """複数選択の印で「次へ」が押せる・押せないに替わると、走査の列の長さだけが変わる (大きな板・3 択 = 5 ⇄ 6)。光は同じこまの
+    中で同じ釦に留まる (最終デバッグ 1 巡目 #21 = 列の長さで割り直して、こま 5 で印を付けた光が opt:0 から「端末で答える」へ跳び、
+    0.3 秒後の 2 押し目が terminal を送った・こま 18 で印を外すと「止」へ跳び、2 押し目が skip を送った)。次のこまで次の釦へ進む。
+    対照 = こま 1 は列の長さが替わっても同じ釦 (今までどおり)。"""
+    q = _card(clock, "question", MULTI_THREE)
+    out = page(tmp_path, SCAN_HELPERS + r"""
+const out = {};
+let c = await P.boot({ query: "?mode=large&lang=ja&scan=1.5" });
+c.show(Q);
+await until(c, function () { return step(c) === 5; });
+await c.run(16);
+const a = { at5: lit(c), n: c.S.scanList.length };       /* 5 % 5 = 頭の opt:0 (「次へ」は押せない = 列は 5) */
+await c.key(" ", "Space");                                 /* 印を付ける = 「次へ」が列に入る */
+a.marks = c.S.ui.marks.slice(); a.n2 = c.S.scanList.length; a.same = lit(c);
+await c.run(16);
+a.frame = lit(c);
+await c.run(300);
+await c.key(" ", "Space");                                 /* 0.3 秒後の 2 押し目 = 同じ opt:0 の印を外すだけ */
+await c.run(16);
+a.marks2 = c.S.ui.marks.slice(); a.after = lit(c); a.sent = choices(c);
+await until(c, function () { return lit(c)[0] !== "opt:0"; });
+a.next = lit(c);
+out.a = a;
+
+c = await P.boot({ query: "?mode=large&lang=ja&scan=1.5" });
+c.show(Q);
+await c.run(500);
+await c.key("1", "Digit1");                                /* 光の出る前に数字で印 = 列は初めから 6 */
+const b = { marks: c.S.ui.marks.slice(), n: c.S.scanList.length };
+await until(c, function () { return step(c) === 18; });
+await c.run(16);
+b.at18 = lit(c);                                           /* 18 % 6 = opt:0 */
+await c.key(" ", "Space");                                 /* 印を外す = 「次へ」が列から出る */
+b.marks2 = c.S.ui.marks.slice(); b.n2 = c.S.scanList.length;
+await c.run(16);
+b.after = lit(c);
+await c.run(300);
+await c.key(" ", "Space");                                 /* 2 押し目 = 同じ opt:0 に印を付け直すだけ */
+await c.run(16);
+b.marks3 = c.S.ui.marks.slice(); b.sent = choices(c);
+out.b = b;
+
+c = await P.boot({ query: "?mode=large&lang=ja&scan=1.5" });
+c.show(Q);
+await until(c, function () { return step(c) === 1; });
+await c.run(16);
+const k = { at1: lit(c) };                                 /* 1 % 5 = opt:1 */
+await c.key(" ", "Space");
+await c.run(16);
+k.after = lit(c); k.marks = c.S.ui.marks.slice();
+await until(c, function () { return lit(c)[0] !== "opt:1"; });
+k.next = lit(c);
+out.k1 = k;
+console.log(JSON.stringify(out));
+""", Q=q)
+    assert out["a"] == {"at5": ["opt:0"], "n": 5, "marks": [0], "n2": 6, "same": ["opt:0"], "frame": ["opt:0"],
+                        "marks2": [], "after": ["opt:0"], "sent": [], "next": ["opt:1"]}, out
+    assert out["b"] == {"marks": [0], "n": 6, "at18": ["opt:0"], "marks2": [], "n2": 5, "after": ["opt:0"],
+                        "marks3": [0], "sent": []}, out
+    assert out["k1"] == {"at1": ["opt:1"], "after": ["opt:1"], "marks": [1], "next": ["opt:2"]}, out
+
+
+def test_more_coming_into_the_scan_list_keeps_the_scan_light_on_the_same_blade(tmp_path, clock):
+    """扇の権限の札で、光が「二」(拒否 …) に居るこま 5 に本文が溢れて「▼ 続き」が列の末尾に入っても (列 4 → 5)、光は「二」に
+    留まり、スイッチは「拒否 …」を押す (最終デバッグ 1 巡目 #21 = 5 % 5 で頭の「一」(許可) へ跳び、Space が allow_once を送った)。"""
+    perm = _card(clock)
+    out = page(tmp_path, SCAN_HELPERS + r"""
+const c = await P.boot({ query: "?mode=small&lang=ja&scan=1.5" });
+c.show(PERM);
+await until(c, function () { return step(c) === 5; });
+await c.run(16);
+const r = { at5: lit(c), n: c.S.scanList.length };        /* 一・二・止・戻 = 5 % 4 = 二 */
+c.$("copy").scrollHeight = 900; c.$("copy").clientHeight = 180;   /* 本文が溢れた */
+await c.run(300);                                          /* 横の見直し (0.25 秒ごと) が「▼ 続き」を出して列に入れる */
+r.more = !c.$("more").hidden; r.n2 = c.S.scanList.length; r.after = lit(c);
+await c.key(" ", "Space");
+await c.run(16);
+r.sent = choices(c); r.reasons = !!c.btn("back");
+console.log(JSON.stringify(r));
+""", PERM=perm)
+    assert out == {"at5": ["deny"], "n": 4, "more": True, "n2": 5, "after": ["deny"], "sent": [], "reasons": True}, out

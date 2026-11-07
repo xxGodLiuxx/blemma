@@ -1009,11 +1009,12 @@
     S.ui = r.ui;
     var k = C.viewKey(card, S.ui, S.lang);
     var moved = r.gen || k !== S.key;                      /* 印を付けただけ = 世代は進めない */
+    var lit = S.scanEl;                                    /* 描き直しは走査の光を外して手放す = 先に覚える */
     S.key = k;
     if (moved) focusUsed();                                /* 自分の押しで札の中を進めた = 札の釦に在った焦点は使われた */
     render();
     updateSide(performance.now());
-    if (!moved) return;
+    if (!moved) { keepLight(lit, performance.now()); return; }   /* 印で「次へ」が出入りした = 光は同じ釦に */
     S.stepAt = performance.now();                          /* 札の中を進めた時刻 (名指しで進めた直後の、焦点任せの押しを数えない) */
     setSettling(true);                                     /* その間も頁の印を付ける (外の道具が「もう押せる」を読み違えない) */
     /* 「前の画面へ」で戻った = 鍵の焦点は先頭 (許可) でなく、来た元の「拒否 …」へ (押し直しが許可に当たらない) */
@@ -1633,6 +1634,32 @@
     var at = S.scanList.indexOf(more);
     if (show && at < 0) S.scanList.push(more);
     if (!show && at >= 0) S.scanList.splice(at, 1);
+    if (show !== at >= 0) keepLight(S.scanEl, performance.now());
+  }
+
+  /* 走査の列の長さだけが変わった (複数選択の印で「次へ」が出入りした・「▼ 続き」が出入りした) = 光っていた釦が列に残って
+     いれば、その位置に合わせて頭の時刻を置き直す (こまの区切りの位相は保つ)。置き直さないと、新しい長さで割り直した光が同じ
+     こまの中で別の釦へ跳び、跳ぶ前の光へ向けたスイッチが跳んだ先 (扇の許可・大きな板の「端末で答える」) を押す。作り直した
+     釦は鍵で探して、すぐ光を付け直す。光っていた釦が列から消えた時は、静かな 1 こまの後に頭から。光が無い時と静かな間の
+     内は触らない。世代は進めない (印は残す・§4.2) */
+  function keepLight(lit, now) {
+    if (!lit || !(S.scanMs > 0) || now < S.scan.t0 || !S.card || S.card.state !== "shown") return;
+    var key = lit.dataset ? lit.dataset.key : null, at = -1;
+    for (var i = 0; i < S.scanList.length && at < 0; i++) {
+      if (S.scanList[i] === lit || (key && S.scanList[i].dataset.key === key)) at = i;
+    }
+    if (at < 0) {
+      S.scan.restart(now + scanQuiet());
+      if (S.scanEl) { S.scanEl.classList.remove("scan"); S.scanEl = null; }
+      return;
+    }
+    S.scan.restart(now - (now - S.scan.t0) % S.scan.ms - at * S.scan.ms);
+    var b = S.scanList[at];
+    if (S.scanEl !== b) {
+      if (S.scanEl) S.scanEl.classList.remove("scan");
+      b.classList.add("scan");
+      S.scanEl = b;
+    }
   }
 
   function openPhone() {
