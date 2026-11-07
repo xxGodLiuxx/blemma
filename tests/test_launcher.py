@@ -559,6 +559,32 @@ def test_cleanup_preserves_another_servers_run_file(isolated_repo, sessions):
     assert json.loads(session.run_file.read_text(encoding="utf-8")) == replacement
 
 
+def test_close_survives_a_permission_error_on_run_json(isolated_repo, sessions, monkeypatch, capsys):
+    """Windows では、別の process (名簿の外の回の hook・別の --print-only の read_run) が run.json を開いている一瞬に、
+    unlink が PermissionError になる。後始末 (close) はそれで止まらない = Claude Code の終わりの値を返し、名簿の後始末
+    (自分の名乗りと板の印の消し) も最後まで走る (2 巡目 i33・前は「起動処理に失敗しました」・exit 1 で、印が残った)。"""
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")
+    monkeypatch.setattr(L, "open_board", lambda *args, **kwargs: None)
+    monkeypatch.setattr(L, "run_claude", lambda command: 0)
+    original = Path.unlink
+    refused = []
+
+    def unlink_in_use(self, missing_ok=False):
+        if self.name == "run.json" and not refused:        # 最初の 1 回だけ = 試験の後始末では消せる
+            refused.append(self)
+            raise PermissionError(13, "in use")
+        return original(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink_in_use)
+    assert L.main(["--port", str(unused_port())]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "" and "起動処理に失敗しました" not in captured.err
+    assert len(refused) == 1                                  # 消せない道を通った
+    assert sessions[0].process.poll() is not None              # 自分が起こした板は止まった
+    assert client_files(isolated_repo) == []                   # 名乗りと板の印も消えた = 後始末が途中で止まらない
+
+
 def test_run_record_shape_is_checked_but_not_its_age(tmp_path):
     path = tmp_path / "run.json"
     good = {"port": 8765, "token": "test-placeholder", "pid": 123,

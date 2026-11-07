@@ -321,14 +321,14 @@ class BoardSession:
             return                         # An existing board belongs to its caller.
         stop_process(self.process)
         # TerminateProcess on Windows cannot run the server's finally/atexit cleanup.
+        # 消せない時 (Windows で別の process が run.json を開いている一瞬の PermissionError など) も止まらない =
+        # stop_reused_board と同じ扱い。残った run.json の pid は死んでいるので、後の回は使い回さずに上書きする。
         try:
             data = json.loads(self.run_file.read_text(encoding="utf-8"))
             if (isinstance(data, dict) and data.get("pid") == self.process.pid and
                     (self.info is None or data.get("token") == self.info.token)):
                 self.run_file.unlink()
-        except FileNotFoundError:
-            pass
-        except (ValueError, UnicodeError):
+        except (OSError, ValueError):      # FileNotFoundError・PermissionError は OSError、UnicodeError は ValueError の子
             pass
 
 
