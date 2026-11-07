@@ -1437,7 +1437,7 @@
     /* 押した・離したその場で滞留を解く (こま単位の見張りだけだと、1 こまの内に押して離す速い click や、押したまま羽根へ来て
        同じこまで離した時に「入り直すまで数えない」が掛からない) */
     d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; S.down = true; releaseDwell(); }), { passive: true, capture: true });
-    d.addEventListener("pointerup", active(function () { S.down = false; releaseDwell(); }), { passive: true, capture: true });
+    d.addEventListener("pointerup", active(function (e) { S.down = false; if (S.drag) dragReleased(e); releaseDwell(); }), { passive: true, capture: true });
     d.addEventListener("pointercancel", active(function () { S.down = false; releaseDwell(); }), { passive: true, capture: true });
     d.addEventListener("scroll", active(onScroll), { passive: true, capture: true });
     d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.overMore = false; S.lastX = -1; S.scrollRest = 0; }));
@@ -1658,6 +1658,18 @@
     var d = S.drag;
     S.drag = null;
     if (d && d.moved) keepSize(d, 0);                         /* 離す時に、掴んだ時の大きさへ揃える */
+  }
+
+  /* 背景を掴んで運んでいる間の pointer の知らせは窓を運ぶだけ (onPointer は dragTo へ回る) = 頁は pointer の位置と下の釦を、
+     押し始めの背景のまま持っている。離した所の下の釦は、入り直すまで数えない = 背景を掴んで羽根の上で離しただけで、次の
+     1 動き (捕まえが解けた後の羽根への pointerover・離した後の揺れ) の滞留が押さない (線 3・押したまま羽根の上で止まった
+     時の守りと同じ)。離した知らせは捕まえた背景へ届く (target は背景) = 位置から引き直し、離した後に最初に届いた pointer の
+     下の釦も守る (縁の外で離して揺れで入った時)。この後の releaseDwell が守りを掛ける */
+  function dragReleased(e) {
+    S.lastX = e.clientX;
+    S.lastY = e.clientY;
+    S.over = keyAtPointer();
+    S.firstPointer = true;
   }
 
   /* 和紙の文章が切れている時だけ「▼ 続き」を見せる */

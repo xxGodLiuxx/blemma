@@ -3610,6 +3610,50 @@ console.log(JSON.stringify(out));
     assert out == {"pointerup": {"resting": 0, "reentered": 1}, "pointercancel": {"resting": 0, "reentered": 1}}
 
 
+def test_letting_go_of_a_window_drag_on_a_blade_does_not_press_it_by_dwell(tmp_path, clock):
+    """扇の背景を掴んで運び (窓のドラッグ)、羽根の上で離しても、その羽根は入り直すまで滞留で押さない (最終デバッグ 1 巡目の
+    追加の 1 件の再現 = 運んでいる間の pointer の知らせは窓を運ぶだけで、頁は pointer の下の釦を数えていない (押し始めの
+    背景のまま)。離した時の守りが下の羽根に掛からず、次の 1 動き (捕まえが解けた後の羽根への pointerover・離した後の
+    1 px の揺れ) から 0.3 秒で押された)。離した知らせは捕まえた背景へ届く (target は背景) = 位置から引き直す。羽根の縁の
+    1 px 外で離し、揺れで 1 px 入った時も、離した後に最初に届いた pointer の下の羽根は守る。一度外へ出て入り直すと押せる。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const how of ["over", "move", "edge"]) {
+  const c = await P.boot({ query: "?mode=small&lang=ja&dwell=0.3" });
+  const back = c.$("fan-scroll");
+  const at = how === "edge" ? 199 : 250;                      /* edge = 羽根の 1 px 外 (背景) で離す */
+  c.doc().layout = function (e) {
+    if (e === back) return { left: 0, top: 0, width: 640, height: 330, z: 0 };
+    if (e.dataset.key === "allow_once" && e.parentNode && e.parentNode.id === "fan") return { left: 200, top: 100, width: 100, height: 100, z: 1 };
+    return null;
+  };
+  c.show(A);
+  await c.run(600);
+  c.pointer(50, 300);                                         /* 扇の背景 */
+  await c.run(200);
+  c.pointer(50, 300, { type: "pointerdown", buttons: 1 });    /* 掴む = 窓のドラッグ */
+  await c.run(50);
+  c.pointer(at, 150, { buttons: 1, target: back });           /* 運ぶ (知らせは捕まえた背景へ) */
+  await c.run(50);
+  c.pointer(at, 150, { type: "pointerup", target: back });    /* 羽根の上 (edge は 1 px 外) で離す */
+  c.event("lostpointercapture", { target: back });
+  out[how + "Drag"] = !!c.S.drag;
+  if (how === "over") c.pointer(250, 150, { type: "pointerover" });   /* 捕まえが解けた後の、羽根への知らせ */
+  else { await c.run(20); c.pointer(at + (how === "edge" ? 2 : 1), 150); }   /* 離した後の揺れ (edge は 1 px 羽根の中へ) */
+  await c.run(1000);
+  out[how] = c.answers().length;
+  c.pointer(50, 300); await c.run(300);                       /* 一度外へ出て */
+  c.pointer(250, 150); await c.run(500);                      /* 入り直すと押せる */
+  out[how + "Again"] = choices(c);
+}
+console.log(JSON.stringify(out));
+""", A=a)
+    once = [{"type": "allow_once"}]
+    assert out == {"overDrag": False, "over": 0, "overAgain": once, "moveDrag": False, "move": 0, "moveAgain": once,
+                   "edgeDrag": False, "edge": 0, "edgeAgain": once}, out
+
+
 def test_moving_to_pip_while_presses_settle_clears_the_mark_on_the_first_page(tmp_path, clock):
     """押しを数えない間の印 (body.settling) を付けた後、その間に PiP の窓へ移っても、間が終われば元の頁の印も消す
     (残ると、外の道具や試験が「まだ押せない」と読み続ける)。移った先の文書にも、その間は印が付く (外部のレビューの所見 =
