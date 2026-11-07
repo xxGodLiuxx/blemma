@@ -1574,6 +1574,30 @@ def test_a_roster_folder_that_cannot_be_written_falls_back_to_the_old_way(isolat
     assert err == [L.ROSTER_OFF] * 3, err
 
 
+def test_a_lock_whose_pid_cannot_be_written_is_released_and_the_roster_is_not_used(isolated_repo, monkeypatch, capsys):
+    """錠は作れたが持ち主の pid を書けない時 (disk が一杯・file system の気まぐれ) は、記録の無い錠のまま名簿の区間に
+    入らない = 錠を外して、名簿を使わない動きに退化する (記録の無い錠はほかの回が LOCK_STALE_NO_PID = 5 秒で回収できる
+    ので、区間の途中で錠を奪われうる・UltraReview の件 1 の直しの残し)。錠は残さない・stderr は名簿を使わない 1 行。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    real_write = os.write
+    hits = []
+
+    def failing(fd, data, *args):
+        if isinstance(data, (bytes, bytearray)) and b'"pid"' in bytes(data):
+            hits.append(fd)
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(fd, data, *args)
+
+    monkeypatch.setattr(L.os, "write", failing)
+    a = L.Clients(state)
+    started = time.monotonic()
+    a.join()
+    assert time.monotonic() - started < 2 and hits and not a.ok and a.me is None
+    assert not lock.exists() and client_files(isolated_repo) == []
+    assert capsys.readouterr().err.splitlines() == [L.ROSTER_OFF]
+
+
 def test_a_lock_refused_while_another_launcher_deletes_it_is_not_a_fallback(isolated_repo, monkeypatch, capsys):
     """Windows で別の回が錠を消す一瞬 (DeleteFileW が消しの印を立ててから閉じるまで) は、O_EXCL の作成が PermissionError に
     なり、確かめた時には錠の名がもう消えている。これは書けない置き場ではない = 続けて断られた時だけ退化し、1 回きりの

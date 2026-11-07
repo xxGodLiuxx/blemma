@@ -590,7 +590,10 @@ class Clients:
                     os.write(fd, json.dumps({"pid": os.getpid(), "at": datetime.now().astimezone().isoformat(
                         timespec="seconds")}).encode("utf-8"))
                 except OSError:
-                    pass                   # 記録の無い錠も錠 (ほかの回が回収するのは LOCK_STALE_NO_PID を過ぎてから)
+                    # pid を書けない錠は持たない = 記録の無い錠のまま区間に入ると、ほかの回が LOCK_STALE_NO_PID (5 秒) で
+                    # 回収しうる (UltraReview の件 1 の直しの残し)。錠を外して、名簿を使わない動き (None) へ
+                    self._unlock(path, fd)
+                    fd, held = None, None
             yield held
         finally:
             if fd is not None:
