@@ -288,6 +288,17 @@
     S.scanList = Array.prototype.filter.call(
       viewDocument.querySelectorAll("#opts .btn, #fixed-zone .btn, #term-zone .btn"),
       function (b) { return !b.disabled; });
+    /* 札が替わった・札の中で次の画面へ進んだ = 送りの枠 (小型の和紙 #copy・大きな板の #card・幅の狭い大きな板では頁そのもの) を
+       頭へ戻す = 前の札の送り位置のまま描かない (替わった札の頭 = 何の確認かが隠れたまま羽根が押せる)。取り消しで同じ画面へ
+       戻った時と、印を付けただけ・配色や設定の描き直しは位置を保つ (読んでいた所へ戻る) = 鍵は S.drawnScreen と別に持つ
+       (取り消しの枝は S.drawnScreen を消すので、それを使うと取り消しでも頭へ戻る)。中身を書き込んだ後に戻す */
+    if (screen !== S.scrollScreen) {
+      S.scrollScreen = screen;
+      $("copy").scrollTop = 0;
+      $("card").scrollTop = 0;
+      var se = viewDocument.scrollingElement;
+      if (se) se.scrollTop = 0;
+    }
     renderFan(m);
     /* 光の印と滞留の縁を外してから手放す = 作り直す釦は木ごと消えるが、常設の釦 (「▼ 続き」・取り消す) は残る。null にする
        だけだと、外す側 (bumpGen・frame) が空振りし、次の札で動かない偽の光と本物の光が 2 つ点く (光が「▼ 続き」に居る時に

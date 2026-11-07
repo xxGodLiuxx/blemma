@@ -3575,3 +3575,58 @@ console.log(JSON.stringify(r));
     assert out["undoLit"], out                                     # 前提 = 光が「取り消す」に来た
     assert out["shownLit"] == ["allow_once"] and out["undoMarkWhileHidden"] is False, out
     assert out["undoLitAt20"] is False and out["posts"] == ["/answer", "/answer"], out
+
+
+def test_scroll_position_resets_for_a_new_card_but_not_for_undo(tmp_path, clock):
+    """長い札 A を末尾まで読んだ後に画面が替わる (次の札・札なしを挟んだ次の札・2 問の札の次の設問) と、送りの枠は A の送り
+    位置のまま描かれ、替わった札の頭 (何の確認か) が隠れたまま羽根が押せた・「▲ 先頭へ」が出たまま (2 巡目の反証)。
+    画面が替わった時だけ頭へ戻す = 小型の和紙 (#copy)・大きな板の札の枠 (#card)。答えた (猶予)・取り消して同じ画面へ戻った・
+    印を付けただけの描き直しは、読んでいた位置を保つ。"""
+    a = _card(clock)
+    b = _card(clock)
+    multi = _card(clock, "question", MULTI_SELECT)
+    q = _card(clock, "question", TWO_QUESTIONS)
+    out = page(tmp_path, r"""
+async function long(mode, box) {                     /* 長い本文の頁 (送りの枠 = box・末尾 = 720) */
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.$(box).scrollHeight = 900; c.$(box).clientHeight = 180;
+  return c;
+}
+const out = {};
+let c = await long("small", "copy");
+c.show(A); await c.run(500);
+c.$("copy").scrollTop = 720;                         /* A を末尾まで読んだ */
+await c.key("1", "Digit1");                          /* 許可 (今回) = 猶予 (同じ画面の描き直し) */
+c.show(deciding(A)); await c.run(100);
+out.deciding = c.$("copy").scrollTop;
+c.show(reshown(A)); await c.run(500);                /* 取り消した = 同じ画面へ戻る */
+out.undone = c.$("copy").scrollTop;
+c.show(B); await c.run(100);                         /* 次の札 */
+out.next = { top: c.$("copy").scrollTop, more: c.$("more").textContent };
+c = await long("small", "copy");
+c.show(A); await c.run(500);
+c.$("copy").scrollTop = 720;
+c.show(null); await c.run(100);                      /* 札なし (空きを挟む) */
+c.show(B); await c.run(100);
+out.afterIdle = c.$("copy").scrollTop;
+c = await long("small", "copy");
+c.show(MULTI); await c.run(500);
+c.$("copy").scrollTop = 720;
+await c.key("1", "Digit1");                          /* 印を付けるだけ = 同じ画面の描き直し */
+out.marked = { top: c.$("copy").scrollTop, pressed: c.btn("opt:0").getAttribute("aria-pressed") };
+c = await long("small", "copy");
+c.show(Q); await c.run(500);
+c.$("copy").scrollTop = 720;
+await c.key("1", "Digit1");                          /* 1 問目に答えた = 次の設問 */
+out.nextQuestion = { top: c.$("copy").scrollTop, question: c.$("question").textContent.indexOf("次の問い") >= 0 };
+c = await long("large", "card");
+c.show(A); await c.run(500);
+c.$("card").scrollTop = 720;
+c.show(B); await c.run(100);
+out.large = c.$("card").scrollTop;
+console.log(JSON.stringify(out));
+""", A=a, B=b, MULTI=multi, Q=q)
+    assert out["deciding"] == 720 and out["undone"] == 720 and out["marked"] == {"top": 720, "pressed": "true"}, out
+    assert out["next"] == {"top": 0, "more": "▼ 続き (↓)"}, out
+    assert out["afterIdle"] == 0 and out["large"] == 0, out
+    assert out["nextQuestion"] == {"top": 0, "question": True}, out
