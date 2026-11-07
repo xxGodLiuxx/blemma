@@ -1201,7 +1201,9 @@
       if (sw) e.preventDefault();
       return;
     }
-    S.held[code] = true;
+    /* ⌘・Ctrl・Alt と組んだ鍵には、押したままの印を立てない = mac は ⌘ を押している間、ほかの鍵の離した知らせを送らない
+       (印が残ると、後の素の 1 押しが黙って捨てられる・最終デバッグ 1 巡目 #33)。組んだ鍵は札を押さない (下の行) */
+    if (!(e.ctrlKey || e.altKey || e.metaKey)) S.held[code] = true;
     S.lastInput = "key";
     if (S.overlay) {
       /* 板の中の選択や入力の Enter / Space には触らない。焦点が「閉じる」に在る時だけ、Enter / Space で閉じる
@@ -1407,6 +1409,10 @@
      ない)。その間は頁に印を付ける (外の道具と試験が「もう押せる」を読み違えない)。焦点の出入りの瞬間の古い滞留は捨てる */
   function windowFocused() {
     var now = performance.now();
+    /* 焦点を失っている間に離した鍵の知らせ (keyup) は、別の窓へ行って届かない = 押したままの印は、焦点が戻った時に捨てる
+       (残ると、戻った後の最初の 1 押し・取り消しが黙って捨てられる・最終デバッグ 1 巡目 #10)。焦点を失う時 (letGo) には
+       捨てない = PiP の窓へ移る間の保持は残す。押したまま繰り返す鍵は repeat の印で、焦点が戻った後も数えない */
+    S.held = {};
     releaseDwell();
     S.focusAt = now;
     S.scan.restart(now + scanQuiet());

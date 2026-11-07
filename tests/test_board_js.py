@@ -3430,6 +3430,70 @@ console.log(JSON.stringify(out));
     assert out == want, out
 
 
+def test_a_key_held_when_the_window_lost_the_focus_is_let_go_when_it_comes_back(tmp_path, clock):
+    """押したままの鍵の印 (S.held) は、窓が焦点を取り戻した時に捨てる (最終デバッグ 1 巡目 #10・#33 の再現 = 鍵を押したまま
+    窓が焦点を失うと、離した知らせ (keyup) は別の窓へ行き、戻った後の最初の 1 押し (取り消しを含む) が黙って捨てられた)。
+    mac の ⌘ と組んだ鍵 (⌘ を押している間は離した知らせが来ない) には、初めから押したままの印を立てない。対照 = 押したまま
+    繰り返す鍵 (repeat) は焦点が戻った後も数えない・焦点を失わない間の、離していない鍵の 2 打目は今までどおり数えない。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+function down(c, key, code, more) {               /* keydown だけ (離した知らせは届かない) */
+  return c.event("keydown", Object.assign({ key: key, code: code, repeat: false, ctrlKey: false, altKey: false, metaKey: false,
+                                            target: c.doc().activeElement }, more || {}));
+}
+function lit(c) { return c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; })[0] || null; }
+async function untilLit(c, key) { for (let i = 0; i < 400 && lit(c) !== key; i++) await c.run(16); return lit(c); }
+function away(c) { c.win.listeners.fire("blur", {}); }
+function back(c) { c.win.listeners.fire("focus", {}); }
+const out = {};
+let c = await P.boot({ query: "?mode=small&lang=ja&scan=1" });
+await c.run(500);
+down(c, " ", "Space");                             /* 待ちの扇で押したまま、窓が焦点を失う */
+away(c); await c.run(200); back(c); await c.run(500);
+c.show(A);
+out.waitingLit = await untilLit(c, "allow_once");
+await c.key(" ", "Space");                         /* 戻った後の 1 押し = 光った許可を押す */
+out.waiting = choices(c);
+c = await P.boot({ query: "?mode=small&lang=ja&scan=1" });
+c.show(A);
+out.answerLit = await untilLit(c, "allow_once");
+down(c, " ", "Space");                             /* 答えて、離さないまま窓が焦点を失う */
+out.answered = choices(c);
+c.show(deciding(A, { type: "allow_once" }));
+away(c); await c.run(100); back(c);
+out.undoLit = await untilLit(c, "undo");
+await c.key(" ", "Space");                         /* 猶予の内の取り消しの 1 押し */
+out.undo = c.posts();
+c = await P.boot({ query: "?mode=small&lang=ja" });
+c.show(A); await c.run(500);
+down(c, "1", "Digit1", { metaKey: true });         /* ⌘+1 (離した知らせは来ない) */
+await c.run(300);
+await c.key("1", "Digit1");                        /* 素の 1 = 1 押し目で押せる */
+out.meta = choices(c);
+c = await P.boot({ query: "?mode=small&lang=ja&scan=1" });
+c.show(A);
+await untilLit(c, "allow_once");
+away(c); await c.run(100); back(c);
+out.repeatLit = await untilLit(c, "allow_once");
+down(c, " ", "Space", { repeat: true });           /* 押したまま繰り返す鍵 = 焦点が戻った後も数えない */
+out.repeat = c.answers().length;
+c = await P.boot({ query: "?mode=small&lang=ja&scan=1" });
+c.show(A);
+await untilLit(c, "allow_once");
+down(c, " ", "Space");
+c.show(deciding(A, { type: "allow_once" }));
+out.heldLit = await untilLit(c, "undo");
+down(c, " ", "Space");                             /* 焦点を失っていない = 離していない鍵の 2 打目は数えない */
+out.held = c.posts();
+console.log(JSON.stringify(out));
+""", A=a)
+    once = [{"type": "allow_once"}]
+    assert out == {"waitingLit": "allow_once", "waiting": once,
+                   "answerLit": "allow_once", "answered": once, "undoLit": "undo", "undo": ["/answer", "/undo"],
+                   "meta": once, "repeatLit": "allow_once", "repeat": 0,
+                   "heldLit": "undo", "held": ["/answer"]}, out
+
+
 def test_the_close_button_of_the_settings_answers_enter_and_space(tmp_path, clock):
     """設定の板の「閉じる」に焦点が在る時は、Enter / Space で閉じる (反証役の再現 = Esc とマウスでしか閉じなかった)。
     板の中の選択の上の Enter には触らない (板は開いたまま)。"""
