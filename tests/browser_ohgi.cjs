@@ -315,13 +315,16 @@ async function closeCard(id) {
   // A reload while the window is the small waiting fan must not take that size for the full one.
   await open();
   await evaluate(stubs+`Object.defineProperty(window,'outerWidth',{value:320,configurable:true}); Object.defineProperty(window,'outerHeight',{value:120,configurable:true}); 0`);
-  await click('#gear-btn');                    // The settings need room: the remembered size comes back.
+  // The page fits the window on its next side tick (every 0.25 s): idle in the waiting size, it stays the waiting size.
+  // Wait for that fit first, so the order below does not depend on whether the click or the tick comes first.
   await until(`window.__sizes.length>=1`);
-  await key('Escape');                         // Waiting again in the small window, which is never taken for the full size.
+  await click('#gear-btn');                    // The settings need room: the remembered size comes back.
   await until(`window.__sizes.length>=2`);
-  const reloaded=await card(2);
+  await key('Escape');                         // Waiting again in the small window, which is never taken for the full size.
   await until(`window.__sizes.length>=3`);
-  assert.deepEqual(await evaluate(`window.__sizes`),[outer,[320,120],outer],'After a reload in the waiting size, the settings and the card open at the remembered size');
+  const reloaded=await card(2);
+  await until(`window.__sizes.length>=4`);
+  assert.deepEqual(await evaluate(`window.__sizes`),[[320,120],outer,[320,120],outer],'After a reload in the waiting size, the settings and the card open at the remembered size');
   await closeCard(reloaded);
   // A reload in the middle of a card keeps the window the user made larger: the size remembered before is not forced back.
   const kept=await card(2);

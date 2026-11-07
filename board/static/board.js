@@ -13,6 +13,7 @@
     token: "", lang: "ja", dwellMs: 1000, scanMs: 0, switchKey: "Space", sound: false,
     mode: "large", desc: true, fan: false, fanVisual: [], firstPointer: true,
     seq: -1, snap: null, snapAt: 0, card: null, ui: C.newUi(null), key: "", gen: 0,
+    genAt: -1e9,                      /* 表示の世代が進んだ時刻。札の来る前に窓の焦点で押せない間の印が付いても、印を外せるように初めから数にする */
     btns: {}, optionKeys: [], scanList: [], scanEl: null, fillEl: null,
     delta: C.zeroPresses(), answering: false, undoing: false, sentKey: null,
     pressLedger: C.newPressLedger(window.crypto.getRandomValues(new Uint32Array(4)).join("-")),
@@ -961,6 +962,10 @@
     /* 名指しの押し (数字の鍵) で札の中を進めた直後 = 続く名指しの押しは数えるが、焦点や位置で行き先が決まる押し (癖の Enter・
        ダブルクリック) は数えない (見ていない次の設問の先頭に当たらない)。取り消しは別 (猶予の内の、自分の間を持つ) */
     if (by !== "dwell" && !named && key !== "undo" && performance.now() - (S.stepAt || -1e9) < SETTLE_MS) return;
+    /* 窓が鍵の焦点を得た直後の鍵とスイッチの押しは数えない (線 3) = 別の窓へ向けて打った鍵や、焦点を得た瞬間のスイッチが、
+       許可に当たらない。ここは名指しの鍵 (数字) も数えない (数字が届いた先が、打った人の見ていた窓とは限らない)。
+       click と触る押しは数える (焦点の無い窓を click した最初の押しを捨てない)。取り消しも数える (安全の側) */
+    if ((by === "key" || by === "switch") && key !== "undo" && performance.now() - (S.focusAt || -1e9) < SETTLE_MS) return;
     if (key === "more") {                                  /* 和紙の続きを 1 画面分送る。最後まで読んだら先頭へ */
       copyPage(1);
       S.moreNext = performance.now() + 1500;
@@ -1271,7 +1276,8 @@
         }
       }
     }
-    if (S.settling && now - S.genAt >= SETTLE_MS && now - (S.stepAt || -1e9) >= SETTLE_MS) setSettling(false);
+    if (S.settling && now - S.genAt >= SETTLE_MS && now - (S.stepAt || -1e9) >= SETTLE_MS &&
+        now - (S.focusAt || -1e9) >= SETTLE_MS) setSettling(false);
     if (S.armKey && now - S.armAt > ARM_MS) { disarm(); if (S.spotBtn) spotlight(S.spotBtn); }
     if (S.overMore) hoverMore(now);
     if (S.scanMs > 0) {
@@ -1346,6 +1352,18 @@
     if (whole) { box.scrollTop += whole; S.scrollRest -= whole; }
   }
 
+  /* 窓が鍵の焦点を得た (別の窓を閉じた時に OS が扇へ焦点を移す・人が扇を click する) = 表示が替わった時と同じ守りを置く。
+     走査は頭 (許可) からすぐには光らせず、静かな 1 こまの後に回す (光っていた「止」へ向けたスイッチの 1 押しが、跳んだ先の
+     許可に当たらない)。鍵とスイッチの押しは press が 0.4 秒数えない (別の窓へ向けて打った鍵が扇に届いても、許可に当たら
+     ない)。その間は頁に印を付ける (外の道具と試験が「もう押せる」を読み違えない)。焦点の出入りの瞬間の古い滞留は捨てる */
+  function windowFocused() {
+    var now = performance.now();
+    releaseDwell();
+    S.focusAt = now;
+    S.scan.restart(now + scanQuiet());
+    setSettling(true);
+  }
+
   function restartFrames() {
     if (rafId !== null) rafWindow.cancelAnimationFrame(rafId);
     rafWindow = viewWindow;
@@ -1369,7 +1387,7 @@
     d.addEventListener("pointercancel", active(endDrag));
     d.addEventListener("lostpointercapture", active(endDrag));
     w.addEventListener("blur", active(letGo));
-    w.addEventListener("focus", active(function () { releaseDwell(); S.scan.restart(Math.max(performance.now(), S.genAt + scanQuiet() || 0)); }));
+    w.addEventListener("focus", active(windowFocused));
     d.addEventListener("visibilitychange", active(letGo));
     w.addEventListener("resize", active(function () { windowMoved(); fitFan(); }));
     d.addEventListener("keydown", active(onKeyDown));

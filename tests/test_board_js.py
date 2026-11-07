@@ -1369,7 +1369,8 @@ setTimeout(function () { console.log(JSON.stringify(Object.assign(counts, { sent
 
 def test_the_scan_stays_quiet_after_a_change_even_when_it_resumes(tmp_path, clock):
     """板から表示が替わった後の「走査の静かな 1 こま」は、走査が止まっていた所から動き出す時にも持ち越す
-    (pointer が止まって走査が戻る時・窓に焦点が戻る時)。持ち越さないと、替わった直後に先頭 (許可) が光る。"""
+    (pointer が止まって走査が戻る時)。持ち越さないと、替わった直後に先頭 (許可) が光る。窓に焦点が戻る時は、焦点の時刻から
+    静かな 1 こまを数え直す (替わった後の間より長い = 焦点を得た瞬間に、光が許可へ跳ばない・頁の点検 F3)。"""
     _, card = _board(clock)
     out = node(tmp_path, (PAGE_SETUP + FAKE_CLOCK + r"""
 const t = loadPage(function () { throw new Error("通信しない"); });
@@ -1389,8 +1390,8 @@ lit(4000);
 now = 5000; t.bumpGen(true);                           /* 板から表示が替わった = 静かな間は 6500 まで */
 seen.resumed = [lit(5116), lit(6400), lit(6510)];      /* pointer が止まって走査が戻っても、6500 までは光らない */
 now = 9000; t.bumpGen(true);                           /* もう 1 度替わった = 静かな間は 10500 まで */
-now = 9200; handlers.focus();                          /* 窓に焦点が戻った = 走査を頭から数え直す */
-seen.focused = [lit(9216), lit(10400), lit(10510)];
+now = 9200; handlers.focus();                          /* 窓に焦点が戻った = 静かな間は焦点から 1.5 秒 (10700 まで) */
+seen.focused = [lit(9216), lit(10600), lit(10710)];
 console.log(JSON.stringify(seen));
 """).replace("__CARD__", json.dumps(card)))
     assert out == {"resumed": [None, None, "first"], "focused": [None, None, "first"]}
@@ -3098,6 +3099,89 @@ console.log(JSON.stringify(out));
 """, A=a)
     assert out["300"] is not None and 150 <= out["300"] <= 175, out
     assert out["3000"] is not None and 400 <= out["3000"] <= 425, out
+
+
+def test_the_window_getting_the_focus_does_not_relight_the_allow_or_count_keys_at_once(tmp_path, clock):
+    """窓が鍵の焦点を得た直後 (別の窓を閉じた時に OS が扇へ焦点を移す・人が扇を click する) は、走査を頭 (許可) からすぐには
+    光らせず、静かな 1 こまを置いてから回す。鍵とスイッチの押しは 0.4 秒数えず、その間は頁に印 (body.settling) を付ける
+    = 光っていた「止」へ向けたスイッチの 1 押しや、別の窓へ向けて打った数字が、許可に当たらない (頁の点検 F3 の再現 =
+    焦点の 20 ms 後に「許可」が光り、Space で allow_once を送った)。マウスの click は数える (焦点の無い窓を click した
+    最初の押しを捨てない)。猶予の取り消しも数える (安全の側)。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+function lit(c) { return c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; })[0] || null; }
+function focusWindow(c) { c.win.listeners.fire("focus", {}); }
+const out = {};
+for (const mode of ["small", "large"]) {
+  /* スイッチ: 光が「許可」から離れた所で、窓に焦点が来る */
+  let c = await P.boot({ query: "?mode=" + mode + "&lang=ja&scan=1.5" });
+  c.show(A);
+  await c.run(5000);
+  const before = lit(c);
+  focusWindow(c);
+  await c.run(20);
+  const sw = { moved: before !== null && before !== "allow_once", lit: lit(c), mark: c.doc().body.classList.contains("settling") };
+  await c.key(" ", "Space");
+  sw.sent = c.answers().length;
+  await c.run(450);
+  sw.markAfter = c.doc().body.classList.contains("settling");
+  await c.run(1300);                               /* 焦点から 1.77 秒 = 静かな 1 こま (1.5 秒) の後 */
+  sw.later = lit(c);
+  await c.key(" ", "Space");
+  sw.laterSent = choices(c);
+  out[mode + ":switch"] = sw;
+  /* 数字 (行き先を名指しする鍵): 焦点の 0.1 秒後は数えない・0.6 秒後は数える */
+  c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(A);
+  await c.run(2000);
+  focusWindow(c);
+  await c.run(100);
+  await c.key("1", "Digit1");
+  const early = c.answers().length;
+  await c.run(500);
+  await c.key("1", "Digit1");
+  out[mode + ":digit"] = { early: early, later: choices(c) };
+  /* 取り消し: 猶予の内に窓へ焦点が来ても、直後の Backspace は取り消す */
+  c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(A);
+  await c.run(2000);
+  await c.key("1", "Digit1");
+  c.show(deciding(A));
+  await c.run(500);
+  focusWindow(c);
+  await c.run(20);
+  await c.key("Backspace", "Backspace");
+  out[mode + ":undo"] = c.posts();
+}
+/* 札の来る前 (待ちの頁を開いた直後) に焦点が来ても、印は 0.4 秒で外れる (実ブラウザの試験の再現 = 世代の時刻が未定義で、
+   印が外れずに次の click が待ち続けた) */
+const w = await P.boot({ query: "?mode=small&lang=ja" });
+await w.run(100);
+focusWindow(w);
+await w.run(20);
+const waitMark = w.doc().body.classList.contains("settling");
+await w.run(450);
+out["waiting"] = { mark: waitMark, markAfter: w.doc().body.classList.contains("settling") };
+/* マウス: 大きな板の釦は 1 回の click で決まる。焦点を得た直後の click も数える */
+const m = await P.boot({ query: "?mode=large&lang=ja" });
+m.show(A);
+await m.run(2000);
+focusWindow(m);
+await m.run(20);
+await m.click(m.btn("allow_once"));
+out["large:click"] = choices(m);
+console.log(JSON.stringify(out));
+""", A=a)
+    allow = [{"type": "allow_once"}]
+    switch = {"moved": True, "lit": None, "mark": True, "sent": 0, "markAfter": False, "later": "allow_once", "laterSent": allow}
+    want = {}
+    for mode in ("small", "large"):
+        want[mode + ":switch"] = switch
+        want[mode + ":digit"] = {"early": 0, "later": allow}
+        want[mode + ":undo"] = ["/answer", "/undo"]
+    want["large:click"] = allow
+    want["waiting"] = {"mark": True, "markAfter": False}
+    assert out == want, out
 
 
 def test_the_close_button_of_the_settings_answers_enter_and_space(tmp_path, clock):
