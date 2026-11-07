@@ -252,7 +252,9 @@
   /* 滞留 = 同じ釦の上に ms 留まると押す。外れても grace のうちに戻れば数え続ける。
    * 外れた長さは戻った時にも見る (grace を超えていれば頭から数え直す)。こま (update の呼び) の間が grace より
    * 長く空いた時も (頁が隠れた・描画が止まった) その間 留まっていたか分からない = 頭から数え直す (§4.2)。
-   * block(key) = その釦は pointer が一度外へ出るまで数えない (押した直後・表示の世代が変わった時)。 */
+   * block(key) = その釦は pointer が一度外へ出るまで数えない (押した直後・表示の世代が変わった時)。外へ出たと見るのは、
+   * 釦の無い所に grace より長く居た時か、別の釦に入った時 = 数える側と同じ揺れの許し (羽根の縁に休む視線が 1 こまだけ
+   * 帯へ揺れても、見ていない (入り直していない) 羽根を 1 秒後に押さない)。 */
   function Dwell(ms, graceMs) {
     this.ms = ms;
     this.grace = graceMs === undefined ? 150 : graceMs;
@@ -263,12 +265,14 @@
     this.start = 0;
     this.outSince = null;
     this.blocked = null;
+    this.blockedOut = null;                   /* 守りの釦の外 (釦なし) に出た時刻 */
     this.last = null;
   };
   Dwell.prototype.block = function (key) {
     this.target = null;
     this.outSince = null;
     this.blocked = key || null;
+    this.blockedOut = null;
   };
   /* key = いま pointer の下の釦 (無ければ null)。返り = {target, progress (0〜1), fire} */
   Dwell.prototype.update = function (key, now) {
@@ -281,8 +285,13 @@
       this.outSince = null;
     }
     if (this.blocked !== null) {
-      if (key === this.blocked) return none;
-      this.blocked = null;
+      if (key === this.blocked) { this.blockedOut = null; return none; }
+      if (key === null || key === undefined) {  /* 釦なし = grace の内は守りを保つ (縁の揺れ)・grace を超えて続いたら解く */
+        if (this.blockedOut === null) this.blockedOut = now;
+        if (now - this.blockedOut <= this.grace) return none;
+      }
+      this.blocked = null;                    /* 別の釦に入った時は、すぐ解く */
+      this.blockedOut = null;
     }
     if (key === null || key === undefined) {
       if (this.target === null) return none;

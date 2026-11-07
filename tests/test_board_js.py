@@ -92,6 +92,22 @@ out.gap = { back: d.update("allow_once", 1500), rest: frames(d, "allow_once", 15
 /* 途切れずに留まれば 1 秒で 1 回だけ押す (見続けても 2 回押さない) */
 d = new core.Dwell(1000, 150);
 out.steady = frames(d, "allow_once", 0, 3000).fired;
+
+/* 守り (block) は釦なしの 1 こまの揺れでは解けない (羽根の縁に休む視線が帯へ 1 こま揺れた) = 入り直していない釦を押さない */
+d = new core.Dwell(1000, 150);
+d.block("allow_once"); d.update("allow_once", 0); d.update(null, 16);
+out.edge = frames(d, "allow_once", 32, 1200).fired;
+
+/* 釦なしが grace を超えて続いた = 外へ出た = 守りを解く。入り直してから 1 秒で押す */
+d = new core.Dwell(1000, 150);
+d.block("allow_once"); d.update("allow_once", 0);
+frames(d, null, 16, 208);
+out.leftLong = frames(d, "allow_once", 224, 1400).fired;
+
+/* 別の釦に入った = すぐ解く (その釦は入ってから 1 秒で押す) */
+d = new core.Dwell(1000, 150);
+d.block("allow_once");
+out.other = frames(d, "deny", 0, 1100).fired;
 console.log(JSON.stringify(out));
 """
 
@@ -126,8 +142,27 @@ def test_dwell_steady_fires_once(dwell_cases):
     assert len(dwell_cases["steady"]) == 1 and 1000 <= dwell_cases["steady"][0] < 1020
 
 
+def test_dwell_block_survives_a_one_frame_slip_off_the_button(dwell_cases):
+    """入り直すまで数えない守り (block) は、釦なしの 1 こま (羽根の縁に休む視線が書の帯・地紙へ揺れた) では解けない =
+    数える側の揺れの許し (150 ms) と揃える。直す前は 1 こまで解け、入り直していない羽根を 1 秒後に押した ([1040]・2 巡目 i19)。"""
+    assert dwell_cases["edge"] == []
+
+
+def test_dwell_block_lifts_after_being_off_for_longer_than_grace(dwell_cases):
+    """釦なしが 150 ms を超えて続いた = 外へ出た = 守りを解く。入り直してから 1 秒で押す。"""
+    assert dwell_cases["leftLong"] and dwell_cases["leftLong"][0] >= 224 + 1000
+
+
+def test_dwell_block_lifts_at_once_on_another_button(dwell_cases):
+    """守りの釦から別の釦へ入った = すぐ解く (別の釦は入ってから 1 秒で押す)。"""
+    assert dwell_cases["other"] and 1000 <= dwell_cases["other"][0] < 1020
+
+
 def test_release_dwell_blocks_the_button_under_the_pointer(tmp_path):
-    """頁が隠れた・焦点を失った (releaseDwell) = 0.9 秒の滞留を捨て、同じ釦は一度外へ出て入り直すまで数えない。"""
+    """頁が隠れた・焦点を失った (releaseDwell) = 0.9 秒の滞留を捨て、同じ釦は一度外へ出て入り直すまで数えない。
+    外へ出たと見るのは、釦の無い所に 150 ms (揺れの許し) より長く居た時 (か、別の釦に入った時)。11/7 に期待を安全の向きへ
+    書き換えた = 前は釦なしの 2 こま (16 ms) で守りが解け、入り直したと見ていた。縁の揺れ 1 こまで、見ていない釦を
+    押さないため (2 巡目 i19)。"""
     out = node(tmp_path, r"""
 const t = loadPage(function () { throw new Error("通信しない"); });
 t.S.dwell = new core.Dwell(1000, 150);
@@ -135,13 +170,13 @@ t.S.over = "allow_once";
 const before = frames(t.S.dwell, "allow_once", 0, 896);
 t.releaseDwell();
 const stay = frames(t.S.dwell, "allow_once", 912, 3000);
-frames(t.S.dwell, null, 3016, 3032);
-const again = frames(t.S.dwell, "allow_once", 3048, 4100);
+frames(t.S.dwell, null, 3016, 3200);                 /* 釦の外に 150 ms より長く居る */
+const again = frames(t.S.dwell, "allow_once", 3216, 4300);
 console.log(JSON.stringify({ before: before.fired, stay: stay.fired, stayLast: stay.last, again: again.fired }));
 """)
     assert out["before"] == [] and out["stay"] == []
     assert out["stayLast"] == {"target": None, "progress": 0, "fire": False}
-    assert out["again"] and out["again"][0] >= 3048 + 1000
+    assert out["again"] and out["again"][0] >= 3216 + 1000
 
 
 def test_required_multi_with_min_picks_0_can_send_no_marks(tmp_path):
@@ -1577,7 +1612,9 @@ setTimeout(function () {
 
 def test_dwell_never_fires_while_a_button_is_held(tmp_path, clock):
     """見つめて押す設定でも、釦を押したまま (文字の選択・ドラッグ) 羽根の上で止まっただけでは答えが出ない。
-    離した後も、羽根へ入り直すまで数えない。押していなければ、今までどおり 1 秒で押す。"""
+    離した後も、羽根へ入り直すまで数えない。押していなければ、今までどおり 1 秒で押す。
+    入り直したと見るのは、釦の無い所に 150 ms (揺れの許し) より長く居てから戻った時。11/7 に期待を安全の向きへ書き換えた =
+    前は釦なしの 3 こま (32 ms) で「外へ出た」と見ていた。縁の揺れで、見ていない羽根を押さないため (2 巡目 i19)。"""
     _, card = _board(clock)
     out = node(tmp_path, (PAGE_SETUP + r"""
 let now = 0;
@@ -1599,9 +1636,9 @@ t.S.down = true;                                       /* 押したまま羽根�
 counts.held = frames(0, 1500);
 t.S.down = false;                                      /* 離して、そのまま留まる = 入り直していない */
 counts.released = frames(1516, 3000);
-t.S.over = null; frames(3016, 3048);                   /* 一度外へ出る */
+t.S.over = null; frames(3016, 3200);                   /* 一度外へ出る (150 ms より長く) */
 t.S.over = "allow_once";
-counts.reentered = frames(3064, 4200);                 /* 入り直して 1 秒 = 押す */
+counts.reentered = frames(3216, 4400);                 /* 入り直して 1 秒 = 押す */
 setTimeout(function () { console.log(JSON.stringify(Object.assign(counts, { by: sent.map(function (s) { return s.body.by; }) }))); }, 20);
 """).replace("__CARD__", json.dumps(card)))
     assert out == {"held": 0, "released": 0, "reentered": 1, "by": ["dwell"]}
