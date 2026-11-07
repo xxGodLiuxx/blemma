@@ -1574,6 +1574,28 @@ def test_a_roster_folder_that_cannot_be_written_falls_back_to_the_old_way(isolat
     assert err == [L.ROSTER_OFF] * 3, err
 
 
+def test_a_lock_refused_while_another_launcher_deletes_it_is_not_a_fallback(isolated_repo, monkeypatch, capsys):
+    """Windows で別の回が錠を消す一瞬 (DeleteFileW が消しの印を立ててから閉じるまで) は、O_EXCL の作成が PermissionError に
+    なり、確かめた時には錠の名がもう消えている。これは書けない置き場ではない = 続けて断られた時だけ退化し、1 回きりの
+    断りでは作り直して錠を取る (件 1 の直しの後の負荷の試し = 錠の取り合いを 15 秒続けると、3.13 で 17 回・3.10 で 4 回
+    退化した)。"""
+    state = isolated_repo / "board" / "state"
+    real_open = os.open
+    refusals = []
+
+    def refused_once(path, flags, *args, **kwargs):
+        if Path(path).name == ".lock" and not refusals:
+            refusals.append(path)
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(L.os, "open", refused_once)
+    a = L.Clients(state)
+    a.join()
+    assert len(refusals) == 1 and a.ok and a.me is not None and a.me.exists()
+    assert capsys.readouterr().err == ""
+
+
 @contextlib.contextmanager
 def deleting_lock(path):
     """Windows の「消える途中」の錠 = 別の process (検索の索引・ウイルス対策など) が消しの共有つきで開いている間に、古い型の

@@ -547,6 +547,7 @@ class Clients:
         path = self.dir / ".lock"
         fd = None
         held: bool | None = False
+        refused = 0                        # 錠の名が無いのに作成を断られた回数 (続けて)
         start = time.monotonic()
         deadline = start + LOCK_WAIT
         try:
@@ -556,10 +557,18 @@ class Clients:
                     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                     break
                 except (FileExistsError, PermissionError) as error:
-                    # PermissionError は、Windows で錠の名が在る時だけ使用中 (別の回が開いている間に消された錠 = 消える途中) =
-                    # 在る錠と同じく待つ。ほか (POSIX の EACCES・Windows の書けない dir) は錠を作れない置き場 = 下の退化へ
+                    # PermissionError は、Windows で錠の名が在る時は使用中 (別の回が開いている間に消された錠 = 消える途中) =
+                    # 在る錠と同じく待つ。名が無い時は、別の回が錠を消している一瞬 (Windows の DeleteFileW が消しの印を立てて
+                    # から閉じるまで・確かめた時には名がもう無い) か、錠を作れない置き場 (POSIX の EACCES・Windows の書けない
+                    # dir)。続けて 3 回断られた時だけ、作れない置き場と見て下の退化へ (1 回きりで退化すると、錠の取り合いの
+                    # 中で名簿を使わない動きに落ちた)
                     if isinstance(error, PermissionError) and not (os.name == "nt" and os.path.lexists(path)):
-                        raise
+                        refused += 1
+                        if refused >= 3:
+                            raise
+                        time.sleep(0.05)
+                        continue
+                    refused = 0
                     wait, mark = self._stale(path)
                     if wait is not None and wait <= 0 and self._reclaim(path, mark):
                         continue
