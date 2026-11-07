@@ -52,6 +52,16 @@ HOOKS = (
 )
 PAGE_KEYS = frozenset(("dwell", "scan", "key", "lang", "sound", "mode", "scale", "font", "theme", "desc", "trail", "click", "face", "pos", "clear"))
 PAGE_KEY_SHAPE = re.compile(r"[A-Za-z0-9_-]{1,24}")   # 誤りの文に名を出してよい鍵の形 (頼みの文や秘密を写さない)
+# 頁の parseOptions (board/static/board_core.js) が範囲の外で黙って既定 (切・Space) へ戻す 3 つの鍵は、起こす前に値も確かめる
+PAGE_NUMBER = re.compile(r"[0-9]+(?:\.[0-9]*)?|\.[0-9]+")          # 頁と同じ数の形 (符号・指数は読まない)
+PAGE_SWITCH_KEYS = re.compile(r"[A-Za-z0-9]|Space|Enter|NumpadEnter|Tab|Escape|Backspace|Arrow(?:Left|Right|Up|Down)"
+                              r"|F(?:[1-9]|1[0-9]|2[0-4])|Key[A-Z]|Digit[0-9]|Numpad[0-9]")   # 頁の key の一覧と同じ
+PAGE_VALUE_SHAPE = re.compile(r"[A-Za-z0-9._-]{1,24}")             # 誤りの文に写してよい値の形
+PAGE_RANGES = {
+    "dwell": ("0 か 0.3〜5 秒", "0 or 0.3-5 seconds"),
+    "scan": ("off か 0.5〜10 秒", "off or 0.5-10 seconds"),
+    "key": ("Space・Enter・F13 などの鍵の名 = board/README.md", "a key name such as Space, Enter or F13; see board/README.md"),
+}
 UNSET = object()                 # 旗を打っていない印 (--window-position の None は「右下」という読めた値)
 CLAUDE_MISSING = (
     # 第 2 の道は頁を開く板を手で起こす (--print-only は頁を開かないので、--keep-board で残した板には見る頁が無い)。
@@ -81,9 +91,29 @@ class LaunchError(Exception):
     """利用者へ出せる、秘密を含まない英日の文 (ふつうは 1 行・main が行ごとに BLEMMA: を付ける)。"""
 
 
+def page_value_ok(key: str, value: str) -> bool:
+    """頁が受ける値か (頁の parseOptions と同じ決まり = dwell は 10 を、scan は 20 を超える値を ms と読む)。
+    dwell・scan・key の外は頁が確かめる (範囲の外は頁の既定へ戻る)。"""
+    if key == "key":
+        return value == " " or PAGE_SWITCH_KEYS.fullmatch(value) is not None
+    if key not in ("dwell", "scan"):
+        return True
+    if key == "scan" and value in ("", "on", "true", "off", "false"):
+        return True
+    if not PAGE_NUMBER.fullmatch(value):
+        return False
+    seconds = float(value)
+    if seconds > (10 if key == "dwell" else 20):
+        seconds /= 1000
+    low, high = (0.3, 5) if key == "dwell" else (0.5, 10)
+    return seconds == 0 or low <= seconds <= high
+
+
 def page_options(environment: str, assignments: list[str]) -> dict[str, str]:
-    """Only display keys enter the URL. Values are validated by the shared page parser.
-    BLEMMA_OPTS の知らない鍵は黙って捨てる。--set の知らない鍵は止める (打ち間違いを黙って効かなくしない)。"""
+    """Only display keys enter the URL. dwell, scan and key values are checked here (the page would fall back
+    silently); the page parser validates the rest.
+    BLEMMA_OPTS の知らない鍵は黙って捨てる。--set の知らない鍵は止める (打ち間違いを黙って効かなくしない)。
+    dwell・scan・key の値が頁の範囲の外なら、--set でも BLEMMA_OPTS でも止める (--set が勝った後の値で見る)。"""
     options = {k: v for k, v in parse_qsl(environment, keep_blank_values=True) if k in PAGE_KEYS}
     for assignment in assignments:
         key, _, value = assignment.partition("=")   # `=` の無い物 (例 scan) は空の値 = 頁の決まりの既定 (scan は 1.5 秒)
@@ -92,6 +122,11 @@ def page_options(environment: str, assignments: list[str]) -> dict[str, str]:
                 raise LaunchError(f"頁の設定の名を確認してください: {key} (--help) / Unknown page option: {key}")
             raise LaunchError("引数を確認してください (--help) / Invalid arguments (see --help)")
         options[key] = value
+    for key, (ja, en) in PAGE_RANGES.items():
+        value = options.get(key)
+        if value is not None and not page_value_ok(key, value):
+            shown = f"{key}={value}" if PAGE_VALUE_SHAPE.fullmatch(value) else key
+            raise LaunchError(f"頁の設定の値を確認してください: {shown} ({ja}) / Invalid page option value: {shown} ({en})")
     return options
 
 

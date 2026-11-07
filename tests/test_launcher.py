@@ -475,6 +475,33 @@ def test_set_names_an_unknown_key_and_takes_a_bare_key(monkeypatch, capsys):
         assert captured == ("", "BLEMMA: 引数を確認してください (--help) / Invalid arguments (see --help)\n")
 
 
+def test_set_and_opts_values_outside_the_page_ranges_are_refused(monkeypatch, capsys):
+    """dwell・scan・key は、頁が範囲の外で黙って既定 (切・Space) へ戻す値なら、板も窓も開く前に止める (1 巡目 #6・#24 =
+    scan=12 は走査なし・key=PageDown は Space に黙って戻った)。頁と同じ決まり = dwell は 10 を、scan は 20 を超える値を
+    ms と読む。--set が BLEMMA_OPTS に勝つ。値は短い英数の形の時だけ写す (頼みの文や秘密を写さない)。"""
+    def unexpected(*args, **kwargs):
+        pytest.fail("値の誤りでは何も起こさない")
+
+    monkeypatch.setattr(L, "launch", unexpected)
+    for bad in ("scan=12", "scan=0.4", "scan=25", "dwell=6", "dwell=0.2", "dwell=1e3", "key=PageDown", "key=Home"):
+        assert L.main(["--set", bad]) == 1
+        out, err = capsys.readouterr()
+        assert out == "" and len(err.splitlines()) == 1, bad
+        assert err.startswith(f"BLEMMA: 頁の設定の値を確認してください: {bad} (") and f"page option value: {bad} (" in err
+    for bad, shown in (("dwell", "dwell"), ("key=日本語の頼み", "key")):      # 空の値・鍵らしくない値は名だけ
+        assert L.main(["--set", bad]) == 1
+        err = capsys.readouterr().err
+        assert err.startswith(f"BLEMMA: 頁の設定の値を確認してください: {shown} (") and "日本語" not in err
+    monkeypatch.setenv("BLEMMA_OPTS", "theme=dark&scan=25")
+    assert L.main([]) == 1 and "scan=25 (" in capsys.readouterr().err
+    assert L.parse_args(["--set", "scan=1"]).page_options == {"theme": "dark", "scan": "1"}   # --set が勝つ
+    monkeypatch.delenv("BLEMMA_OPTS")
+    for good in ("scan=1.5", "scan=off", "scan=0", "scan=true", "scan=1500", "dwell=0", "dwell=1", "dwell=300",
+                 "key=F13", "key=Space", "key=a", "key=KeyQ", "key=Numpad0", "key=ArrowLeft", "key= "):
+        key, _, value = good.partition("=")
+        assert L.parse_args(["--set", good]).page_options == {key: value}, good
+
+
 @pytest.mark.parametrize("name,flag,value", [
     ("BLEMMA_WINDOW_SIZE", "--window-size", "640x"), ("BLEMMA_WINDOW_SIZE", "--window-size", ""),
     ("BLEMMA_WINDOW_POSITION", "--window-position", "秘密の値"), ("BLEMMA_WINDOW_POSITION", "--window-position", ""),

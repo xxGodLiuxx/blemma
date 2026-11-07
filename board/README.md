@@ -31,8 +31,8 @@ python board/server.py
 |---|---|---|
 | `dwell` | `0` | 見つめて押す秒 (0.3〜5)。`0` = 切。扇以外の本文の視線送りも、この値が 0 より大きい時だけ |
 | `click` | `double` | 扇は 1 回目で選択、同じ羽根を 1.5 秒以内にもう 1 回押すと確定。ダブルクリックでも同じ。`single` = 1 回で確定 |
-| `scan` | `off` | スイッチ 1 鍵の走査 (秒ごとに次のボタンへ)。`?scan` だけなら 1.5 秒 |
-| `key` | Space | 走査で選ぶ鍵 (`KeyboardEvent.code` か `key`・例 `Enter`・`F13`) |
+| `scan` | `off` | スイッチ 1 鍵の走査 (秒ごとに次のボタンへ・0.5〜10)。`?scan` だけなら 1.5 秒 |
+| `key` | Space | 走査で選ぶ鍵。`KeyboardEvent.code` か `key` の名のうち `Space`・`Enter`・`NumpadEnter`・`Tab`・`Escape`・`Backspace`・矢印 (`ArrowLeft` など)・`F1`〜`F24`・英数 1 字・`KeyA`〜`KeyZ`・`Digit0`〜`Digit9`・`Numpad0`〜`Numpad9` |
 | `lang` | ブラウザの言葉 | `ja` / `en` |
 | `sound` | 切 | `on` = 待ちの合図で短い音 |
 | `mode` | `large` | `small` = 扇 (`python blemma.py` の既定)・`large` = 大きなボタンの板 |

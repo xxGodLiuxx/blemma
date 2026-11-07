@@ -78,6 +78,7 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 | 「起動処理に失敗しました (配置・権限を確認)」と出る | 書き込めるフォルダーに置いてください (`board/state/` に起動の記録などを書きます) |
 | 「引数を確認してください (--help)」と出る | Claude Code へ渡す引数は `--` の後ろに書きます (例 `python blemma.py -- --continue`) |
 | 「頁の設定の名を確認してください: …」と出る | `--set` の鍵の打ち間違いです (例 `dwel` → `dwell`)。鍵の一覧は [`board/README.md`](board/README.md) にあります |
+| 「頁の設定の値を確認してください: …」と出る | `dwell`・`scan`・`key` の値が、扇の受ける範囲の外です (例 `scan=12` → `0.5`〜`10` か `off`。`BLEMMA_OPTS` の値も同じ)。範囲は [`board/README.md`](board/README.md) にあります |
 | 「Python 3.10 以上で実行してください」と出る | 古い Python で起こしています。`python3 --version` (Windows は `py --version`) で版を確かめ、3.10 以上で起こします |
 | 「ブラウザを開けません」と出る | BLEMMA は、その PC でブラウザを開ける環境で使います。SSH の先・画面の無い Linux・WSL では確かめていません |
 | 「--settings は -- の後ろに渡せません」と出る | BLEMMA は自分の設定を `--settings` で渡します。hooks などは `.claude/settings.json` に書きます |
