@@ -2268,7 +2268,8 @@ for (const how of ["expired", "other_card", "other_page", "mine", "released"]) {
   if (how === "mine" || how === "released") sendA(200, { undo_ms: 0, undo_remaining: 0 });
   else sendA(409, how === "expired" ? { error: "expired" } : { error: "ended", end: "answered" });   /* 遅れて届いた A の返り */
   await c.run(20);
-  out[how] = { first: first, sent: sent, after: c.active(), tagged: c.answers()[0].body.viewer === c.me() };
+  out[how] = { first: first, sent: sent, after: c.active(),
+               tagged: typeof c.answers()[0].body.tag === "string" && c.answers()[0].body.tag.indexOf(c.S.pressLedger.source + ":") === 0 };
 }
 console.log(JSON.stringify(out));
 """, A=a, B=b)
@@ -2387,6 +2388,105 @@ console.log(JSON.stringify(out));
     assert out == {"grace": want, "direct": want}, out
 
 
+def test_a_resend_is_not_mistaken_for_the_answer_that_went_through(tmp_path, clock):
+    """最初の答えは板に通ったが、返りを失った (頁は失敗と見た・写しもまだ)。人が「止」へ焦点を置き直して Enter で送り直す
+    (板は 2 回目を断る)。その後に、最初の答えが渡って次の札が来た時 = 使われた事にできるのは、最初の答えを押した時の焦点だけ。
+    置き直した「止」の焦点は使われていない = 次の札の先頭 (許可) へ置かない (外部のレビューの所見 = 送信の控えが 1 つだと、
+    2 回目の控えと照合して、「止」へ向けた遅れた Enter が次の札の許可を送った)。名札は送信ごと。"""
+    a, b = _card(clock), _card(clock)
+    out = page(tmp_path, r"""
+let calls = 0;
+const c = await P.boot({ query: "?mode=large&lang=ja", undoMs: 0,
+                         reply: function (p) {
+                           if (p !== "/answer") return null;
+                           calls += 1;
+                           if (calls === 1) throw new Error("lost");               /* 1 回目 = 板には通ったが、返りを失った */
+                           return { status: 409, data: { error: "not_shown", state: "deciding" } };   /* 2 回目 = 板が断る */
+                         } });
+c.show(A);
+await c.run(500);
+await c.key("Tab", "Tab");
+c.btn("allow_once").focus();
+await c.key("Enter", "Enter");                     /* 1 回目: 「許可」を送る */
+await c.run(500);
+c.btn("fixed").focus();                            /* 「止」へ焦点を置き直す */
+await c.key("Enter", "Enter");                     /* 2 回目: 「止」を送り直す (断られる) */
+await c.run(100);
+const tags = c.answers().map(function (x) { return x.body.tag; });
+c.show(B, ended(A, tags[0]));                      /* 渡ったのは 1 回目の答え = 板は 1 回目の名札を添える */
+const focus = c.active();
+await c.run(600);
+await c.key("Enter", "Enter");                     /* 「止」へ向けた、遅れた Enter */
+console.log(JSON.stringify({ distinct: tags[0] !== tags[1], focus: focus, sent: c.answers().length }));
+""", A=a, B=b)
+    assert out == {"distinct": True, "focus": "body", "sent": 2}, out
+
+
+def test_putting_the_same_button_back_does_not_count_as_a_new_focus(tmp_path, clock):
+    """答えを送った後、板の写しが届く前に、頁やブラウザが同じ釦へ焦点を付け直しても (窓へ戻った時の再通知・「常に手前」の
+    PiP の窓へ移って描き直した時)、それは押した時の焦点のまま = 答えが渡ったら、今までどおり次の札の先頭へ焦点を置く
+    (外部のレビューの所見 = 焦点が来るたびに数を進めると、置き直していない人の Enter の流れが切れた)。別の釦へ置き直した
+    焦点は、今までどおり押した時の焦点とは別。"""
+    a, b = _card(clock), _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const how of ["renotify", "pip", "moved"]) {
+  const c = await P.boot({ query: "?mode=small&lang=ja", undoMs: 0, pip: how === "pip" });
+  c.show(A);
+  await c.run(500);
+  await c.key("Tab", "Tab");
+  c.btn("allow_once").focus();
+  await c.key("Enter", "Enter");                   /* 許可を送る (板の写しは、まだ) */
+  const btn = c.btn("allow_once");
+  if (how === "renotify") c.event("focusin", { target: btn });     /* 窓へ戻った時の、同じ釦への再通知 */
+  if (how === "pip") c.t.press("pip", "key");                      /* 待っていた PiP の窓が開いて、頁が移る */
+  if (how === "moved") { c.btn("deny").focus(); c.btn("allow_once").focus(); }   /* 人が別の釦へ移って、戻した */
+  await c.run(50);
+  const moved = { pip: c.vwin() !== c.win, focus: c.active() };
+  c.show(B, ended(A, c.me()));                     /* 自分の答えが渡り、次の札 */
+  const focus = c.active();
+  await c.run(600);
+  await c.key("Enter", "Enter");
+  out[how] = { moved: moved, focus: focus, sent: c.answers().length };
+}
+console.log(JSON.stringify(out));
+""", A=a, B=b)
+    kept = {"focus": "allow_once", "sent": 2}
+    assert out == {"renotify": dict(kept, moved={"pip": False, "focus": "allow_once"}),
+                   "pip": dict(kept, moved={"pip": True, "focus": "allow_once"}),
+                   "moved": {"moved": {"pip": False, "focus": "allow_once"}, "focus": "body", "sent": 1}}, out
+
+
+def test_a_number_right_behind_a_step_made_by_enter_or_click_is_not_counted(tmp_path, clock):
+    """焦点の上の Enter や click で札の中を進めた直後 (「前の画面へ」) の 0.4 秒は、数字の鍵も数えない = 続けて入った数字が、
+    戻った画面の 1 番 (許可) を送らない (外部のレビューの所見 = この守りは試験が見張っていなかった)。0.4 秒より後の数字は
+    数える。数字で進めた直後に続けて打つ数字は、今までどおり数える (別の試験)。"""
+    perm = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const how of ["Enter", "click"]) {
+  const c = await P.boot({ query: "?mode=large&lang=ja" });
+  c.show(PERM);
+  await c.run(500);
+  await c.key("2", "Digit2");                      /* 拒否 … → 理由の画面 */
+  await c.run(500);
+  if (how === "Enter") { await c.key("Tab", "Tab"); c.btn("back").focus(); await c.key("Enter", "Enter"); }
+  else await c.click(c.btn("back"));               /* 「前の画面へ」を Enter / click で */
+  await c.run(50);
+  await c.key("1", "Digit1");                      /* 0.05 秒後の数字 (戻った画面の 1 番 = 許可) */
+  await c.run(20);
+  const early = c.answers().length;
+  await c.run(450);
+  await c.key("1", "Digit1");                      /* 0.5 秒後の数字 = 数える */
+  await c.run(20);
+  out[how] = { early: early, sent: choices(c).map(function (x) { return x.type; }) };
+}
+console.log(JSON.stringify(out));
+""", PERM=perm)
+    want = {"early": 0, "sent": ["allow_once"]}
+    assert out == {"Enter": want, "click": want}, out
+
+
 def test_an_undo_left_unpressed_does_not_turn_into_the_next_allow(tmp_path, clock):
     """「取り消す」に鍵の焦点を置いたまま押しそびれ、猶予が切れて頁が釦を消した後に次の札が来ても、その札の先頭 (許可) へ
     焦点を置かない (反証役の再現 = 取り消しのつもりの 0.6 秒遅れの Enter が、次の札の許可を送った)。扇でも大きな板でも同じ。"""
@@ -2404,8 +2504,8 @@ for (const mode of ["small", "large"]) for (const late of ["", "Escape", "Backsp
   await c.run(3000);                               /* 猶予が切れ、頁が取り消しの釦を消す */
   const gone = c.$("undo-btn").hidden;
   if (late) await c.key(late, late);               /* 間に合わなかった取り消しの鍵 (何も起こさない) */
-  /* 答えが渡り、次の札が来た。板は、直前に終わった札に「この頁の答えが渡った」の名札を添える (自分の答えで札が進んだ事は、
-     猶予に入った時に 1 回だけ数える = ここでもう 1 度数えると、取り消しに置いた焦点まで使われた事になる) */
+  /* 答えが渡り、次の札が来た。板は、直前に終わった札に「この頁の答えが渡った」の名札を添える。使われた事にできるのは、
+     答えを押した時に在った焦点だけ = 取り消しに置いた焦点は、その後に来た焦点なので使われていない */
   c.show(B, { last: { id: A.id, kind: "permission", end: "answered", from_deciding: true, ago: 0, answered_by: c.me() } });
   const focus = c.active();
   await c.run(600);
@@ -2566,23 +2666,34 @@ console.log(JSON.stringify({ next: next, marked: c.active(), pressed: c.btn("opt
 
 def test_undo_leaves_the_key_focus_nowhere(tmp_path, clock):
     """取り消して選ぶ画面へ戻った時は、鍵の焦点をどこにも置かない (反証役の再現 = 拒否を送って取り消すと、焦点が先頭の
-    「許可」へ移り、次の Enter が許可を送った)。取り消しの釦でも Backspace / Esc でも、扇でも大きな板でも同じ。"""
+    「許可」へ移り、次の Enter が許可を送った)。取り消しの釦でも Backspace / Esc でも、扇でも大きな板でも同じ。数字だけで
+    使う人が取り消した時も同じ (数字 1 つで答えた人 = 焦点が一度も来ていない = 消えた焦点の決まりでは守れない筋)。"""
     perm = _card(clock)
     out = page(tmp_path, r"""
 const out = {};
-for (const [mode, how] of [["small", "button"], ["small", "Backspace"], ["small", "Escape"], ["large", "button"]]) {
+const pre = {};
+for (const [mode, how] of [["small", "button"], ["small", "Backspace"], ["small", "Escape"], ["large", "button"],
+                           ["small", "digit"], ["large", "digit"], ["small", "digit1"], ["large", "digit1"]]) {
   const c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
   c.show(PERM);
   await c.run(500);
-  await c.key("Tab", "Tab");
-  c.btn("deny").focus();
-  await c.key("Enter", "Enter");                   /* 拒否 … → 理由の画面 */
-  await c.run(500);
-  await c.key("Enter", "Enter");                   /* 先頭の理由 = 拒否を送る */
-  c.show(deciding(PERM, { type: "deny", reason: 0 }));
+  if (how === "digit") {                           /* 数字で進めて答える (理由の画面では、頁が先頭へ焦点を置く) */
+    await c.key("2", "Digit2");                    /* 拒否 … → 理由の画面 */
+    await c.key("1", "Digit1");                    /* 理由 1 = 拒否を送る */
+  } else if (how === "digit1") {                   /* 数字 1 つで答える = 焦点は一度も来ない (消えた焦点も無い) */
+    pre[mode] = { focus: c.active(), seen: !!c.S.focusSeen };
+    await c.key("1", "Digit1");                    /* 許可を送る */
+  } else {
+    await c.key("Tab", "Tab");
+    c.btn("deny").focus();
+    await c.key("Enter", "Enter");                 /* 拒否 … → 理由の画面 */
+    await c.run(500);
+    await c.key("Enter", "Enter");                 /* 先頭の理由 = 拒否を送る */
+  }
+  c.show(deciding(PERM, how === "digit1" ? { type: "allow_once" } : { type: "deny", reason: 0 }));
   await c.run(500);
   if (how === "button") { c.$("undo-btn").focus(); await c.key("Enter", "Enter"); }
-  else await c.key(how, how);
+  else { const k = how.indexOf("digit") === 0 ? "Escape" : how; await c.key(k, k); }
   c.show(reshown(PERM));                           /* 取り消せた = 選ぶ画面へ戻る */
   await c.run(20);                                 /* 隠れた取り消しの釦から焦点が外れる (次のこま) */
   const focus = c.active();
@@ -2590,10 +2701,15 @@ for (const [mode, how] of [["small", "button"], ["small", "Backspace"], ["small"
   await c.key("Enter", "Enter");                   /* 焦点はどこにも無い = 何も押さない */
   out[mode + ":" + how] = { focus: focus, posts: c.posts(), sent: choices(c) };
 }
+out.pre = pre;
 console.log(JSON.stringify(out));
 """, PERM=perm)
+    assert out.pop("pre") == {"small": {"focus": "body", "seen": False}, "large": {"focus": "body", "seen": False}}, out
     want = {"focus": "body", "posts": ["/answer", "/undo"], "sent": [{"type": "deny", "reason": 0}]}
-    assert out == {k: want for k in ("small:button", "small:Backspace", "small:Escape", "large:button")}
+    allow = dict(want, sent=[{"type": "allow_once"}])
+    assert out == dict({k: want for k in ("small:button", "small:Backspace", "small:Escape", "large:button",
+                                          "small:digit", "large:digit")},
+                       **{"small:digit1": allow, "large:digit1": allow}), out
 
 
 def test_an_undo_this_page_did_not_watch_leaves_the_key_focus_nowhere(tmp_path, clock):

@@ -110,14 +110,14 @@
     /* 鍵の焦点の決まり (§4.2): 焦点がどこかに来た事を覚えておき (S.focusSeen)、その焦点が、人の自分の押し (答える・札の中を
        進める・設定を閉じる) で使われないまま消えた後は、次の札の先頭 (許可) へ焦点を置かない (bumpGen) = 前の札へ向けた
        Enter が、次の札の許可に当たらない (線 3)。
-       ここで数えるのは「この頁の人の答えが渡って、札が終わった」時だけ = 押した時に在った焦点 (S.sentFocus) は、その答えで
-       使われた。誰の答えが渡ったかは、板が「直前に終わった札」に添える名札 (answered_by) で読む = 頁の側で推し量らない
-       (送った答えが通るとは限らない・板の返りと写しの順は決まっていない)。猶予に入っただけでは数えない = 取り消された答え・
-       ほかの頁が答え直した札は、最初から数に入らない。押した後に来た焦点 (置き直した焦点・取り消しへ置いた焦点) は、
-       使われていない (focusGen が進んでいる) */
-    var gone = snap.last, sent = S.sentFocus;
-    if (prev && gone && gone.id === prev.id && gone.answered_by === S.pressLedger.source &&
-        sent && sent.usable && sent.gen === S.focusGen) S.focusSeen = false;
+       ここで数えるのは「この頁の人の答えが渡って、札が終わった」時だけ = その答えを送った時に在った焦点 (S.sends) は、
+       その答えで使われた。どの答えが渡ったかは、板が「直前に終わった札」に添える名札 (answered_by = 送信ごとの名札) で
+       読む = 頁の側で推し量らない (送った答えが通るとは限らない・板の返りと写しの順は決まっていない・同じ札へ送り直した
+       2 回目と、先に通っていた 1 回目を取り違えない)。猶予に入っただけでは数えない = 取り消された答え・ほかの頁が答え直した
+       札は、最初から数に入らない。押した後に来た焦点 (置き直した焦点・取り消しへ置いた焦点) は、使われていない
+       (focusGen が進んでいる) */
+    var gone = snap.last, sent = prev && gone && gone.id === prev.id && S.sends ? S.sends[gone.answered_by] : null;
+    if (sent && sent.usable && sent.gen === S.focusGen) S.focusSeen = false;
     S.seq = snap.seq;
     S.snap = snap;
     S.snapAt = now;
@@ -695,13 +695,17 @@
      戻った時に来る) = 置いた事を、知らせを待たずに覚える */
   function focusOn(el) {
     el.focus({ preventScroll: true });
-    if (viewDocument.activeElement === el) focusCame();
+    if (viewDocument.activeElement === el) focusCame(el);
   }
 
-  /* 鍵の焦点がどこかに来た。focusGen = 来た数 (答えを押した後に来た焦点を、押した時の焦点と見分ける) */
-  function focusCame() {
+  /* 鍵の焦点がどこかに来た。focusGen = 焦点の行き先 (釦) が替わった数 = 答えを押した後に、別の釦へ置き直した焦点を、押した
+     時の焦点と見分ける。同じ釦への付け直し (描き直しで作り直した同じ鍵の釦・PiP の窓への移し・窓へ戻った時のブラウザの
+     再通知) では進めない = 押した時の焦点のまま */
+  function focusCame(el) {
     S.focusSeen = true;
-    S.focusGen = (S.focusGen || 0) + 1;
+    var k = el && el.dataset && el.dataset.key ? "k:" + el.dataset.key : el && el.id ? "i:" + el.id : null;
+    if (k === null || k !== S.focusKey) S.focusGen = (S.focusGen || 0) + 1;
+    S.focusKey = k;
   }
 
   /* 鍵の焦点がどこにも無いか。入れ物を隠した釦と押せなくした釦は、ブラウザが焦点を外すまで activeElement に残るので、
@@ -1034,6 +1038,7 @@
    * 番号を進めておけば、遅れて返った古い送信が、新しい送信の印を消す事も無い */
   function forgetSends() {
     S.answering = false;
+    S.sends = {};                                /* 前の札への送信の控え (焦点の照合用) も捨てる */
     S.undoing = false;
     S.answerId = (S.answerId || 0) + 1;
     S.undoId = (S.undoId || 0) + 1;
@@ -1044,15 +1049,18 @@
     var mine = S.answerId = (S.answerId || 0) + 1;
     function settle() { if (S.answerId === mine) S.answering = false; }
     S.answering = true;
-    /* 押した時の焦点 = この答えが渡った時に「使われた」事にできる焦点 (札の釦の上か、どこにも無い時だけ)。gen = その時までに
-       来た焦点の数 (この後に焦点が来たら、それは別の焦点 = この答えでは使われていない) */
-    S.sentFocus = { gen: S.focusGen, usable: focusNowhere() || heldOnCard() };
+    /* 答えの名札 (頁ごとの乱数 + 送信の番号) と、押した時の焦点 = この答えが渡った時に「使われた」事にできる焦点 (札の釦の
+       上か、どこにも無い時だけ)。gen = その時までに来た焦点の数 (この後に焦点が来たら、それは別の焦点 = この答えでは使われて
+       いない)。送信ごとに覚える = 返りを失った 1 回目が板に通っていて、2 回目を送り直した時も、渡った方の控えで照合する */
+    var tag = S.pressLedger.source + ":" + (S.sendSeq = (S.sendSeq || 0) + 1);
+    S.sends = S.sends || {};
+    S.sends[tag] = { gen: S.focusGen, usable: focusNowhere() || heldOnCard() };
     var sentKey = S.key;
     var batches = takePressBatches(), sent = C.sumPressBatches(batches);
-    /* viewer = この頁の名札 (頁ごとの乱数)。板は、渡った答えの名札を「直前に終わった札」に添える = 頁は「自分の答えが
-       渡った」を、推し量らずに読める (apply) */
+    /* tag = この答えの名札。板は、渡った答えの名札を「直前に終わった札」に添える = 頁は「自分のどの答えが渡った」を、
+       推し量らずに読める (apply) */
     send("/answer", { id: card.id, seq: card.view_seq, choice: choice, by: by,
-                      presses: sent, press_batches: batches, viewer: S.pressLedger.source }, SEND_MS)
+                      presses: sent, press_batches: batches, tag: tag }, SEND_MS)
       .then(function (r) {
         if (r.status === 200) {
           S.sentKey = sentKey;
@@ -1368,7 +1376,7 @@
     d.addEventListener("keyup", active(function (e) { S.keyAt = performance.now(); delete S.held[e.code || e.key]; }));
     d.addEventListener("click", active(onClick));
     /* 鍵の焦点がどこかに来た (人が置いても、頁が置いても) = 覚えておく。使われないまま消えたら、次の札の先頭へ置かない (bumpGen) */
-    d.addEventListener("focusin", active(function (e) { focusCame(); spotlight(e.target); }));
+    d.addEventListener("focusin", active(function (e) { focusCame(e.target); spotlight(e.target); }));
   }
 
   /* 頁を別の窓へ付け替えると、焦点は外れる。付け替える前に焦点の在った釦を覚え、付け替えた後に同じ釦へ戻す (鍵の焦点を

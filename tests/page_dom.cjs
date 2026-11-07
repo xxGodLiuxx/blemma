@@ -367,9 +367,9 @@ async function boot(opt) {
   /* 見えている釦 (data-key) */
   c.btn = function (key) { return c.doc().querySelectorAll("[data-key]").filter(function (b) { return b.dataset.key === key && b.shown(); })[0] || null; };
   c.active = function () { const d = c.doc(), a = d.activeElement; return !a || a === d.body ? "body" : (a.dataset.key || a.id || a.localName); };
-  /* この頁の名札 (頁が /answer に添える viewer)。実の板は、受けた答えの名札を写しに添える = 筋書きは、猶予の写しと
-     「直前に終わった札」に、誰の答えかを自分で書く (deciding(…, by)・ended(card, by)) */
-  c.me = function () { return c.S.pressLedger.source; };
+  /* この頁が最後に送った答えの名札 (頁が /answer に添える tag = 頁ごとの乱数 + 送信の番号)。実の板は、渡った答えの名札を
+     「直前に終わった札」に添える = 筋書きは ended(card, c.me()) でそれを書く (猶予の写しには名札は無い) */
+  c.me = function () { const a = c.answers(); return a.length ? a[a.length - 1].body.tag : c.S.pressLedger.source + ":0"; };
   c.answers = function () { return c.sent.filter(function (s) { return s.path === "/answer"; }); };
   c.posts = function () { return c.sent.filter(function (s) { return s.path === "/answer" || s.path === "/undo"; }).map(function (s) { return s.path; }); };
   /* 板の写しを当てる (= 見張りが返った時と同じ入口) */

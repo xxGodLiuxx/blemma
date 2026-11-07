@@ -200,9 +200,9 @@ def _presses_of(by: str, presses: Any) -> Dict[str, int]:
     return out
 
 
-def _viewer_of(value: Any) -> Optional[str]:
-    """答えを送った頁の名札 (頁ごとの乱数の id)。英数字と - _ の 64 字までだけを通す。それ以外は名札なし。"""
-    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
+def _tag_of(value: Any) -> Optional[str]:
+    """答えの名札 (頁ごとの乱数 + 送信の番号)。英数字と - _ : の 80 字までだけを通す。それ以外は名札なし。"""
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_:-]{1,80}", value):
         return value
     return None
 
@@ -249,7 +249,7 @@ class Card:
         self.view_seq = 0
         self.choice: Optional[dict] = None
         self.by: Optional[str] = None
-        self.viewer: Optional[str] = None   # 最後に受けた答えを送った頁の名札 (記録にも hook への返りにも書かない)
+        self.tag: Optional[str] = None      # 最後に受けた答えの名札 (頁ごとの乱数 + 送信の番号。記録にも hook への返りにも書かない)
         self.decided_at: Optional[float] = None
         self.undo_until: Optional[float] = None
         self.ready = False          # 猶予が過ぎ、hook の /wait へ渡すのを待っている
@@ -349,7 +349,7 @@ class Board:
         if c.first_shown is not None:
             self.last = {"id": c.id, "kind": c.kind, "end": end,
                          "from_deciding": c.from_deciding, "at": now,
-                         "answered_by": c.viewer if end in ("answered", "released") else None}
+                         "answered_by": c.tag if end in ("answered", "released") else None}
         self._log(c, sec)
 
     def _log(self, c: Card, sec: Optional[float]) -> None:
@@ -531,7 +531,7 @@ class Board:
 
     @_flushing
     def answer(self, cid: Any, seq: Any, choice: Any, by: Any, presses: Any,
-               press_batches: Any = None, viewer: Any = None) -> Tuple[int, dict]:
+               press_batches: Any = None, tag: Any = None) -> Tuple[int, dict]:
         with self.cond:
             now = self.clock()
             head = self._head()
@@ -558,7 +558,7 @@ class Board:
             head.state = "deciding"
             head.choice = norm
             head.by = by_s
-            head.viewer = _viewer_of(viewer)       # どの頁の答えか (渡って終わった時に、last へ添える)
+            head.tag = _tag_of(tag)               # どの送信の答えか (渡って終わった時に、last へ添える)
             head.decided_at = now
             head.undo_until = now + self.lim.undo_ms / 1000.0
             head.ready = self.lim.undo_ms == 0
@@ -931,7 +931,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/answer":
             code, body = board.answer(data.get("id"), data.get("seq"), data.get("choice"),
                                       data.get("by"), data.get("presses"), data.get("press_batches"),
-                                      data.get("viewer"))
+                                      data.get("tag"))
             self._json(code, body)
         elif path == "/undo":
             code, body = board.undo(data.get("id"), data.get("by"), data.get("presses"),
