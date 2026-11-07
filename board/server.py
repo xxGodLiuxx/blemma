@@ -8,8 +8,8 @@
 - 127.0.0.1 だけで待ち受ける (LAN・外には bind しない)。起動ごとに token を作り、
   `board/state/run.json` (`{"port","token","pid","started"}`) に書く。止まる時に消す。
 - hook は `POST /ask` → `GET /wait` (long-poll)、頁は `GET /pending` (long-poll) → `POST /answer`
-  / `POST /undo`。札は 1 件ずつ・期限は表示から数えて作成からの上限で抑える・終わりは 5 つの
-  どれか 1 つに排他で決まる・取り消しの猶予は server が持つ (§3.4〜§3.6)。
+  / `POST /undo`。札は 1 件ずつ・期限は表示から数えて作成からの上限で抑える・終わりは 4 つ
+  (resolved は作らない・§3.5) のどれか 1 つに排他で決まる・取り消しの猶予は server が持つ (§3.4〜§3.6)。
 - 板から返すのは choice (種と番号) だけ。公式の JSON は hook が組む (§3.3)。
 - 記録は選択と時刻と数だけ (問いの本文・道具の入力・答えの文字は書かない・§3.8)。
 """
@@ -44,7 +44,7 @@ import subprocess
 import threading
 import time
 import webbrowser
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -236,7 +236,7 @@ def _flushing(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 class Card:
-    """札 1 枚。状態 = queued / shown / deciding / 終わり 5 つ (§3.5)。"""
+    """札 1 枚。状態 = queued / shown / deciding / 終わり 4 つ (resolved は作らない・§3.5)。"""
 
     def __init__(self, cid: str, kind: str, frm: dict, payload: dict, now: float) -> None:
         self.id = cid
@@ -327,6 +327,7 @@ class Board:
         c.view_seq = self.seq
 
     def _finish(self, c: Card, end: str, now: float) -> None:
+        assert end in FINAL, end            # 終わりは FINAL の 4 つだけ (注釈と code をずらさない)
         if c.end is not None:               # 終わりは 1 回だけ (排他・§3.5)
             return
         c.from_deciding = c.state == "deciding"
