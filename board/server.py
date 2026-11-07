@@ -836,7 +836,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(code, json.dumps(obj, ensure_ascii=True).encode("ascii"),
                           "application/json; charset=utf-8")
 
-    def _read_json(self) -> Tuple[Optional[dict], int]:
+    def _read_body(self) -> Tuple[Optional[bytes], int]:
+        """本文の bytes を読み切るだけ (解かない)。鍵の確かめの前に読む = 読み残すと Windows は RST を返す。
+        解くのは鍵が通った後 (_parse_json) = 鍵の無い相手の深い入れ子や巨大な数で、板の thread を落とさず止めない。"""
         n = self.headers.get("Content-Length")
         try:
             size = int(n) if n is not None else -1
@@ -847,9 +849,15 @@ class Handler(BaseHTTPRequestHandler):
         if size > MAX_BODY:
             return None, 413
         try:
-            raw = self.rfile.read(size)
+            return self.rfile.read(size), 200
+        except OSError:
+            return None, 400
+
+    @staticmethod
+    def _parse_json(raw: Optional[bytes]) -> Tuple[Optional[dict], int]:
+        try:
             data = json.loads(raw.decode("utf-8")) if raw else None
-        except (OSError, ValueError):
+        except (ValueError, RecursionError):   # 深い入れ子も、壊れた本文として断る (捕まえないと handler の thread が落ちる)
             return None, 400
         if not isinstance(data, dict):
             return None, 400
@@ -890,10 +898,13 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path.startswith("/static/"):
             self._static(path[len("/static/"):])
             return
-        data, st = (self._read_json() if method == "POST" else (None, 200))
+        raw, st = (self._read_body() if method == "POST" else (None, 200))
         if not self._token_ok():          # 本文を読み切ってから断る (読み残すと Windows は RST を返す)
             self._json(401, {"error": "token"})
             return
+        data = None
+        if method == "POST" and st == 200:
+            data, st = self._parse_json(raw)          # 解くのは鍵の後
         board = self.app.board
         q = parse_qs(parts.query)
         if method == "GET" and path == "/page":      # 起こし方の照会 = 札を作らず、見る人にも数えない

@@ -1214,7 +1214,10 @@
     }
     if (/^[1-6]$/.test(e.key)) {
       var k = S.optionKeys[parseInt(e.key, 10) - 1];
-      if (k) { e.preventDefault(); press(k, "key", true); }   /* 数字 = 行き先を名指しする押し */
+      /* 数字 = 行き先を名指しする押し。「次から訊かない」(恒久の許可) だけは、同じ数字を 1.5 秒の内にもう 1 回押して決める
+         (1 回目は選ぶだけ・札 #216 B) = 扇に鍵の焦点が在るまま端末を見て打った数字が、扇の番号で恒久の規則を書かない
+         (端末の選択肢の番号と扇の番号は揃わない)。今回の許可・拒否・止める・端末で答えるは 1 回のまま */
+      if (k) { e.preventDefault(); if (k.indexOf("sugg:") !== 0 || armDigit(k)) press(k, "key", true); }
       return;
     }
     if ((e.key === "Enter" || e.key === " ") && active && active.dataset.dwell) {
@@ -1489,6 +1492,23 @@
       t.style.fontSize = "18px";
       setText(t.firstChild, L().double_hint);
     }
+  }
+
+  /* 数字で「次から訊かない」を押した = 1 回目は選ぶだけ (羽根・釦に選んだ印・案内の文)、同じ数字の 2 回目 (1.5 秒の内) で
+     決める。間に描き直し (新しい札・状態の変化・設定) が入ると選び直し (renderFan の disarm)。押しを数えない間 (表示が
+     替わった直後・窓が焦点を得た直後) の数字は、選ぶ 1 回目にも数えない (press と同じ間・扇の 1 回目の click と同じ考え)。
+     戻り値 = 決める押しか (true の時だけ press へ渡す) */
+  function armDigit(key) {
+    var at = performance.now(), card = S.card, b = S.btns[key];
+    if (!card || S.overlay || S.answering || card.state !== "shown" || !b || b.disabled) return false;
+    if (at - S.genAt < SETTLE_MS || at - (S.focusAt || -1e9) < SETTLE_MS) return false;
+    var step = C.armStep(S.armKey ? { key: S.armKey, at: S.armAt } : null, key, at, ARM_MS);
+    if (step.confirm) { disarm(); return true; }
+    armChoice(b, at);
+    S.notice = L().digit_again;
+    S.noticeUntil = at + ARM_MS;
+    updateSide(at);
+    return false;
   }
 
   function disarm() {

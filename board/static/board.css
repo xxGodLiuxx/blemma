@@ -149,6 +149,8 @@ body.small.glow { box-shadow: inset 0 0 0 2px var(--rib); }
 .btn:disabled { cursor: default; border-style: dashed; }
 .btn:focus-visible, .mini:focus-visible { outline: 6px solid var(--focus); outline-offset: 4px; }
 .btn.scan { background: var(--scan-bg); color: var(--scan-fg); outline: 6px dashed var(--focus); outline-offset: 4px; }
+/* 数字で「次から訊かない」を選んだ 1 回目 (同じ数字の 2 回目で決まる)。扇の羽根は扇の決まり (.small .fan > .btn.armed) */
+#opts .btn.armed { background: var(--mark-bg); color: var(--mark-fg); outline: 6px double var(--focus); outline-offset: 4px; }
 
 .mini {
   font: inherit;
@@ -501,6 +503,6 @@ body.small { font-family: var(--face); }
   .small .fan > .btn:is(:hover, :focus-visible, .scan), .small .fan-aux .btn:is(:hover, :focus-visible, .scan) {
     forced-color-adjust: none; background: Highlight; color: HighlightText;
   }
-  .small .fan > .btn.armed, .small .fan-aux .btn.armed { forced-color-adjust: none; background: CanvasText; color: Canvas; }
+  .small .fan > .btn.armed, .small .fan-aux .btn.armed, #opts .btn.armed { forced-color-adjust: none; background: CanvasText; color: Canvas; }
   .btn .fill { forced-color-adjust: none; background: Highlight; }
 }

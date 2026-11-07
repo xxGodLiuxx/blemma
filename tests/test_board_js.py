@@ -3101,6 +3101,73 @@ console.log(JSON.stringify(out));
     assert out["3000"] is not None and 400 <= out["3000"] <= 425, out
 
 
+def test_a_number_key_takes_two_presses_only_for_dont_ask_again(tmp_path, clock):
+    """数字の鍵で「次から訊かない」(settings に恒久で書く許可) を押す時だけ、同じ数字を 1.5 秒の内にもう 1 回押して決める
+    (札 #216 B)。1 回目は選ぶだけ (釦に選んだ印・大きな板は上の帯に案内)。扇に鍵の焦点が在るまま端末を見て打った数字が、
+    扇の番号で恒久の規則を書かない (頁の点検 F2 の再現 = 選択肢 2 件の札で「3」が 1 回で allow_always を送った)。
+    1.5 秒を過ぎた 2 回目と、別の数字を挟んだ後は選び直し。今回の許可は 1 回のまま。札が出た直後・窓が焦点を得た直後の
+    0.4 秒の数字は、選ぶ 1 回目にも数えない。"""
+    two = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("git status") + _rule("npm test")))
+    out = page(tmp_path, r"""
+function armed(c) { return c.doc().querySelectorAll(".armed").map(function (b) { return b.dataset.key; }); }
+const out = {};
+for (const mode of ["small", "large"]) {
+  const r = {};
+  let c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(TWO); await c.run(500);
+  r.keys = c.S.optionKeys.slice();
+  await c.key("3", "Digit3");                      /* 2 つ目の「次から訊かない」= 選ぶだけ */
+  r.first = { sent: c.answers().length, armed: armed(c), notice: c.$("status").textContent.indexOf("同じ数字") >= 0 };
+  await c.run(300);
+  await c.key("3", "Digit3");                      /* 0.3 秒後の同じ数字 = 決まる */
+  r.second = choices(c);
+  c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(TWO); await c.run(500);
+  await c.key("2", "Digit2");
+  await c.run(1600);                               /* 1.5 秒を過ぎた = 選び直し */
+  await c.key("2", "Digit2");
+  r.lapsed = { sent: c.answers().length, armed: armed(c) };
+  await c.key("3", "Digit3");                      /* 別の数字 = 選び替え */
+  r.switched = { sent: c.answers().length, armed: armed(c) };
+  await c.key("3", "Digit3");
+  r.switchedThen = choices(c);
+  c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(TWO); await c.run(500);
+  await c.key("1", "Digit1");                      /* 今回の許可は 1 回のまま */
+  r.once = choices(c);
+  c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(TWO); await c.run(100);
+  await c.key("2", "Digit2");                      /* 札が出て 0.1 秒 = 選ぶ 1 回目にも数えない */
+  await c.run(500);
+  await c.key("2", "Digit2");                      /* これが 1 回目 */
+  r.fresh = { sent: c.answers().length, armed: armed(c) };
+  await c.key("2", "Digit2");
+  r.freshThen = choices(c);
+  c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(TWO); await c.run(2000);
+  c.win.listeners.fire("focus", {});
+  await c.run(100);
+  await c.key("2", "Digit2");                      /* 窓が焦点を得て 0.1 秒 = 選ぶ 1 回目にも数えない */
+  await c.run(500);
+  await c.key("2", "Digit2");                      /* これが 1 回目 */
+  r.focused = { sent: c.answers().length, armed: armed(c) };
+  await c.key("2", "Digit2");
+  r.focusedThen = choices(c);
+  out[mode] = r;
+}
+console.log(JSON.stringify(out));
+""", TWO=two)
+    always0 = [{"type": "allow_always", "suggestion": 0}]
+    always1 = [{"type": "allow_always", "suggestion": 1}]
+    want = {"keys": ["allow_once", "sugg:0", "sugg:1", "deny"],
+            "first": {"sent": 0, "armed": ["sugg:1"], "notice": True}, "second": always1,
+            "lapsed": {"sent": 0, "armed": ["sugg:0"]}, "switched": {"sent": 0, "armed": ["sugg:1"]}, "switchedThen": always1,
+            "once": [{"type": "allow_once"}],
+            "fresh": {"sent": 0, "armed": ["sugg:0"]}, "freshThen": always0,
+            "focused": {"sent": 0, "armed": ["sugg:0"]}, "focusedThen": always0}
+    assert out == {"small": want, "large": want}, out
+
+
 def test_the_window_getting_the_focus_does_not_relight_the_allow_or_count_keys_at_once(tmp_path, clock):
     """窓が鍵の焦点を得た直後 (別の窓を閉じた時に OS が扇へ焦点を移す・人が扇を click する) は、走査を頭 (許可) からすぐには
     光らせず、静かな 1 こまを置いてから回す。鍵とスイッチの押しは 0.4 秒数えず、その間は頁に印 (body.settling) を付ける

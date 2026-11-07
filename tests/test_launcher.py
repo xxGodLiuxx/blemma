@@ -499,7 +499,7 @@ def test_missing_claude_stops_before_board_and_window(isolated_repo, sessions, m
 @pytest.mark.parametrize("keep", [False, True])
 def test_print_only_prepares_real_board_without_claude(isolated_repo, sessions, monkeypatch, capsys, keep):
     monkeypatch.setattr(L, "ROOT", isolated_repo)
-    monkeypatch.setattr(L.shutil, "which", lambda name: "claude.exe" if name == "claude" else None)
+    monkeypatch.setattr(L, "_which", lambda name: "claude.exe" if name == "claude" else None)
     monkeypatch.setattr(L.webbrowser, "open", lambda url: True)
     argv = ["--large", "--demo", "--print-only", "--port", str(unused_port())]
     assert L.main(argv + (["--keep-board"] if keep else [])) == 0
@@ -973,8 +973,39 @@ def test_stop_failure_keeps_the_marker(isolated_repo, sessions, launchers, monke
 @pytest.mark.skipif(os.name != "nt", reason="Windows executable suffixes")
 @pytest.mark.parametrize("name", ["claude.cmd", "claude.exe"])
 def test_windows_claude_suffix_lookup(monkeypatch, name):
-    monkeypatch.setattr(L.shutil, "which", lambda candidate: name if candidate == name else None)
+    monkeypatch.setattr(L, "_which", lambda candidate: name if candidate == name else None)
     assert L.find_claude() == name
+
+
+def test_the_lookup_never_runs_a_claude_or_browser_placed_in_the_working_folder(tmp_path, monkeypatch):
+    """claude とブラウザは PATH の絶対の dir だけで探す。起こした所 (cwd)・PATH の空の欄・相対の dir に置かれた
+    claude.cmd や chrome.cmd は拾わない = 信頼していない repo で起こしても、そこの file を Claude Code の信頼の確認より前に
+    実行しない (Python の点検 BL-PY-02 の再現 = Windows の shutil.which は cwd を先に探した)。"""
+    windows = os.name == "nt"
+    repo, bin_dir = tmp_path / "untrusted", tmp_path / "bin"
+    repo.mkdir(); bin_dir.mkdir()
+    def plant(folder, name):
+        path = folder / (name + (".cmd" if windows else ""))
+        path.write_text("@echo off\n" if windows else "#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
+    for name in ("claude", "chrome"):
+        plant(repo, name)
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)   # shutil.which なら cwd を探す条件
+    seen = {}
+    for path_value in ("", os.pathsep, ".", "untrusted", os.pathsep.join(["", ".", "untrusted"])):
+        monkeypatch.setenv("PATH", path_value)
+        seen[path_value] = (L._which("claude"), L._which("chrome"))
+    assert all(found == (None, None) for found in seen.values()), seen
+    real = os.path.normcase(str(plant(bin_dir, "claude")))   # Windows の名は大小を区別しない (拡張子は PATHEXT の綴りで返る)
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(bin_dir)]))
+    assert os.path.normcase(L._which("claude") or "") == real
+    assert os.path.normcase(L.find_claude() or "") == real
+    if windows:                                    # 拡張子の無い file (npm の sh の写し) は Windows では拾わない
+        (bin_dir / "chrome").write_text("#!/bin/sh\n", encoding="utf-8")
+        assert L._which("chrome") is None
+        assert os.path.normcase(L._which("claude.cmd") or "") == real
 
 
 def test_real_child_wait_and_argument_preservation():
@@ -1035,6 +1066,27 @@ def test_default_browser_fallback(monkeypatch, mode, browser, area):
     monkeypatch.setattr(L.webbrowser, "open", lambda url: urls.append(url) or True)
     L.open_board(L.RunInfo(8765, "test-placeholder", 123), mode, (480, 360), None)
     assert len(urls) == 1 and f"?mode={mode}#t=" in urls[0]
+
+
+@pytest.mark.skipif(os.name != "nt" or not (shutil.which("pwsh") or shutil.which("powershell")),
+                    reason="PowerShell に貼る 1 行の試験 (Windows だけ)")
+def test_the_printed_powershell_line_keeps_full_width_quotes_inside_the_argument(tmp_path):
+    """--print-only の PowerShell の 1 行は、全角の二重引用符 (U+201C・U+201D・U+201E) も文字列の中に留める = 引数のまま
+    子へ渡り、続きが命令として走らない (Python の点検 BL-PY-06 の再現 = 全角の閉じ引用で文字列が終わり、続きが走った)。"""
+    marker = tmp_path / "ran.txt"
+    left, right, low = chr(0x201C), chr(0x201D), chr(0x201E)
+    args = [f"a{right}; New-Item -ItemType File '{marker}'; {left}b", f"{low}x{right}", "plain"]
+    line = L.format_command([sys.executable, "-c", "import sys; print(ascii(sys.argv[1:]))", *args])
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    # 外部アプリの起動の番 (no_external_apps) は Python の子だけを通す = PowerShell は、その Python の子から起こす
+    relay = ("import subprocess, sys\n"
+             "r = subprocess.run(sys.argv[1:], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)\n"
+             "print(r.stdout, end=''); print(r.stderr, end='', file=sys.stderr)\n")
+    done = subprocess.run([sys.executable, "-c", relay, shell, "-NoProfile", "-NonInteractive", "-Command", line],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90,
+                          env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    assert not marker.exists(), done.stdout + done.stderr
+    assert done.stdout.strip() == ascii(args), done.stdout + done.stderr
 
 
 def test_command_line_stays_on_one_line():

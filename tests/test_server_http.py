@@ -246,6 +246,28 @@ def test_bad_bodies(live):
     assert srv.request("POST", "/ask", {"kind": "nope", "payload": {}})[0] == 400
 
 
+@pytest.mark.parametrize("token", [None, "right"])
+def test_a_deeply_nested_body_is_refused_without_breaking_the_handler(live, capsys, token):
+    """本文は鍵の確かめの後に解く = 鍵の無い相手の深い入れ子 (や Python 3.10.6 までの巨大な数) で、handler の thread を
+    落とさず (返りの無いまま閉じない)、板を止めない。鍵のある相手の深い入れ子も、壊れた本文として 400 で断る
+    (Python の点検 BL-PY-03 の再現 = 鍵なしの深さ 20 万の [ で RecursionError が捕まらず、応答なしで閉じた)。"""
+    srv = live()
+    body = b"[" * 200000
+    conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+    headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+    if token:
+        headers["X-Blemma-Token"] = srv.token
+    conn.request("POST", "/ask", body=body, headers=headers)
+    resp = conn.getresponse()
+    got = (resp.status, json.loads(resp.read()))
+    conn.close()
+    time.sleep(0.1)
+    assert got == ((400, {"error": "bad_body"}) if token else (401, {"error": "token"}))
+    err = capsys.readouterr().err
+    assert "RecursionError" not in err and "Traceback" not in err
+    assert srv.request("GET", "/pending")[0] == 200          # 板はそのまま答える
+
+
 def test_hook_that_dies_is_disconnected_quickly(live):
     """/wait を抱えている間に hook が死んでも、抱える秒を待たずに接続の終了へ (§3.7 (a))。"""
     srv = live(replace(FAST, wait_hold=10.0, disconnect=0.3))

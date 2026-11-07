@@ -21,7 +21,6 @@ import os
 import re
 import secrets
 import shlex
-import shutil
 import signal
 import subprocess
 import tempfile
@@ -612,9 +611,30 @@ def stop_board(root: Path) -> int:
     return 0
 
 
+def _which(name: str) -> str | None:
+    """PATH の絶対の dir の中だけで実行の file を探す (cwd も相対の dir も探さない)。shutil.which は Windows で cwd を
+    先頭に足す (3.12 以降も、環境変数 NoDefaultCurrentDirectoryInExePath が無ければ) ので、信頼していない repo で
+    起こすと、そこに置かれた claude.cmd・chrome.cmd を拾い、Claude Code の信頼の確認より前に実行してしまう。
+    Windows は PATHEXT の拡張子を足して探し、拡張子の無い file は拾わない (名に PATHEXT の拡張子が在る時だけ、その名のまま)。"""
+    tails = [""]
+    if os.name == "nt":
+        exts = [e for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e]
+        if os.path.splitext(name)[1].upper() not in {e.upper() for e in exts}:
+            tails = exts
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        folder = folder.strip().strip('"')
+        if not folder or not os.path.isabs(folder):
+            continue
+        for tail in tails:
+            candidate = os.path.join(folder, name + tail)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
 def find_app_browser() -> str | None:
     for name in ("chrome", "google-chrome", "google-chrome-stable", "msedge", "microsoft-edge"):
-        found = shutil.which(name)
+        found = _which(name)
         if found:
             return found
     candidates = []
@@ -681,7 +701,7 @@ def open_board(info: RunInfo, mode: str, size: tuple[int, int],
 
 def find_claude() -> str | None:
     names = ("claude", "claude.cmd", "claude.exe") if os.name == "nt" else ("claude",)
-    return next((found for name in names if (found := shutil.which(name))), None)
+    return next((found for name in names if (found := _which(name))), None)
 
 
 def claude_command(executable: str | None, paths: tuple[Path, Path],
@@ -698,6 +718,8 @@ def format_command(command: list[str]) -> str:
         # A pasteable PowerShell line, including paths containing spaces or apostrophes.
         def word(value: str) -> str:
             value = value.replace("`", "``").replace('"', '`"').replace("$", "`$")
+            for quote in (chr(0x201C), chr(0x201D), chr(0x201E)):   # PowerShell は全角の二重引用符も文字列の閉じと読む
+                value = value.replace(quote, "`" + quote)
             return '"' + value.replace("\r", "`r").replace("\n", "`n") + '"'
         return "& " + " ".join(word(value) for value in command)
     # Bash/zsh ANSI-C quoting keeps even multiline prompts on one printed line.
