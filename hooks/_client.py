@@ -66,7 +66,7 @@ notify) と、要れば `mcp/blemma_mcp.py` が同じ関数を呼ぶ。設計 = 
      "suggestions": [ <permission_suggestions の 1 件をそのまま> | {"label": "<字>"} , ...],
                                                # 「次から訊かない」の素 (任意)。頁が §2.1 の字にする
                                                # (addRules = 規則と保存期間・setMode = 別の字)。
-                                               # 頁は先頭から 2 件まで出し、setMode の bypassPermissions は出さない。
+                                               # 頁は先頭から 2 件まで出し、setMode の bypassPermissions・auto は出さない。
      "reasons": ["…", "…", "…"]}              # 拒否の理由 (任意・無ければ DENY_REASONS の 3 つ)
 
 返り = `{"type": "allow_once"}` / `{"type": "allow_always", "suggestion": i}` (渡した suggestions の

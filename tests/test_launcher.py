@@ -406,11 +406,33 @@ def test_help_runs_without_starting_apps():
     assert "認証付きの照会に答えれば" in result.stdout and "answers an authenticated check" in result.stdout
 
 
+def test_help_runs_under_isolated_and_safepath_modes(tmp_path):
+    """script の dir を sys.path に置かない起こし方 (-I・3.11 からの -P と PYTHONSAFEPATH=1) でも、隣の hooks を読んで
+    --help まで届く (1 巡目 #2 = blemma.py だけが自分の dir を足さず、板も claude も起きる前に import で落ちた)。
+    -I は PYTHON* の環境変数を見ないので、どの形も環境変数を外し、-X utf8 で同じ文字コードにして比べる。"""
+    script = str(REPO / "blemma.py")
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
+
+    def help_of(*flags, **extra):
+        return subprocess.run([sys.executable, *flags, "-X", "utf8", "-B", script, "--help"], cwd=tmp_path,
+                              capture_output=True, encoding="utf-8", env={**env, **extra}, timeout=30)
+
+    plain = help_of()
+    assert plain.returncode == 0 and plain.stderr == "" and "Launch the board" in plain.stdout
+    runs = {"-I": help_of("-I")}
+    if sys.version_info >= (3, 11):                 # -P と PYTHONSAFEPATH は 3.11 から (3.10 は -I だけで確かめる)
+        runs["-P"] = help_of("-P")
+        runs["PYTHONSAFEPATH=1"] = help_of(PYTHONSAFEPATH="1")
+    for name, result in runs.items():
+        assert (result.returncode, result.stderr, result.stdout) == (0, "", plain.stdout), name
+
+
 def test_old_python_stops_before_the_board_and_window(tmp_path):
-    """3.10 未満なら、ほかの import より前に日英 1 行ずつで止まる。版を 3.9 に差し替えて、blemma.py だけを置いた
-    写しで走らせる (hooks も board も無い = 確かめが import の後ろにずれると ImportError で落ちる)。"""
+    """3.10 未満なら、ほかの import より前に日英 1 行ずつで止まる。版を 3.7 に差し替えて、blemma.py だけを置いた
+    写しで走らせる (hooks も board も無い = 確かめが import の後ろにずれると ImportError で落ちる)。file 全体が
+    3.7 の文法で読める = 3.7〜3.9 で起こしても、構文の誤りにならずに案内まで届く (1 巡目 #35)。"""
     source = (REPO / "blemma.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, feature_version=(3, 9))   # 3.9 で起こしても、構文の誤りにならずに確かめの行へ届く
+    tree = ast.parse(source, feature_version=(3, 7))   # 3.7 で起こしても、構文の誤りにならずに確かめの行へ届く
     docstring, future, imported, check = tree.body[:4]
     assert isinstance(docstring, ast.Expr) and isinstance(future, ast.ImportFrom) and future.module == "__future__"
     assert isinstance(imported, ast.Import) and [alias.name for alias in imported.names] == ["sys"]
@@ -418,15 +440,15 @@ def test_old_python_stops_before_the_board_and_window(tmp_path):
     copy = tmp_path / "blemma 写し"
     copy.mkdir()
     shutil.copy2(REPO / "blemma.py", copy / "blemma.py")
-    code = ("import runpy, sys; sys.version_info = (3, 9, 6, 'final', 0); "
+    code = ("import runpy, sys; sys.version_info = (3, 7, 17, 'final', 0); "
             "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
     result = subprocess.run([sys.executable, "-B", "-c", code, str(copy / "blemma.py"), "--large", "--port",
                              str(unused_port()), "--", "日本語の頼み"], cwd=copy, capture_output=True,
                             encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"}, timeout=30)
     assert result.returncode == 1 and result.stdout == ""
     assert result.stderr.splitlines() == [
-        "BLEMMA: Python 3.10 以上で実行してください (今の版は 3.9)",
-        "BLEMMA: Python 3.10 or later is required (this is 3.9)",
+        "BLEMMA: Python 3.10 以上で実行してください (今の版は 3.7)",
+        "BLEMMA: Python 3.10 or later is required (this is 3.7)",
     ]
     assert sorted(path.name for path in copy.iterdir()) == ["blemma.py"]   # board/state も窓の profile も作らない
 
@@ -451,6 +473,33 @@ def test_set_names_an_unknown_key_and_takes_a_bare_key(monkeypatch, capsys):
         assert L.main(["--set", assignment]) == 1
         captured = capsys.readouterr()
         assert captured == ("", "BLEMMA: 引数を確認してください (--help) / Invalid arguments (see --help)\n")
+
+
+def test_set_and_opts_values_outside_the_page_ranges_are_refused(monkeypatch, capsys):
+    """dwell・scan・key は、頁が範囲の外で黙って既定 (切・Space) へ戻す値なら、板も窓も開く前に止める (1 巡目 #6・#24 =
+    scan=12 は走査なし・key=PageDown は Space に黙って戻った)。頁と同じ決まり = dwell は 10 を、scan は 20 を超える値を
+    ms と読む。--set が BLEMMA_OPTS に勝つ。値は短い英数の形の時だけ写す (頼みの文や秘密を写さない)。"""
+    def unexpected(*args, **kwargs):
+        pytest.fail("値の誤りでは何も起こさない")
+
+    monkeypatch.setattr(L, "launch", unexpected)
+    for bad in ("scan=12", "scan=0.4", "scan=25", "dwell=6", "dwell=0.2", "dwell=1e3", "key=PageDown", "key=Home"):
+        assert L.main(["--set", bad]) == 1
+        out, err = capsys.readouterr()
+        assert out == "" and len(err.splitlines()) == 1, bad
+        assert err.startswith(f"BLEMMA: 頁の設定の値を確認してください: {bad} (") and f"page option value: {bad} (" in err
+    for bad, shown in (("dwell", "dwell"), ("key=日本語の頼み", "key")):      # 空の値・鍵らしくない値は名だけ
+        assert L.main(["--set", bad]) == 1
+        err = capsys.readouterr().err
+        assert err.startswith(f"BLEMMA: 頁の設定の値を確認してください: {shown} (") and "日本語" not in err
+    monkeypatch.setenv("BLEMMA_OPTS", "theme=dark&scan=25")
+    assert L.main([]) == 1 and "scan=25 (" in capsys.readouterr().err
+    assert L.parse_args(["--set", "scan=1"]).page_options == {"theme": "dark", "scan": "1"}   # --set が勝つ
+    monkeypatch.delenv("BLEMMA_OPTS")
+    for good in ("scan=1.5", "scan=off", "scan=0", "scan=true", "scan=1500", "dwell=0", "dwell=1", "dwell=300",
+                 "key=F13", "key=Space", "key=a", "key=KeyQ", "key=Numpad0", "key=ArrowLeft", "key= "):
+        key, _, value = good.partition("=")
+        assert L.parse_args(["--set", good]).page_options == {key: value}, good
 
 
 @pytest.mark.parametrize("name,flag,value", [
@@ -659,6 +708,27 @@ def test_occupied_port_stops_before_browser_or_claude(isolated_repo, monkeypatch
         if os.name == "nt":
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        assert L.main(["--port", str(listener.getsockname()[1])]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and len(captured.err.splitlines()) == 1
+    assert "板を起動できません" in captured.err and "Board server exited" in captured.err
+    assert not (isolated_repo / "board" / "state" / "run.json").exists()
+
+
+def test_wildcard_listener_on_the_port_stops_before_browser_or_claude(isolated_repo, monkeypatch, capsys):
+    """0.0.0.0 で待つ相手 (同じ利用者の別のプログラム) の port でも、板を起こさずに止まる (1 巡目 #16 = Windows では板が
+    起き、相手の 127.0.0.1 の客を奪った)。README の「板を起動できません (ポート・配置を確認)」の行がそのまま当たる。"""
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("板が起きて、窓か claude まで進んだ")
+
+    monkeypatch.setattr(L, "open_board", unexpected)
+    monkeypatch.setattr(L, "run_claude", unexpected)
+    with socket.socket() as listener:
+        listener.bind(("0.0.0.0", 0))
         listener.listen()
         assert L.main(["--port", str(listener.getsockname()[1])]) == 1
     captured = capsys.readouterr()

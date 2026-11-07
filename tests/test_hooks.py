@@ -136,6 +136,7 @@ GIT_RULE = {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "g
             "behavior": "allow", "destination": "localSettings"}
 DIRS = {"type": "addDirectories", "directories": ["/home/u/demo-repo"], "destination": "session"}
 BYPASS = {"type": "setMode", "mode": "bypassPermissions", "destination": "session"}
+AUTO = {"type": "setMode", "mode": "auto", "destination": "session"}
 EDIT = perm("Edit", {"file_path": "/home/u/demo-repo/README.md", "old_string": "行01: りんご",
                      "new_string": "行01: 林檎", "replace_all": False}, [ACCEPT_EDITS])
 BASH = perm("Bash", {"command": 'git commit -m "誤字を直す"', "description": "Commit the fix"}, [GIT_RULE])
@@ -187,13 +188,19 @@ def test_perm_set_mode_suggestion(board):
 
 
 def test_perm_offers_two_known_suggestions_without_bypass(board):
-    """板に出すのは公式の 6 種だけ・bypassPermissions へ移す物は除く・2 件まで。番号はこの列で引く。"""
+    """板に出すのは公式の 6 種だけ・bypassPermissions と auto へ移す物は除く (一押しで以後の確認が消える・分類器に任される =
+    1 巡目 #26)・2 件まで。番号はこの列で引く。板の答えが番号で来ても、その 2 つは書かない。"""
+    import permission as PERM
+
     third = dict(GIT_RULE, destination="userSettings")
     board.answer({"type": "allow_always", "suggestion": 1})
-    data = perm("Bash", {"command": "git commit -m x"}, [BYPASS, "junk", {"type": "unknown"}, DIRS, GIT_RULE, third])
+    data = perm("Bash", {"command": "git commit -m x"},
+                [BYPASS, AUTO, "junk", {"type": "unknown"}, DIRS, GIT_RULE, third])
     out = one_json(run("permission.py", data, board.run_file))
     assert board.payload["suggestions"] == [DIRS, GIT_RULE]
     assert out["hookSpecificOutput"]["decision"]["updatedPermissions"] == [GIT_RULE]
+    for skipped in (BYPASS, AUTO):
+        assert PERM.decide({"type": "allow_always", "suggestion": 0}, [skipped]) is None, skipped["mode"]
 
 
 @pytest.mark.parametrize("j", [0, 1, 2])
@@ -326,6 +333,36 @@ def test_perm_write_shows_the_first_40_lines(board):
     assert board.payload["text"] == "新規.md"
     assert b[1]["text"].startswith("行0\n") and "行39\n" in b[1]["text"] and "行40" not in b[1]["text"]
     assert "全 100 行" in b[1]["label"]["ja"]
+
+
+@pytest.mark.parametrize("case", ["url", "file", "description"])
+def test_perm_long_summary_is_clipped_with_a_mark(board, case):
+    """1 行の要約 (url・file 名・Bash の description) は 300 字で切り、切った時は「…」を足す (1 巡目 #28 = 印なしで切れ、
+    切れた url が別の url に見えうる)。他の道具 (WebFetch) の入力の JSON も 2,000 字で切って見出しに書く。"""
+    long = "a" * 3000
+    data = {"url": perm("WebFetch", {"url": "https://example.com/" + long, "prompt": "要約して"}),
+            "file": perm("Read", {"file_path": "/home/u/demo-repo/" + long + ".md"}),
+            "description": perm("Bash", {"command": "ls", "description": "list " + long})}[case]
+    board.answer({"type": "allow_once"})
+    one_json(run("permission.py", data, board.run_file))
+    p = board.payload
+    shown = {"url": "https://example.com/" + long, "file": long + ".md", "description": "list " + long}[case]
+    assert p["text"] == shown[:300] + "…"
+    if case == "url":
+        label = p["blocks"][-1]["label"]
+        assert label["ja"].startswith("input (先頭 2000 字・全 ") and label["ja"].endswith("続きは端末で)")
+
+
+def test_perm_write_head_over_6000_chars_names_the_char_clip(board):
+    """Write の頭の 40 行が 6,000 字を超える時は、見出しに字の切りも書く (1 巡目 #28 = 行数だけを書き、字で切った事が見えなかった)。"""
+    board.answer({"type": "allow_once"})
+    content = "".join("x" * 204 + "\n" for _ in range(50))
+    one_json(run("permission.py", perm("Write", {"file_path": "/home/u/demo-repo/長い.md", "content": content}),
+                 board.run_file))
+    b = board.payload["blocks"][1]
+    assert "先頭 6000 字" in b["label"]["ja"] and "全 50 行" in b["label"]["ja"] and "続きは端末で" in b["label"]["ja"]
+    assert b["label"]["en"].startswith("content (first 6000 chars of the first 40 of 50 lines")
+    assert b["text"] == content[:6000] + "\n…"
 
 
 def test_perm_debug_writes_only_blemma_lines(tmp_path):

@@ -7,8 +7,8 @@ from __future__ import annotations
 import sys
 
 if sys.version_info < (3, 10):
-    # 板も窓も起こす前に止める。古い python でもこの行まで届くよう、file 全体を 3.9 の文法で書く
-    # (walrus・match をこの前に置かない)。版は tuple でも読める形で取る。
+    # 板も窓も起こす前に止める。古い python (3.7 から) でもこの行まで届くよう、file 全体を 3.7 の文法で書く
+    # (walrus・match・位置専用引数を置かない)。版は tuple でも読める形で取る。
     _VERSION = "%d.%d" % tuple(sys.version_info[:2])
     sys.stderr.write("BLEMMA: Python 3.10 以上で実行してください (今の版は %s)\n"
                      "BLEMMA: Python 3.10 or later is required (this is %s)\n" % (_VERSION, _VERSION))
@@ -32,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, parse_qsl, urlencode
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # -I・-P・PYTHONSAFEPATH=1 でも隣の hooks を読む
 from hooks._client import _Connection as _DeadlineConnection
 
 ROOT = Path(__file__).resolve().parent
@@ -51,6 +52,16 @@ HOOKS = (
 )
 PAGE_KEYS = frozenset(("dwell", "scan", "key", "lang", "sound", "mode", "scale", "font", "theme", "desc", "trail", "click", "face", "pos", "clear"))
 PAGE_KEY_SHAPE = re.compile(r"[A-Za-z0-9_-]{1,24}")   # 誤りの文に名を出してよい鍵の形 (頼みの文や秘密を写さない)
+# 頁の parseOptions (board/static/board_core.js) が範囲の外で黙って既定 (切・Space) へ戻す 3 つの鍵は、起こす前に値も確かめる
+PAGE_NUMBER = re.compile(r"[0-9]+(?:\.[0-9]*)?|\.[0-9]+")          # 頁と同じ数の形 (符号・指数は読まない)
+PAGE_SWITCH_KEYS = re.compile(r"[A-Za-z0-9]|Space|Enter|NumpadEnter|Tab|Escape|Backspace|Arrow(?:Left|Right|Up|Down)"
+                              r"|F(?:[1-9]|1[0-9]|2[0-4])|Key[A-Z]|Digit[0-9]|Numpad[0-9]")   # 頁の key の一覧と同じ
+PAGE_VALUE_SHAPE = re.compile(r"[A-Za-z0-9._-]{1,24}")             # 誤りの文に写してよい値の形
+PAGE_RANGES = {
+    "dwell": ("0 か 0.3〜5 秒", "0 or 0.3-5 seconds"),
+    "scan": ("off か 0.5〜10 秒", "off or 0.5-10 seconds"),
+    "key": ("Space・Enter・F13 などの鍵の名 = board/README.md", "a key name such as Space, Enter or F13; see board/README.md"),
+}
 UNSET = object()                 # 旗を打っていない印 (--window-position の None は「右下」という読めた値)
 CLAUDE_MISSING = (
     # 第 2 の道は頁を開く板を手で起こす (--print-only は頁を開かないので、--keep-board で残した板には見る頁が無い)。
@@ -66,18 +77,43 @@ CLAUDE_MISSING = (
     "run python blemma.py --print-only and run the printed line (PowerShell on Windows).")
 
 PAGE_OPEN = ("BLEMMA: 扇は既に開いています。この端末の確認も同じ扇に出ます "
-             "(見当たらない時は、開いている板の頁を閉じてから起こし直してください) / "
+             "(見当たらない時は、開いている板の頁を閉じてから起こし直してください)。"
+             "設定 (--set・BLEMMA_OPTS・--large/--small・窓の大きさと位置) は、開いている扇のままです "
+             "(変える時は、扇の窓を閉じてから設定を付けて起こし直すか、窓の歯車で替えます。歯車はキーかクリックで押します) / "
              "The fan is already open; prompts from this terminal appear there too "
-             "(if you cannot find it, close the open board page and start again)")
+             "(if you cannot find it, close the open board page and start again). "
+             "Settings (--set, BLEMMA_OPTS, --large/--small, window size and position) stay as the open fan has them "
+             "(to change them, close the fan window and start again with the new settings, or use the gear in the window; "
+             "press the gear with a key or a click)")
 
 
 class LaunchError(Exception):
     """利用者へ出せる、秘密を含まない英日の文 (ふつうは 1 行・main が行ごとに BLEMMA: を付ける)。"""
 
 
+def page_value_ok(key: str, value: str) -> bool:
+    """頁が受ける値か (頁の parseOptions と同じ決まり = dwell は 10 を、scan は 20 を超える値を ms と読む)。
+    dwell・scan・key の外は頁が確かめる (範囲の外は頁の既定へ戻る)。"""
+    if key == "key":
+        return value == " " or PAGE_SWITCH_KEYS.fullmatch(value) is not None
+    if key not in ("dwell", "scan"):
+        return True
+    if key == "scan" and value in ("", "on", "true", "off", "false"):
+        return True
+    if not PAGE_NUMBER.fullmatch(value):
+        return False
+    seconds = float(value)
+    if seconds > (10 if key == "dwell" else 20):
+        seconds /= 1000
+    low, high = (0.3, 5) if key == "dwell" else (0.5, 10)
+    return seconds == 0 or low <= seconds <= high
+
+
 def page_options(environment: str, assignments: list[str]) -> dict[str, str]:
-    """Only display keys enter the URL. Values are validated by the shared page parser.
-    BLEMMA_OPTS の知らない鍵は黙って捨てる。--set の知らない鍵は止める (打ち間違いを黙って効かなくしない)。"""
+    """Only display keys enter the URL. dwell, scan and key values are checked here (the page would fall back
+    silently); the page parser validates the rest.
+    BLEMMA_OPTS の知らない鍵は黙って捨てる。--set の知らない鍵は止める (打ち間違いを黙って効かなくしない)。
+    dwell・scan・key の値が頁の範囲の外なら、--set でも BLEMMA_OPTS でも止める (--set が勝った後の値で見る)。"""
     options = {k: v for k, v in parse_qsl(environment, keep_blank_values=True) if k in PAGE_KEYS}
     for assignment in assignments:
         key, _, value = assignment.partition("=")   # `=` の無い物 (例 scan) は空の値 = 頁の決まりの既定 (scan は 1.5 秒)
@@ -86,6 +122,11 @@ def page_options(environment: str, assignments: list[str]) -> dict[str, str]:
                 raise LaunchError(f"頁の設定の名を確認してください: {key} (--help) / Unknown page option: {key}")
             raise LaunchError("引数を確認してください (--help) / Invalid arguments (see --help)")
         options[key] = value
+    for key, (ja, en) in PAGE_RANGES.items():
+        value = options.get(key)
+        if value is not None and not page_value_ok(key, value):
+            shown = f"{key}={value}" if PAGE_VALUE_SHAPE.fullmatch(value) else key
+            raise LaunchError(f"頁の設定の値を確認してください: {shown} ({ja}) / Invalid page option value: {shown} ({en})")
     return options
 
 
@@ -765,7 +806,7 @@ def open_board(info: RunInfo, mode: str, size: tuple[int, int],
 
 def find_claude() -> str | None:
     names = ("claude", "claude.cmd", "claude.exe") if os.name == "nt" else ("claude",)
-    return next((found for name in names if (found := _which(name))), None)
+    return next(filter(None, map(_which, names)), None)   # 最初に見つかった物 (walrus を使わない = 3.7 の文法)
 
 
 def claude_command(executable: str | None, paths: tuple[Path, Path],

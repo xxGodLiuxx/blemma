@@ -8,8 +8,8 @@
 - 127.0.0.1 だけで待ち受ける (LAN・外には bind しない)。起動ごとに token を作り、
   `board/state/run.json` (`{"port","token","pid","started"}`) に書く。止まる時に消す。
 - hook は `POST /ask` → `GET /wait` (long-poll)、頁は `GET /pending` (long-poll) → `POST /answer`
-  / `POST /undo`。札は 1 件ずつ・期限は表示から数えて作成からの上限で抑える・終わりは 5 つの
-  どれか 1 つに排他で決まる・取り消しの猶予は server が持つ (§3.4〜§3.6)。
+  / `POST /undo`。札は 1 件ずつ・期限は表示から数えて作成からの上限で抑える・終わりは 4 つ
+  (resolved は作らない・§3.5) のどれか 1 つに排他で決まる・取り消しの猶予は server が持つ (§3.4〜§3.6)。
 - 板から返すのは choice (種と番号) だけ。公式の JSON は hook が組む (§3.3)。
 - 記録は選択と時刻と数だけ (問いの本文・道具の入力・答えの文字は書かない・§3.8)。
 """
@@ -19,8 +19,8 @@ from __future__ import annotations
 import sys
 
 if sys.version_info < (3, 10):
-    # 手で起こした時も、板を起こす前に止める (blemma.py と同じ文)。古い python でもこの行まで届くよう、
-    # file 全体を 3.9 の文法で書く。
+    # 手で起こした時も、板を起こす前に止める (blemma.py と同じ文)。古い python (3.7 から) でもこの行まで届くよう、
+    # file 全体を 3.7 の文法で書く (walrus・match・位置専用引数を置かない)。
     _VERSION = "%d.%d" % tuple(sys.version_info[:2])
     sys.stderr.write("BLEMMA: Python 3.10 以上で実行してください (今の版は %s)\n"
                      "BLEMMA: Python 3.10 or later is required (this is %s)\n" % (_VERSION, _VERSION))
@@ -29,6 +29,7 @@ if sys.version_info < (3, 10):
 import argparse
 import atexit
 import collections
+import errno
 import functools
 import hmac
 import json
@@ -43,7 +44,7 @@ import subprocess
 import threading
 import time
 import webbrowser
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -235,7 +236,7 @@ def _flushing(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 class Card:
-    """札 1 枚。状態 = queued / shown / deciding / 終わり 5 つ (§3.5)。"""
+    """札 1 枚。状態 = queued / shown / deciding / 終わり 4 つ (resolved は作らない・§3.5)。"""
 
     def __init__(self, cid: str, kind: str, frm: dict, payload: dict, now: float) -> None:
         self.id = cid
@@ -326,6 +327,7 @@ class Board:
         c.view_seq = self.seq
 
     def _finish(self, c: Card, end: str, now: float) -> None:
+        assert end in FINAL, end            # 終わりは FINAL の 4 つだけ (注釈と code をずらさない)
         if c.end is not None:               # 終わりは 1 回だけ (排他・§3.5)
             return
         c.from_deciding = c.state == "deciding"
@@ -356,8 +358,9 @@ class Board:
         """1 札 1 行 = 種・終わり・選択の種・秒・手段・押した数・取り消しの数だけ (§3.8)。"""
         if self.log_dir is None:
             return
+        now = datetime.now().astimezone()    # 1 回だけ読む = 日付の変わり目でも、行の時刻と file の日付が揃う
         rec = {
-            "t": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "t": now.isoformat(timespec="seconds"),
             "kind": c.kind,
             "end": c.end,
             "choice": c.choice.get("type") if (c.choice and c.end in ("answered", "released")) else None,
@@ -366,7 +369,7 @@ class Board:
             "presses": sum(c.presses.values()),
             "undo": c.undos,
         }
-        self._logq.append((datetime.now().strftime("%Y-%m-%d"), rec))   # 書くのは錠の外 (_flush_logs)
+        self._logq.append((now.strftime("%Y-%m-%d"), rec))   # 書くのは錠の外 (_flush_logs)
 
     def _flush_logs(self) -> None:
         """溜まった記録を file へ書く。板の錠を持たずに呼ぶ (file の待ちで板を止めない)。"""
@@ -985,7 +988,8 @@ class Handler(BaseHTTPRequestHandler):
 class BoardHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False      # 抱えた long-poll の終わりを待たずに閉じる
-    # Windows の SO_REUSEADDR は使用中の port にも bind できてしまう = 使わず、排他の旗を立てる
+    # Windows の SO_REUSEADDR は使用中の port にも bind できてしまう = 使わず、排他の旗を立てる。
+    # wildcard (0.0.0.0・:: の二重) で待つ相手には排他の旗でも bind が通る = make_server が connect の試しで断る
     allow_reuse_address = os.name != "nt"
     max_connections = MAX_CONNECTIONS
 
@@ -1019,8 +1023,22 @@ class BoardHTTPServer(ThreadingHTTPServer):
         self.server_port = port
 
 
+def _refuse_if_answered(port: int) -> None:
+    """127.0.0.1:port に繋がる相手が居れば OSError (EADDRINUSE)。0.0.0.0 や :: (二重) で待つ相手が居ても、Windows と mac
+    では 127.0.0.1 の bind が通り、その相手の 127.0.0.1 の客を奪う = bind の前に繋いでみる (人の上に起きないための
+    確かめ・確かめと bind の間の隙は許す)。繋がらない (断られた・時間切れ) 時は空きと見て bind へ進む。"""
+    try:
+        probe = socket.create_connection(("127.0.0.1", port), timeout=0.2)
+    except OSError:
+        return
+    probe.close()
+    raise OSError(errno.EADDRINUSE, "この port で接続を受ける相手が居ます (0.0.0.0・:: で待つ物を含む)")
+
+
 def make_server(app: App, port: int) -> BoardHTTPServer:
     """127.0.0.1 だけに bind する。使用中なら OSError (黙って別の port に移らない)。"""
+    if port:                                  # 0 = OS が空きを選ぶ (試験の板)
+        _refuse_if_answered(port)
     httpd = BoardHTTPServer(("127.0.0.1", port), Handler)
     httpd.app = app  # type: ignore[attr-defined]
     return httpd
