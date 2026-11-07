@@ -358,8 +358,9 @@ class Board:
         """1 札 1 行 = 種・終わり・選択の種・秒・手段・押した数・取り消しの数だけ (§3.8)。"""
         if self.log_dir is None:
             return
+        now = datetime.now().astimezone()    # 1 回だけ読む = 日付の変わり目でも、行の時刻と file の日付が揃う
         rec = {
-            "t": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "t": now.isoformat(timespec="seconds"),
             "kind": c.kind,
             "end": c.end,
             "choice": c.choice.get("type") if (c.choice and c.end in ("answered", "released")) else None,
@@ -368,7 +369,7 @@ class Board:
             "presses": sum(c.presses.values()),
             "undo": c.undos,
         }
-        self._logq.append((datetime.now().strftime("%Y-%m-%d"), rec))   # 書くのは錠の外 (_flush_logs)
+        self._logq.append((now.strftime("%Y-%m-%d"), rec))   # 書くのは錠の外 (_flush_logs)
 
     def _flush_logs(self) -> None:
         """溜まった記録を file へ書く。板の錠を持たずに呼ぶ (file の待ちで板を止めない)。"""

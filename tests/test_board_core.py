@@ -495,6 +495,32 @@ def test_log_keeps_only_choice_time_and_counts(clock, tmp_path):
     assert rec["presses"] == 2 and rec["undo"] == 0 and rec["by"] == "dwell"
 
 
+def test_log_day_and_time_come_from_one_clock_reading(clock, tmp_path, monkeypatch):
+    """記録の行の時刻 (t) と file の日付は、時計を 1 回だけ読んで作る (1 巡目 #12 = 2 回読んでいたので、日付の変わり目に
+    終わった札は 11/7 の時刻の行が log-2026-11-08.jsonl に入った)。時計は naive の現地時刻 = 機械の時間帯に依らない。"""
+    from datetime import datetime as real
+    readings = [real(2026, 11, 7, 23, 59, 59, 999000), real(2026, 11, 8, 0, 0, 0)]
+    calls = []
+
+    class FakeDT:
+        @staticmethod
+        def now(tz=None):
+            calls.append(tz)
+            return readings[min(len(calls), len(readings)) - 1]
+
+    b = new_board(clock, tmp_path)
+    a = ask(b)
+    monkeypatch.setattr(S, "datetime", FakeDT)        # server.py は from datetime import datetime
+    clock.advance(301)                                # 期限 (300 秒) を過ぎる
+    keepalive(b, a)                                   # 板の時が進み、expired で終わって 1 行
+    assert card_of(b, a).state == "expired"
+    files = sorted(p.name for p in tmp_path.glob("log-*.jsonl"))
+    assert files == ["log-2026-11-07.jsonl"]
+    rec = json.loads((tmp_path / files[0]).read_text(encoding="utf-8").strip())
+    assert rec["t"][:10] == "2026-11-07" and rec["end"] == "expired"
+    assert calls == [None]                            # 時計を読むのは 1 回
+
+
 def test_no_log_dir_writes_nothing(clock, tmp_path):
     b = new_board(clock, None)
     a = ask(b)
