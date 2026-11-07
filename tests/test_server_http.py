@@ -370,6 +370,38 @@ def test_port_in_use_is_refused(live):
         S.make_server(app, srv.port)
 
 
+def wildcard_listener(family: str) -> socket.socket:
+    """同じ利用者の別のプログラムが全部の口で待つ形 = 0.0.0.0 か、:: の二重 (IPV6_V6ONLY=0・python -m http.server の形)。
+    作れない環境は skip にせず、理由つきで落とす (skip は通ったの外)。"""
+    if family == "ipv4":
+        sock, address = socket.socket(socket.AF_INET, socket.SOCK_STREAM), ("0.0.0.0", 0)
+    else:
+        if not socket.has_ipv6:
+            pytest.fail("この python は IPv6 の socket を作れない (:: の二重で待つ相手を作れない)")
+        sock, address = socket.socket(socket.AF_INET6, socket.SOCK_STREAM), ("::", 0)
+    try:
+        if family == "dual":
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        sock.bind(address)
+        sock.listen()
+    except OSError as e:
+        sock.close()
+        pytest.fail(f"{address[0]} で待てない ({type(e).__name__}: {e})")
+    return sock
+
+
+@pytest.mark.parametrize("family", ["ipv4", "dual"])
+def test_wildcard_listener_on_the_port_is_refused(family):
+    """0.0.0.0 / :: (二重) で待つ相手の port には起きない (1 巡目 #16 = Windows では 127.0.0.1 の bind が通り、相手の
+    127.0.0.1 の客を奪った)。相手の socket は make_server の間だけ開く。"""
+    listener = wildcard_listener(family)
+    try:
+        with pytest.raises(OSError):
+            S.make_server(S.App(FAST, "t"), listener.getsockname()[1]).server_close()   # 起きてしまったら閉じて落とす
+    finally:
+        listener.close()
+
+
 def test_run_file_write_and_remove_only_own(tmp_path):
     p = tmp_path / "state" / "run.json"
     S.write_run_file(p, {"port": 1, "token": "mine", "pid": 1, "started": "x"})

@@ -688,6 +688,27 @@ def test_occupied_port_stops_before_browser_or_claude(isolated_repo, monkeypatch
     assert not (isolated_repo / "board" / "state" / "run.json").exists()
 
 
+def test_wildcard_listener_on_the_port_stops_before_browser_or_claude(isolated_repo, monkeypatch, capsys):
+    """0.0.0.0 で待つ相手 (同じ利用者の別のプログラム) の port でも、板を起こさずに止まる (1 巡目 #16 = Windows では板が
+    起き、相手の 127.0.0.1 の客を奪った)。README の「板を起動できません (ポート・配置を確認)」の行がそのまま当たる。"""
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("板が起きて、窓か claude まで進んだ")
+
+    monkeypatch.setattr(L, "open_board", unexpected)
+    monkeypatch.setattr(L, "run_claude", unexpected)
+    with socket.socket() as listener:
+        listener.bind(("0.0.0.0", 0))
+        listener.listen()
+        assert L.main(["--port", str(listener.getsockname()[1])]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and len(captured.err.splitlines()) == 1
+    assert "板を起動できません" in captured.err and "Board server exited" in captured.err
+    assert not (isolated_repo / "board" / "state" / "run.json").exists()
+
+
 def test_startup_timeout_stops_real_child(isolated_repo, monkeypatch):
     children = []
     original = L.subprocess.Popen

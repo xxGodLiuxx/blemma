@@ -29,6 +29,7 @@ if sys.version_info < (3, 10):
 import argparse
 import atexit
 import collections
+import errno
 import functools
 import hmac
 import json
@@ -985,7 +986,8 @@ class Handler(BaseHTTPRequestHandler):
 class BoardHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False      # 抱えた long-poll の終わりを待たずに閉じる
-    # Windows の SO_REUSEADDR は使用中の port にも bind できてしまう = 使わず、排他の旗を立てる
+    # Windows の SO_REUSEADDR は使用中の port にも bind できてしまう = 使わず、排他の旗を立てる。
+    # wildcard (0.0.0.0・:: の二重) で待つ相手には排他の旗でも bind が通る = make_server が connect の試しで断る
     allow_reuse_address = os.name != "nt"
     max_connections = MAX_CONNECTIONS
 
@@ -1019,8 +1021,22 @@ class BoardHTTPServer(ThreadingHTTPServer):
         self.server_port = port
 
 
+def _refuse_if_answered(port: int) -> None:
+    """127.0.0.1:port に繋がる相手が居れば OSError (EADDRINUSE)。0.0.0.0 や :: (二重) で待つ相手が居ても、Windows と mac
+    では 127.0.0.1 の bind が通り、その相手の 127.0.0.1 の客を奪う = bind の前に繋いでみる (人の上に起きないための
+    確かめ・確かめと bind の間の隙は許す)。繋がらない (断られた・時間切れ) 時は空きと見て bind へ進む。"""
+    try:
+        probe = socket.create_connection(("127.0.0.1", port), timeout=0.2)
+    except OSError:
+        return
+    probe.close()
+    raise OSError(errno.EADDRINUSE, "この port で接続を受ける相手が居ます (0.0.0.0・:: で待つ物を含む)")
+
+
 def make_server(app: App, port: int) -> BoardHTTPServer:
     """127.0.0.1 だけに bind する。使用中なら OSError (黙って別の port に移らない)。"""
+    if port:                                  # 0 = OS が空きを選ぶ (試験の板)
+        _refuse_if_answered(port)
     httpd = BoardHTTPServer(("127.0.0.1", port), Handler)
     httpd.app = app  # type: ignore[attr-defined]
     return httpd
