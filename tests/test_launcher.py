@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import errno
 import json
 import os
 import shutil
@@ -1431,6 +1432,89 @@ def test_a_live_holders_roster_lock_is_never_broken_but_a_dead_holders_lock_is(i
         started = time.monotonic()
         a.join()
         assert time.monotonic() - started < 2 and a.me is not None and a.me.exists() and not lock.exists()
+
+
+def test_a_roster_folder_that_cannot_be_written_falls_back_to_the_old_way(isolated_repo, sessions, launchers,
+                                                                          monkeypatch, capsys):
+    """名簿の置き場 (board/state/clients) に書けない時 (前に sudo で起こして作られた dir・読み取り専用の checkout) は、錠を
+    待たずに名簿を使わない今までの動きに戻る = 起こす側は名乗らずに進み (15 秒待って「名簿の錠が取れません」で止まらない)、
+    終わる側は自分が起こした板だけを止める (使い回した板は止めない)。理由は stderr に日英の 1 行 (UltraReview の件 1 = 前は
+    書けない dir の EACCES も錠の使用中と見て、毎回 15 秒待って止まった)。書けない dir は、錠の作成の EACCES で作る。"""
+    state = isolated_repo / "board" / "state"
+    real_open = os.open
+
+    def refused(path, flags, *args, **kwargs):
+        if Path(path).name == ".lock":
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(L.os, "open", refused)
+    a = L.Clients(state)
+    started = time.monotonic()
+    a.join()
+    assert time.monotonic() - started < 2 and not a.ok and a.me is None
+    launchers.start("starter")
+    launchers.start("reuser")
+    assert sessions[0].process is not None and sessions[1].process is None   # 2 つ目は使い回し
+    info = run_info(isolated_repo)
+    assert client_files(isolated_repo) == []                                 # 名乗りも板の印も書かない
+    launchers.end("reuser")
+    assert L.board_responds(info) and sessions[0].process.poll() is None     # 使い回した回は止めない
+    launchers.end("starter")
+    assert not L.board_responds(info, timeout=0.05) and sessions[0].process.poll() is not None   # 自分の板は止める
+    err = capsys.readouterr().err.splitlines()
+    assert err == [L.ROSTER_OFF] * 3, err
+
+
+@contextlib.contextmanager
+def deleting_lock(path):
+    """Windows の「消える途中」の錠 = 別の process (検索の索引・ウイルス対策など) が消しの共有つきで開いている間に、古い型の
+    消し (FileDispositionInfo) を受けた file。名は残るが開けない (O_EXCL の作成も PermissionError)。handle を閉じると消える。"""
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                     wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    invalid = ctypes.c_void_p(-1).value
+    path.write_text("", encoding="utf-8")
+    holder = kernel32.CreateFileW(str(path), 0x80000000, 7, None, 3, 0, None)    # GENERIC_READ・共有は読み書き消し
+    assert holder not in (None, invalid)
+    try:
+        deleter = kernel32.CreateFileW(str(path), 0x00010000, 7, None, 3, 0, None)   # DELETE
+        assert deleter not in (None, invalid)
+        flag = ctypes.c_ubyte(1)                                                    # FILE_DISPOSITION_INFO.DeleteFile
+        try:
+            assert kernel32.SetFileInformationByHandle(deleter, 4, ctypes.byref(flag), 1)
+        finally:
+            kernel32.CloseHandle(deleter)
+        yield
+    finally:
+        kernel32.CloseHandle(holder)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="消える途中の錠は Windows の型 (POSIX の作成の PermissionError は書けない dir)")
+def test_a_lock_being_deleted_on_windows_is_waited_for(isolated_repo, monkeypatch):
+    """Windows で、別の process が開いている間に消された錠 (消える途中) は、O_EXCL の作成が PermissionError になる。書けない
+    dir と違い、在る錠と同じく待つ (名簿を使わない動きに落ちない)。開いていた handle が閉じて消えた後は、普通に錠が取れる。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    monkeypatch.setattr(L, "LOCK_WAIT", 0.3)
+    a = L.Clients(state)
+    with deleting_lock(lock):
+        with pytest.raises(PermissionError):
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        assert os.path.lexists(lock)
+        with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+            a.join()
+        assert a.ok and a.me is None
+    assert not os.path.lexists(lock)
+    a.join()
+    assert a.ok and a.me is not None and a.me.exists() and not lock.exists()
 
 
 def test_hardened_streams_do_not_raise_on_a_console_that_cannot_write_japanese():
