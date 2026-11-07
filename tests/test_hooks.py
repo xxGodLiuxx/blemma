@@ -720,3 +720,17 @@ def test_elicitation_field_keeps_its_description_next_to_the_title():
     assert only["title"] == "Delete all records?" and "description" not in only       # 題が無ければ、説明が題になる
     same = E.field_of("ok", {"type": "boolean", "title": "Proceed?", "description": "Proceed?"}, True, False)
     assert "description" not in same                                                  # 同じ文を 2 度出さない
+
+
+def test_visible_marks_hidden_characters_that_the_category_filter_misses():
+    """見えない字の網 = 種 (Cc/Cf/Cs/Zl/Zp) に加えて、結合文字の接着・ハングルの埋め字・点字の空白と、文字の後の異体字セレクタも
+    ⟨U+XXXX⟩ にする (外の目の走査 F3 = 札の見た目と、許可する入力が食い違いうる)。絵文字の後 (❤️) と漢字の後 (葛󠄀) の
+    異体字セレクタは正当 = そのまま。改行とタブもそのまま。"""
+    import permission as PERM
+
+    assert PERM.visible("a​b") == "a⟨U+200B⟩b"                                   # 今までどおり (Cf)
+    assert PERM.visible("r️m -rf") == "r⟨U+FE0F⟩m -rf"                           # 文字の後の異体字セレクタ
+    assert PERM.visible("x\U000e0100y") == "x⟨U+E0100⟩y"
+    assert PERM.visible("a͏bㅤcᅟᅠﾠ⠀") == \
+        "a⟨U+034F⟩b⟨U+3164⟩c⟨U+115F⟩⟨U+1160⟩⟨U+FFA0⟩⟨U+2800⟩"
+    assert PERM.visible("❤️ 葛\U000e0100 \n\t") == "❤️ 葛\U000e0100 \n\t"

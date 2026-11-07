@@ -1096,3 +1096,59 @@ def test_command_line_stays_on_one_line():
         assert line.startswith('& "claude" ') and "`$value``" in line and "`n" in line
     else:
         assert line.startswith("claude ") and "\\n" in line
+
+
+def test_the_roster_lock_covers_joining_and_the_last_users_stop(isolated_repo, monkeypatch):
+    """名乗り (join) と、最後の使い手の「ほかの使い手を数える → 板を止める」(leave) は、同じ錠 (clients/.lock) の中で行う
+    = A が 0 人と数えた直後に B が名乗って板を使い回し、その後で A が板を止める隙間が無い (外の目の 8 巡目)。錠は終わると消える。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    a = L.Clients(state)
+    seen = {}
+    monkeypatch.setattr(a, "_write", lambda path, data: seen.__setitem__("join_locked", lock.exists()) or True)
+    a.join()
+    assert seen == {"join_locked": True} and not lock.exists()
+    a.me = state / "clients" / f"client-{os.getpid()}-deadbeef.json"
+    monkeypatch.setattr(a, "_others", lambda: seen.__setitem__("count_locked", lock.exists()) or 0)
+    monkeypatch.setattr(a, "_stop_used", lambda session: seen.__setitem__("stop_locked", lock.exists()))
+    a.leave(L.BoardSession(state / "run.json", L.RunInfo(1, "t", 1)), keep=False)
+    assert seen == {"join_locked": True, "count_locked": True, "stop_locked": True} and not lock.exists()
+
+
+def test_a_held_roster_lock_delays_the_stop_and_a_stale_lock_is_broken(isolated_repo, monkeypatch):
+    """別の回が錠を持っている間は、最後の使い手の止めは待つ (錠が外れてから止める)。持ち主が後始末なしに消えた古い錠は壊して進む。"""
+    state = isolated_repo / "board" / "state"
+    (state / "clients").mkdir(parents=True)
+    lock = state / "clients" / ".lock"
+    a = L.Clients(state)
+    order = []
+    monkeypatch.setattr(a, "_others", lambda: 0)
+    monkeypatch.setattr(a, "_stop_used", lambda session: order.append("stop"))
+    lock.write_text("held", encoding="utf-8")                           # 別の回が錠を持っている
+
+    def release():
+        time.sleep(0.5)
+        order.append("release")
+        lock.unlink()
+    threading.Thread(target=release, daemon=True).start()
+    a.leave(L.BoardSession(state / "run.json", L.RunInfo(1, "t", 1)), keep=False)
+    assert order == ["release", "stop"] and not lock.exists()
+    lock.write_text("stale", encoding="utf-8")                          # 持ち主が死んで残った古い錠
+    old = time.time() - L.LOCK_STALE - 5
+    os.utime(lock, (old, old))
+    started = time.monotonic()
+    a.leave(L.BoardSession(state / "run.json", L.RunInfo(1, "t", 1)), keep=False)
+    assert order == ["release", "stop", "stop"] and time.monotonic() - started < 2 and not lock.exists()
+
+
+def test_hardened_streams_do_not_raise_on_a_console_that_cannot_write_japanese():
+    """英語の Windows の console (cp1252) のように日本語を書けない stream でも、案内の行で落ちない = 書けない字は ? になる。
+    文字コードは変えない (日本語の console はそのまま読める)。付け替えられない stream は放っておく。"""
+    import io
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict", newline="\n")
+    with pytest.raises(UnicodeEncodeError):
+        print("BLEMMA: 板を開きました", file=stream)
+    L.harden_streams(stream, object())                                   # 2 つ目 = reconfigure の無い物も通る
+    print("BLEMMA: 板 / board", file=stream, flush=True)
+    assert raw.getvalue() == b"BLEMMA: ? / board\n" and stream.encoding == "cp1252"

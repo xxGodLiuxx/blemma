@@ -3335,6 +3335,40 @@ console.log(JSON.stringify(out));
     assert out == {"enter": want, "space": want, "select": {"open": True, "focus": "select"}}
 
 
+def test_a_doubled_space_on_the_settings_close_does_not_reach_the_scan(tmp_path, clock):
+    """走査 (1 鍵のスイッチ = Space) の板で、設定の板を「閉じる」の Space で閉じ、次のこまの直後にばたつきでもう 1 度 Space を
+    押しても、答えは送られない (外の目の 8 巡目 = 閉じた直後に走査の光が許可へ戻り、2 打目が allow_once を送った)。閉じた直後は
+    「表示が替わった直後」と同じ静かな間 (押しを数えない 0.4 秒・走査は間を置いて頭から) = 光は消え、頁に印 (settling) が付く。
+    静かな間の後は、スイッチで光っている釦 (頭 = 許可) を押せる (スイッチは生きている)。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+function lit(c) { return c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; })[0] || null; }
+const out = {};
+for (const mode of ["large", "small"]) {
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja&scan=0.5" });
+  c.show(A);
+  await c.run(1300);                                /* 走査が回り、光は許可から離れた所 */
+  c.$("gear-btn").focus();
+  await c.key("Enter", "Enter");                   /* 設定の板が開き、焦点は「閉じる」 */
+  await c.run(600);
+  await c.key(" ", "Space");                       /* 1 打目 = 閉じる */
+  const r = { closed: c.$("overlay").hidden, mark: c.doc().body.classList.contains("settling"), lit: lit(c) };
+  await c.run(16);                                  /* 次のこま */
+  await c.run(50);
+  await c.key(" ", "Space");                       /* 2 打目 = ばたつき */
+  r.early = c.answers().length;
+  await c.run(550);                                 /* 閉じてから 0.62 秒 = 静かな間 (0.5 秒) の後、光は頭 (許可) に戻っている */
+  r.later = lit(c);
+  await c.key(" ", "Space");
+  r.laterSent = choices(c);
+  out[mode] = r;
+}
+console.log(JSON.stringify(out));
+""", A=a)
+    want = {"closed": True, "mark": True, "lit": None, "early": 0, "later": "allow_once", "laterSent": [{"type": "allow_once"}]}
+    assert out == {"large": want, "small": want}, out
+
+
 def test_a_card_arriving_right_after_the_settings_close_finds_the_first_button(tmp_path, clock):
     """設定の板を「閉じる」の Enter で閉じた同じこま (隠れた「閉じる」に、ブラウザが焦点を外すまで焦点が残っている) に札が来た時 =
     焦点はどこにも無いのと同じ → 今までどおり先頭へ置く (隠れた釦に残る焦点を「人が置いた焦点」に数えない)。"""

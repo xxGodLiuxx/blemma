@@ -573,3 +573,34 @@ def test_state_folder_is_readable_only_by_the_current_user_on_windows(tmp_path):
     assert len(_entries(folder)) == 1
     (folder / "run.json").write_text("{}", encoding="utf-8")              # 絞った後も、自分は書ける・読める
     assert (folder / "run.json").read_text(encoding="utf-8") == "{}"
+
+
+def test_the_board_starts_on_a_console_that_cannot_write_japanese(tmp_path):
+    """日本語を書けない console (英語の Windows の cp1252 など) でも板は起動し、案内の行で落ちない (探し役の所見 = 起動の print の
+    UnicodeEncodeError で、run.json を書いた直後に板が死んでいた)。stdout の文字コードを cp1252 の strict に固定した子で確かめる。"""
+    root = tmp_path / "repo"
+    (root / "board").mkdir(parents=True)
+    shutil.copy2(S.__file__, root / "board" / "server.py")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    env = dict(os.environ, PYTHONIOENCODING="cp1252:strict", PYTHONUTF8="0")
+    board = subprocess.Popen([sys.executable, str(root / "board" / "server.py"), "--no-browser", "--no-log", "--port", str(port)],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    try:
+        run = root / "board" / "state" / "run.json"
+        end = time.monotonic() + 10
+        while not run.exists() and time.monotonic() < end and board.poll() is None:
+            time.sleep(0.05)
+        assert run.exists(), "板が起きない"
+        time.sleep(0.5)                                                  # 案内の行を書いた後も生きている
+        assert board.poll() is None, (board.stdout.read(), board.stderr.read())
+        info = json.loads(run.read_text(encoding="utf-8"))
+        conn = http.client.HTTPConnection("127.0.0.1", info["port"], timeout=3)
+        conn.request("GET", "/pending?seq=-1", headers={"X-Blemma-Token": info["token"]})
+        assert conn.getresponse().status == 200
+        conn.close()
+    finally:
+        board.terminate()
+        board.wait(timeout=10)
+    assert b"BLEMMA: ?" in board.stdout.read()                          # 日本語は ? に替わって、行は出ている

@@ -1120,7 +1120,19 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return ap.parse_args(argv)
 
 
+def harden_streams(*streams: Any) -> None:
+    """案内の行 (日本語を含む) を、console の文字コードが書けない時 (英語の Windows の cp1252 など) も落とさない = 書けない字は
+    ? に替える。文字コードは変えない (日本語の console はそのまま読める)。付け替えられない stream (差し替えの物) は放っておく。
+    Replace unencodable characters instead of raising, so a non-Japanese console cannot kill the board at startup."""
+    for stream in streams or (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    harden_streams()
     args = parse_args(argv)
     lim = Limits(wait=args.wait,
                  perm_wait=args.perm_wait,

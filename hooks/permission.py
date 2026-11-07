@@ -45,16 +45,30 @@ TEXT_CLIP = 6000             # Edit の old / new・Write の頭 (字)
 SUMMARY_CLIP = 300           # 1 行の要約 (Bash の description など)
 WRITE_HEAD_LINES = 40
 _HIDDEN = ("Cc", "Cf", "Cs", "Zl", "Zp")   # 見えない字の種 (改行とタブは残す)
+# 種では拾えない見えない字 (外の目の走査 F3): 結合文字の接着 U+034F・ハングルの埋め字・点字の空白・異体字セレクタ。
+# 異体字セレクタは、絵文字の見せ方 (❤️ = U+2764 U+FE0F) と漢字の異体字 (漢字の後の U+E0100〜) では正当 = その 2 つだけ残す
+_HIDDEN_CHARS = frozenset({"͏", "ᅟ", "ᅠ", "ㅤ", "ﾠ", "⠀"})
+_VS_EMOJI = frozenset(chr(c) for c in range(0xFE00, 0xFE10))
+_VS_IDEOGRAPH = frozenset(chr(c) for c in range(0xE0100, 0xE01F0))
+
+
+def _hidden(ch: str, prev: str) -> bool:
+    if ch in "\n\t":
+        return False
+    if ch in _VS_EMOJI:
+        return not (prev and unicodedata.category(prev)[0] == "S")   # 記号 (絵文字) の後は正当
+    if ch in _VS_IDEOGRAPH:
+        return not (prev and unicodedata.category(prev) == "Lo")      # 漢字 (文字) の後は正当
+    return ch in _HIDDEN_CHARS or unicodedata.category(ch) in _HIDDEN
 
 
 def visible(s: str) -> str:
     """見えない字を ⟨U+XXXX⟩ にして見せる (尾や途中に隠れた物を札で見落とさない)。"""
     out = []
+    prev = ""
     for ch in s:
-        if ch not in "\n\t" and unicodedata.category(ch) in _HIDDEN:
-            out.append(f"⟨U+{ord(ch):04X}⟩")
-        else:
-            out.append(ch)
+        out.append(f"⟨U+{ord(ch):04X}⟩" if _hidden(ch, prev) else ch)
+        prev = ch
     return "".join(out)
 
 

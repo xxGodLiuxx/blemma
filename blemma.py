@@ -15,6 +15,7 @@ if sys.version_info < (3, 10):
     sys.exit(1)
 
 import argparse
+import contextlib
 import http.client
 import json
 import os
@@ -450,6 +451,8 @@ def stop_reused_board(session: BoardSession) -> None:
 
 
 CLIENT_FILE = re.compile(r"client-([0-9]{1,10})-[0-9a-f]{8}\.json")
+LOCK_WAIT = 15.0     # 名簿の錠 (clients/.lock) を待つ最長 (秒)。待ち切れない時は錠なしで進む (今までの動き)
+LOCK_STALE = 60.0    # これより古い錠は、持ち主が後始末なしに消えた物として壊す
 
 
 class Clients:
@@ -465,11 +468,52 @@ class Clients:
         self.me: Path | None = None
         self.ok = True                     # False = 名簿を使わず、今までの動き
 
+    @contextlib.contextmanager
+    def _lock(self):
+        """名簿の錠 (clients/.lock) = 名乗り (join) と、最後の使い手の「ほかの使い手を数える → 板を止める」(leave) を互いに
+        割り込ませない (外の目の 8 巡目 = A が 0 人と数えた直後に B が名乗って板を使い回し、その後で A が板を止めた)。
+        錠は file の作成の原子性 (O_EXCL) で取る。取れない時は待ち、待ち切れたら錠なしで進む (今までの動き = 止める側に倒さない)。
+        持ち主が後始末なしに消えた古い錠は壊す。"""
+        path = self.dir / ".lock"
+        fd = None
+        deadline = time.monotonic() + LOCK_WAIT
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            while True:
+                try:
+                    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    break
+                except FileExistsError:
+                    try:
+                        if time.time() - path.stat().st_mtime > LOCK_STALE:
+                            path.unlink(missing_ok=True)
+                            continue
+                    except OSError:
+                        pass
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+        except OSError:
+            fd = None
+        try:
+            yield
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
     def join(self) -> None:
-        pid = os.getpid()
-        path = self.dir / f"client-{pid}-{secrets.token_hex(4)}.json"
-        if self._write(path, {"pid": pid, "started": datetime.now().astimezone().isoformat(timespec="seconds")}):
-            self.me = path
+        with self._lock():
+            pid = os.getpid()
+            path = self.dir / f"client-{pid}-{secrets.token_hex(4)}.json"
+            if self._write(path, {"pid": pid, "started": datetime.now().astimezone().isoformat(timespec="seconds")}):
+                self.me = path
 
     def mark(self, session: BoardSession) -> None:
         # 印の pid は run.json の pid (Windows の venv の転送役では、子の pid と食い違う)。
@@ -478,7 +522,12 @@ class Clients:
             self._write(self._marker(info), {"pid": info.pid, "port": info.port, "started": info.started})
 
     def leave(self, session: BoardSession | None, keep: bool) -> None:
-        """終わる時の順 = 自分の登録を消す → ほかの使い手を数える → 残すか、印のある板だけを止める。"""
+        """終わる時の順 = 自分の登録を消す → ほかの使い手を数える → 残すか、印のある板だけを止める。全部を名簿の錠の中で
+        行う = 数えてから止めるまでの間に、新しい使い手が名乗って板を使い回せない。"""
+        with self._lock():
+            self._leave(session, keep)
+
+    def _leave(self, session: BoardSession | None, keep: bool) -> None:
         if self.me is not None:
             try:
                 self.me.unlink(missing_ok=True)
@@ -793,7 +842,18 @@ def launch(args: argparse.Namespace, root: Path) -> int:
         clients.leave(session, keep=completed and args.keep_board)
 
 
+def harden_streams(*streams: Any) -> None:
+    """案内の行 (日本語を含む) を、console の文字コードが書けない時 (英語の Windows の cp1252 など) も落とさない = 書けない字は
+    ? に替える。文字コードは変えない (日本語の console はそのまま読める)。Replace unencodable characters instead of raising."""
+    for stream in streams or (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    harden_streams()
     try:
         args = parse_args(argv)
         if args.stop:

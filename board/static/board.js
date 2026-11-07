@@ -1479,6 +1479,10 @@
     S.over = keyAtPointer();
     S.firstPointer = true;
     releaseDwell();
+    /* 閉じた直後は「表示が替わった直後」と同じ静かな間を置く (押しを数えない 0.4 秒 + 走査は間を置いて頭から) = 「閉じる」の
+       Space / Enter の 2 打目 (ばたつき) が、戻った走査の光や焦点の羽根 (許可) に届かない (外の目の 8 巡目 = 走査の板で、閉じた
+       次のこまの 2 打目が allow_once を送った)。焦点は動かさない (人が置いた焦点を奪わない) */
+    bumpGen(true, true);
     fitWindow();
   }
 
