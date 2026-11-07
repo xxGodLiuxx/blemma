@@ -531,6 +531,32 @@ def test_print_only_prepares_real_board_without_claude(isolated_repo, sessions, 
     assert L.board_responds(session.info, timeout=0.05) == keep
 
 
+def test_print_only_refuses_to_write_a_mangled_command(isolated_repo, sessions, monkeypatch):
+    """--print-only の 1 行を pipe や file へ向けた時 (Windows は ANSI の code page = 日本語の Windows は cp932) に、書けない字
+    (é など) を ? に替えた命令を黙って出さず、理由つきの 1 行で止まる (2 巡目 i29)。stream は main の harden_streams が
+    errors="replace" に替える本物の道を通す。書ける行 (日本語の頼み) は今までどおり出る。"""
+    import io
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "_which", lambda name: "claude.exe" if name == "claude" else None)
+    monkeypatch.setattr(L.webbrowser, "open", lambda url: True)
+
+    def print_only(prompt):
+        out, err = io.BytesIO(), io.BytesIO()
+        for name, raw in (("stdout", out), ("stderr", err)):
+            monkeypatch.setattr(sys, name, io.TextIOWrapper(raw, encoding="cp932", errors="strict", write_through=True))
+        code = L.main(["--large", "--print-only", "--port", str(unused_port()), "--", prompt])
+        return code, out.getvalue(), err.getvalue().decode("cp932")
+
+    code, out, err = print_only("café の案を 3 つ")
+    assert code == 1 and out == b"" and b"caf?" not in out
+    assert len(err.splitlines()) == 1 and "console に表示して" in err and "print it to the console" in err
+    assert "caf" not in err                                    # 頼みの文は写さない
+    code, out, err = print_only("日本語の案を 3 つ")
+    assert code == 0 and err == ""
+    assert len(out.splitlines()) == 1 and "日本語の案を 3 つ" in out.decode("cp932")
+    assert len(sessions) == 2 and all(session.process.poll() is not None for session in sessions)
+
+
 def test_real_server_start_reuse_and_stop(isolated_repo, sessions, monkeypatch):
     # A bogus proxy must not intercept even the launcher's readiness check.
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")

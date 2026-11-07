@@ -843,7 +843,16 @@ def launch(args: argparse.Namespace, root: Path) -> int:
         paths = write_configs(root)
         command = claude_command(executable, paths, args)
         if args.print_only:
-            print(format_command(command))
+            # 命令の行だけは書けない字を ? に替えない (harden_streams の replace は案内の行のため) = pipe や file へ
+            # 向けた時 (Windows は ANSI の code page) に、黙って違う頼み・違う路の命令を出さず、理由つきで止まる。
+            line = format_command(command)
+            try:
+                line.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+            except UnicodeEncodeError:
+                raise LaunchError("この 1 行は今の出力先の文字コードで書けません。console に表示して写してください / "
+                                  "The command line cannot be encoded for this output; "
+                                  "print it to the console and copy it") from None
+            print(line)
             result = 0
         else:
             result = run_claude(command)
