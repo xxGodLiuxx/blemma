@@ -335,6 +335,36 @@ def test_perm_write_shows_the_first_40_lines(board):
     assert "全 100 行" in b[1]["label"]["ja"]
 
 
+@pytest.mark.parametrize("case", ["url", "file", "description"])
+def test_perm_long_summary_is_clipped_with_a_mark(board, case):
+    """1 行の要約 (url・file 名・Bash の description) は 300 字で切り、切った時は「…」を足す (1 巡目 #28 = 印なしで切れ、
+    切れた url が別の url に見えうる)。他の道具 (WebFetch) の入力の JSON も 2,000 字で切って見出しに書く。"""
+    long = "a" * 3000
+    data = {"url": perm("WebFetch", {"url": "https://example.com/" + long, "prompt": "要約して"}),
+            "file": perm("Read", {"file_path": "/home/u/demo-repo/" + long + ".md"}),
+            "description": perm("Bash", {"command": "ls", "description": "list " + long})}[case]
+    board.answer({"type": "allow_once"})
+    one_json(run("permission.py", data, board.run_file))
+    p = board.payload
+    shown = {"url": "https://example.com/" + long, "file": long + ".md", "description": "list " + long}[case]
+    assert p["text"] == shown[:300] + "…"
+    if case == "url":
+        label = p["blocks"][-1]["label"]
+        assert label["ja"].startswith("input (先頭 2000 字・全 ") and label["ja"].endswith("続きは端末で)")
+
+
+def test_perm_write_head_over_6000_chars_names_the_char_clip(board):
+    """Write の頭の 40 行が 6,000 字を超える時は、見出しに字の切りも書く (1 巡目 #28 = 行数だけを書き、字で切った事が見えなかった)。"""
+    board.answer({"type": "allow_once"})
+    content = "".join("x" * 204 + "\n" for _ in range(50))
+    one_json(run("permission.py", perm("Write", {"file_path": "/home/u/demo-repo/長い.md", "content": content}),
+                 board.run_file))
+    b = board.payload["blocks"][1]
+    assert "先頭 6000 字" in b["label"]["ja"] and "全 50 行" in b["label"]["ja"] and "続きは端末で" in b["label"]["ja"]
+    assert b["label"]["en"].startswith("content (first 6000 chars of the first 40 of 50 lines")
+    assert b["text"] == content[:6000] + "\n…"
+
+
 def test_perm_debug_writes_only_blemma_lines(tmp_path):
     """記録の行は UTF-8 の bytes + LF (stderr の文字の層の cp932・CRLF にしない = Claude Code の記録で化けない)。"""
     p = run("permission.py", EDIT, tmp_path / "none.json", env={"BLEMMA_DEBUG": "1"})

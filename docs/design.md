@@ -100,8 +100,8 @@
 本文の出し方 (v1 の判断):
 - Bash = `command` を**省かず全部** (尾に危ない物を隠させない・長ければ札の中で巻物にする) + `description`。
 - Edit = `file_path` と `old_string` → `new_string` (長ければ折りたたむ)。Write = `file_path` と頭の 40 行。
-- MCP の道具 = `mcp__<server>__<tool>` と入力の JSON (2,000 字まで・超えたら「続きは端末で」)。他の道具 = 入力の JSON。
-- 実装で決めた事 (11/4): `command` を持つ道具 (Bash・PowerShell など) は Bash と同じ扱い・`command` の外の入力 (timeout・sandbox の旗など) も隠さず JSON で添える。Edit の old / new と Write の頭は 6,000 字まで (切ったら見出しに「先頭 n 字・全 m 字・続きは端末で」)。見えない字 (制御・書字方向など) は `⟨U+XXXX⟩` にして見せる (表示だけ・返す JSON は変えない)。札の payload が 256 KiB を超えたら、command を切らずに札を出さない (無出力 = 端末へ)。
+- MCP の道具 = `mcp__<server>__<tool>` と入力の JSON (2,000 字まで・超えたら「続きは端末で」)。他の道具 = 入力の JSON (2,000 字まで・超えたら「続きは端末で」)。
+- 実装で決めた事 (11/4): `command` を持つ道具 (Bash・PowerShell など) は Bash と同じ扱い・`command` の外の入力 (timeout・sandbox の旗など) も隠さず JSON で添える (2,000 字まで)。Edit の old / new と Write の頭は 6,000 字まで (切ったら見出しに「先頭 n 字・全 m 字・続きは端末で」)。見えない字 (制御・書字方向など) は `⟨U+XXXX⟩` にして見せる (表示だけ・返す JSON は変えない)。札の payload が 256 KiB を超えたら、command を切らずに札を出さない (無出力 = 端末へ)。
 
 返す JSON:
 ```json

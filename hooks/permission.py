@@ -15,7 +15,8 @@ stdin の問い (道具と入力・`permission_suggestions`) を板の札にし�
 - 判断なし (板なし・時限・端末で答える・壊れた返り・例外) は全部、何も書かず exit 0 (§2.0)。
 
 札の本文 (§2.1): Bash などの `command` は省かず全部 (長ければ札を出さず端末へ)・Edit は file と old → new・
-Write は file と頭の 40 行・MCP の道具は server と道具の名と入力の JSON (2,000 字まで)・他の道具は入力の JSON。
+Write は file と頭の 40 行・MCP の道具は server と道具の名と入力の JSON・他の道具は入力の JSON (どちらも
+2,000 字まで・超えたら「続きは端末で」)。
 見えない字 (制御の字・書字方向の字など) は `⟨U+XXXX⟩` に置き換えて見せる (表示だけ・返す JSON は変えない)。
 """
 
@@ -101,14 +102,19 @@ def _rest(tool_input: dict, shown: Tuple[str, ...]) -> List[dict]:
     return [_clip_block("other input", _json_text(rest), JSON_CLIP)]
 
 
+def _cut(s: str, limit: int = SUMMARY_CLIP) -> str:
+    """1 行の要約を limit 字で切る。切った時は「…」を足す (表示だけ = 切れた url や名を、別の物に見せない)。"""
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
 def _summary(tool_input: dict) -> str:
     for key in ("file_path", "notebook_path", "path"):
         v = tool_input.get(key)
         if isinstance(v, str) and v:
-            return visible(v.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1][:SUMMARY_CLIP])
+            return visible(_cut(v.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]))
     v = tool_input.get("url")
     if isinstance(v, str) and v:
-        return visible(v[:SUMMARY_CLIP])
+        return visible(_cut(v))
     return ""
 
 
@@ -132,7 +138,7 @@ def body_of(tool_name: str, ti: dict, data: dict) -> Tuple[str, List[dict]]:
     cmd = ti.get("command")
     if isinstance(cmd, str):                       # Bash・PowerShell など = command は省かない
         desc = ti.get("description")
-        text = visible(desc[:SUMMARY_CLIP]) if isinstance(desc, str) else ""
+        text = visible(_cut(desc)) if isinstance(desc, str) else ""
         return text, [_block("command", cmd, mono=True)] + _rest(ti, ("command", "description"))
     path = ti.get("file_path")
     old, new = ti.get("old_string"), ti.get("new_string")
@@ -145,9 +151,11 @@ def body_of(tool_name: str, ti: dict, data: dict) -> Tuple[str, List[dict]]:
         lines = content.splitlines(keepends=True)
         head = "".join(lines[:WRITE_HEAD_LINES])
         if len(lines) > WRITE_HEAD_LINES:
-            label: Any = {"ja": f"content (頭の {WRITE_HEAD_LINES} 行・全 {len(lines)} 行・続きは端末で)",
-                          "en": f"content (first {WRITE_HEAD_LINES} of {len(lines)} lines; "
-                                "the rest in the terminal)"}
+            ja, en = f"頭の {WRITE_HEAD_LINES} 行", f"first {WRITE_HEAD_LINES} of {len(lines)} lines"
+            if len(head) > TEXT_CLIP:                  # 40 行が 6,000 字を超える = 字でも切った事を見出しに書く
+                ja, en = f"{ja}の先頭 {TEXT_CLIP} 字", f"first {TEXT_CLIP} chars of the {en}"
+            label: Any = {"ja": f"content ({ja}・全 {len(lines)} 行・続きは端末で)",
+                          "en": f"content ({en}; the rest in the terminal)"}
             content_block = _block(label, head[:TEXT_CLIP] + "\n…", mono=True)
         else:
             content_block = _clip_block("content", head, TEXT_CLIP)
