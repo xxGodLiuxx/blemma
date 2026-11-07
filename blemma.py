@@ -175,8 +175,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                "Arguments after -- are passed unchanged to Claude Code.\n"
                "在処の記録 (board/state/run.json) の板が認証付きの照会に答えれば、その板を再利用します。\n"
                "Reuse the board in board/state/run.json when it answers an authenticated check.\n"
-               "画面の寸法が取得できない時は既定のブラウザで開きます (位置の指定で小窓を使えます)。\n"
-               "Use the default browser if display geometry is unavailable (set a position for app mode).")
+               "画面の寸法が取得できない時は既定のブラウザで開きます (位置の指定で小窓を使えます・画面の無い Linux では開けないので --print-only を)。\n"
+               "Use the default browser if display geometry is unavailable (set a position for app mode; a Linux box without a display cannot open it: use --print-only).")
     parser.add_argument("-h", "--help", action="help", help="使い方を表示\nShow this help")
     parser.add_argument("--demo", action="store_true", help="個人の設定・MCP を混ぜない\nUse project/local settings and only BLEMMA MCP")
     mode = parser.add_mutually_exclusive_group()
