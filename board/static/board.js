@@ -289,8 +289,12 @@
       viewDocument.querySelectorAll("#opts .btn, #fixed-zone .btn, #term-zone .btn"),
       function (b) { return !b.disabled; });
     renderFan(m);
+    /* 光の印と滞留の縁を外してから手放す = 作り直す釦は木ごと消えるが、常設の釦 (「▼ 続き」・取り消す) は残る。null にする
+       だけだと、外す側 (bumpGen・frame) が空振りし、次の札で動かない偽の光と本物の光が 2 つ点く (光が「▼ 続き」に居る時に
+       札が替わると、それを待っていた人の 1 押しが、本物の光 = 先頭の許可に当たる)・次の猶予の「取り消す」が満ちかけて見える */
+    if (S.scanEl) S.scanEl.classList.remove("scan");
     S.scanEl = null;
-    S.fillEl = null;
+    setFill(null, 0);
     if (sameScreen && focusedKey && S.btns[focusedKey] && !S.btns[focusedKey].disabled) {
       focusOn(S.btns[focusedKey]);
     }

@@ -3467,3 +3467,111 @@ setTimeout(function () {
 }, 20);
 """)
     assert out == {"busy": False, "sent": 2}
+
+
+def test_scan_mark_on_more_does_not_survive_a_card_change(tmp_path, clock):
+    """長い札 A で走査の光が「▼ 続き」(常設の釦・走査の列の末尾) に来た瞬間に札 B が来る (A の時間切れ・端末や別の頁の
+    答え) と、描き直しは光の印 (.scan) を外さずに手放していた = 「▼ 続き」は光ったまま残り、静かな間の後に本物の光が
+    先頭 (許可) から回る (2 巡目の反証の再現 = 700 ms 後の .scan は ["more", "allow_once"])。「▼ 続き」を待っていた人の
+    1 押しは本物の光 = 許可に当たる。描き直しは印を外してから手放す = 静かな間は光が無く、その後は allow_once だけ。"""
+    a = _card(clock)
+    b = _card(clock)
+    out = page(tmp_path, r"""
+function lit(c) { return c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; }); }
+const c = await P.boot({ query: "?mode=small&lang=ja&scan=0.5" });
+c.$("copy").scrollHeight = 900; c.$("copy").clientHeight = 180;   /* 長い本文 = 「▼ 続き」が走査の列の末尾に入る */
+c.show(A);
+await c.run(600);
+let waited = 0;
+while (waited < 10000 && c.S.scanEl !== c.$("more")) { await c.run(16); waited += 16; }
+const r = { ids: A.id !== B.id, onMore: c.S.scanEl === c.$("more"), before: lit(c) };
+c.show(B);                                           /* 光が「▼ 続き」に居る瞬間に、別の長い札 */
+r.moreShown = !c.$("more").hidden;
+await c.run(100);
+r.at100 = lit(c);                                    /* 静かな間 (0.5 秒) の内 */
+await c.run(600);
+r.at700 = lit(c);
+let most = r.at700.length;
+for (let t = 700; t < 3000; t += 16) { await c.run(16); most = Math.max(most, lit(c).length); }
+r.most = most;                                       /* 走査が列を 1 周する間に、同時に点いた光の数 */
+console.log(JSON.stringify(r));
+""", A=a, B=b)
+    assert out["ids"] and out["onMore"] and out["before"] == ["more"] and out["moreShown"], out
+    assert out["at100"] == [] and out["at700"] == ["allow_once"], out
+    assert out["most"] == 1, out
+
+
+def test_undo_fill_does_not_carry_to_the_next_grace(tmp_path, clock):
+    """取り消しを途中まで見つめた (1 秒の滞留の半分) まま猶予が終わり次の札へ替わると、「取り消す」(常設の釦) の縁の満ち
+    (--p) が残り、次の猶予の「取り消す」が最初から半分満ちて見えた (2 巡目の反証の再現 = 0.48 のまま)。描き直しは縁を 0 へ
+    戻してから手放す (大きな板・扇の両方)。"""
+    a = _card(clock)
+    b = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const mode of ["large", "small"]) {
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja&dwell=1" });
+  c.doc().layout = function (e) {
+    if (e.id === "undo-btn") return { left: 0, top: 0, width: 600, height: 120, z: 31 };
+    if (e.id === "undo-zone") return { left: 0, top: 0, width: 600, height: 120, z: 30 };
+    return null;
+  };
+  const away = function () { c.pointer(400, 400); };
+  const onUndo = function () { c.pointer(50, 50); };
+  c.show(A);
+  await c.run(600, away);
+  await c.key("1", "Digit1");                        /* 許可 (今回) を送る */
+  c.show(deciding(A));                               /* 猶予の内 = 取り消しが出る */
+  await c.run(600, away);
+  await c.run(500, onUndo);                          /* 取り消しを 0.5 秒見つめる (1 秒の滞留の半分) */
+  const r = { pMid: c.$("undo-btn").style["--p"] };
+  c.show(B, ended(A, c.me()));                       /* 猶予が終わり、次の札 B */
+  await c.run(600, away);
+  r.pHidden = c.$("undo-btn").style["--p"];
+  await c.key("1", "Digit1");                        /* B に答える */
+  c.show(deciding(B));                               /* 次の猶予 */
+  await c.run(20, away);
+  r.pNext = c.$("undo-btn").style["--p"];
+  r.zoneShown = !c.$("undo-zone").hidden;
+  r.sent = choices(c).map(function (x) { return x.type; });
+  out[mode] = r;
+}
+console.log(JSON.stringify(out));
+""", A=a, B=b)
+    for mode in ("large", "small"):
+        r = out[mode]
+        assert 0.3 < float(r["pMid"]) < 1, out                  # 前提 = 取り消しの縁が途中まで満ちた (押してはいない)
+        assert r["pHidden"] == "0" and r["pNext"] == "0", out
+        assert r["zoneShown"] and r["sent"] == ["allow_once", "allow_once"], out
+
+
+def test_undo_scan_mark_does_not_survive_a_screen_change(tmp_path, clock):
+    """猶予の内に走査の光が「取り消す」(常設の釦) に点いた後、別の頁が取り消して選ぶ画面へ戻ると、隠れた「取り消す」に光の
+    印が残り、次の猶予では押せる (0.4 秒) より前から光って見えた (2 巡目の反証の再現 = 戻った画面の .scan は
+    ["allow_once", "undo"]・次の猶予の 20 ms 後に光る)。押しは間で落ちるので安全側だが、表示と状態が食い違う。
+    描き直しは印を外してから手放す。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+const c = await P.boot({ query: "?mode=small&lang=ja&scan=0.5" });
+c.show(A);
+await c.run(600);
+await c.key("1", "Digit1");                          /* 許可 (今回) を送る */
+c.show(deciding(A));
+let w = 0;
+while (w < 3000 && !c.$("undo-btn").classList.contains("scan")) { await c.run(8); w += 8; }
+const r = { undoLit: c.$("undo-btn").classList.contains("scan") };
+c.show(reshown(A));                                  /* 別の頁が取り消した = 選ぶ画面へ戻る */
+await c.run(600);
+r.shownLit = c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; });
+r.undoMarkWhileHidden = c.$("undo-btn").classList.contains("scan");
+await c.key("1", "Digit1");                          /* もう一度答える */
+c.show(deciding(Object.assign({}, A, { view_seq: A.view_seq + 1 })));
+await c.run(20);
+r.undoLitAt20 = c.$("undo-btn").classList.contains("scan");   /* 押せる (0.4 秒) より前に光って見えるか */
+await c.key(" ", "Space");                           /* その間のスイッチ = 取り消しにならない (安全側) */
+r.posts = c.posts();
+console.log(JSON.stringify(r));
+""", A=a)
+    assert out["undoLit"], out                                     # 前提 = 光が「取り消す」に来た
+    assert out["shownLit"] == ["allow_once"] and out["undoMarkWhileHidden"] is False, out
+    assert out["undoLitAt20"] is False and out["posts"] == ["/answer", "/answer"], out
