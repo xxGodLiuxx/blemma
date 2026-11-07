@@ -587,7 +587,12 @@ class Clients:
         except (ValueError, AttributeError, RecursionError):
             pid = None
         if type(pid) is int and 0 < pid < 2 ** 31:
-            return not pid_alive(pid)
+            if not pid_alive(pid):
+                return True
+            # Windows = 持ち主が開いたままの錠は OS が消させない (共有の決まり) ので、生きている pid の錠でも LOCK_STALE を
+            # 過ぎたら回収を試みる = kill された回の pid を別の process が使い回しても 1 分で外れる (生きている持ち主の錠は
+            # 消せずに「在る錠」として待つ)。POSIX は pid の生死だけ = 消せてしまうので、古さでは奪わない
+            return os.name == "nt" and age > LOCK_STALE
         return age > LOCK_STALE
 
     @staticmethod

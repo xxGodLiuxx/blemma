@@ -1410,9 +1410,20 @@ def test_a_live_holders_roster_lock_is_never_broken_but_a_dead_holders_lock_is(i
     record = json.dumps({"pid": os.getpid(), "at": "2026-11-08T00:00:00+09:00"})
     lock.write_text(record, encoding="utf-8")                                   # 生きている pid・誰も開いていない錠
     os.utime(lock, (old, old))
-    with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
-        a.join()
-    assert a.me is None and lock.read_text(encoding="utf-8") == record
+    if os.name == "nt":
+        # Windows = 持ち主が開いたままの錠は OS が消させないので、生きている pid でも 60 秒を過ぎた錠は回収する
+        # (kill された回の pid の使い回しで止まり続けない)。若い錠 (60 秒の内) は pid が生きていれば奪わない。
+        b = L.Clients(state)
+        b.join()
+        assert b.me is not None and b.me.exists() and not lock.exists()
+        lock.write_text(record, encoding="utf-8")
+        with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+            L.Clients(state).join()
+        assert lock.read_text(encoding="utf-8") == record
+    else:
+        with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+            a.join()
+        assert a.me is None and lock.read_text(encoding="utf-8") == record
     lock.unlink()
     monkeypatch.setattr(L, "LOCK_WAIT", 3.0)
     with roster_lock_held(state, "die") as dead:
