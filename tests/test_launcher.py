@@ -608,6 +608,35 @@ def test_print_only_refuses_to_write_a_mangled_command(isolated_repo, sessions, 
     assert len(sessions) == 2 and all(session.process.poll() is not None for session in sessions)
 
 
+def test_print_only_writes_undecodable_bytes_back_through_surrogateescape(isolated_repo, sessions, monkeypatch):
+    """POSIX の UTF-8 mode や C の locale では、stdout の errors が surrogateescape = 読めない bytes を含む路や引数 (Python では
+    lone surrogate) も元の bytes のまま書ける。--print-only はそれを断らずに、元の bytes で出す (UltraReview の件 4 = 確かめは
+    harden_streams が replace に替える前の handler で・? に替えた行も出さない)。strict の出力先 (cp1252 の pipe など) で
+    書けない字 (日本語) は、今までどおり理由つきで止まる。"""
+    import io
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "_which", lambda name: "claude.exe" if name == "claude" else None)
+    monkeypatch.setattr(L.webbrowser, "open", lambda url: True)
+
+    def print_only(prompt, encoding, errors):
+        out, err = io.BytesIO(), io.BytesIO()
+        monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(out, encoding=encoding, errors=errors, write_through=True))
+        monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(err, encoding=encoding, errors="strict", write_through=True))
+        code = L.main(["--large", "--print-only", "--port", str(unused_port()), "--", prompt])
+        return code, out.getvalue(), err.getvalue()
+
+    code, out, err = print_only("caf\udce9 の案", "utf-8", "surrogateescape")    # UTF-8 として読めなかった byte 0xE9
+    assert code == 0 and err == b"", err
+    assert len(out.splitlines()) == 1 and b"caf\xe9" + " の案".encode("utf-8") in out and b"caf?" not in out
+    assert sys.stdout.errors == "replace"                       # 書いた後は案内の行の replace に戻す
+    # 同じ stream で 2 度目 = 控えは最初の 1 度だけ (戻した replace を元の errors と取り違えない)
+    assert L.main(["--large", "--print-only", "--port", str(unused_port()), "--", "caf\udce9 の案"]) == 0
+    assert sys.stdout.buffer.getvalue().count(b"caf\xe9") == 2
+    code, out, err = print_only("日本語の案を 3 つ", "cp1252", "strict")
+    assert code == 1 and out == b"" and len(err.splitlines()) == 1 and b"print it to the console" in err
+    assert len(sessions) == 3 and all(session.process.poll() is not None for session in sessions)
+
+
 def test_real_server_start_reuse_and_stop(isolated_repo, sessions, monkeypatch):
     # A bogus proxy must not intercept even the launcher's readiness check.
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")

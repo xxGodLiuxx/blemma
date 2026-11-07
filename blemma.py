@@ -975,14 +975,26 @@ def launch(args: argparse.Namespace, root: Path) -> int:
         if args.print_only:
             # 命令の行だけは書けない字を ? に替えない (harden_streams の replace は案内の行のため) = pipe や file へ
             # 向けた時 (Windows は ANSI の code page) に、黙って違う頼み・違う路の命令を出さず、理由つきで止まる。
+            # 確かめと書き出しは、出力先の元の errors で行う = surrogateescape (POSIX の UTF-8 mode・C の locale) の出力先は、
+            # 読めない bytes を含む路と引数も元の bytes のまま書ける (UltraReview の件 4)。? などに替える handler は strict で。
             line = format_command(command)
+            stream = sys.stdout
+            original = getattr(stream, ORIGINAL_ERRORS, None) or getattr(stream, "errors", None)
+            errors = "surrogateescape" if original == "surrogateescape" else "strict"
             try:
-                line.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+                line.encode(getattr(stream, "encoding", None) or "utf-8", errors)
             except UnicodeEncodeError:
                 raise LaunchError("この 1 行は今の出力先の文字コードで書けません。console に表示して写してください / "
                                   "The command line cannot be encoded for this output; "
                                   "print it to the console and copy it") from None
-            print(line)
+            try:
+                stream.reconfigure(errors=errors)       # 確かめた handler のまま書く (replace の ? を通さない)
+            except (AttributeError, ValueError, OSError):
+                pass
+            try:
+                print(line, file=stream)
+            finally:
+                harden_streams(stream)                  # 後の案内の行は replace に戻す
             result = 0
         else:
             result = run_claude(command)
@@ -992,14 +1004,24 @@ def launch(args: argparse.Namespace, root: Path) -> int:
         clients.leave(session, keep=completed and args.keep_board)
 
 
+ORIGINAL_ERRORS = "_blemma_errors"   # harden_streams が replace に替える前の errors を控える stream の属性
+
+
 def harden_streams(*streams: Any) -> None:
     """案内の行 (日本語を含む) を、console の文字コードが書けない時 (英語の Windows の cp1252 など) も落とさない = 書けない字は
-    ? に替える。文字コードは変えない (日本語の console はそのまま読める)。Replace unencodable characters instead of raising."""
+    ? に替える。文字コードは変えない (日本語の console はそのまま読める)。替える前の errors は stream に控える (--print-only の
+    命令の行は、元の errors で確かめて書く)。Replace unencodable characters instead of raising."""
     for stream in streams or (sys.stdout, sys.stderr):
         try:
+            errors = stream.errors
             stream.reconfigure(errors="replace")
         except (AttributeError, ValueError, OSError):
-            pass
+            continue
+        if not hasattr(stream, ORIGINAL_ERRORS):   # 2 度目以後に控えると、替えた後の replace を控えてしまう
+            try:
+                setattr(stream, ORIGINAL_ERRORS, errors)
+            except AttributeError:
+                pass
 
 
 def main(argv: list[str] | None = None) -> int:
