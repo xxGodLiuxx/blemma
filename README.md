@@ -8,7 +8,7 @@ Claude Code 本体は改造しません。公式の仕掛け (hooks) と MCP の
 
 ![左: 端末の小さな確認。右: 画面の隅の扇](docs/img/ohgi.png)
 
-動画 (3 分): 準備中 (提出の時に、ここへリンクを置きます)
+動画 (2 分 31 秒・YouTube): https://youtu.be/Ovf8C1icSXg
 
 BLEMMA はギリシャ語の βλέμμα (まなざし・一瞥) です。扇 (おうぎ・OhGi) は、画面の隅の小さな窓に選択肢を折り扇の羽根として開く見え方の名前です。[Built with Claude: Japan 2026](https://cerebralvalley.ai/e/built-with-claude-japan2026) のために作りました。
 
@@ -24,7 +24,7 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 
 ## 5 分で試す
 
-必要なもの: Python 3.10 以上 (試験は 3.10 と 3.13 で通しています)・ログイン済みの Claude Code (`claude` が端末から打てること)・Chrome か Edge (小さな窓に使います。無ければ既定のブラウザで開きます)。扇はマウスで試せます。Windows は `python` か `py`、mac / Linux は `python3` と打ちます (以下の `python` は読み替えてください)。
+必要なもの: Python 3.10 以上 (試験は 3.10 と 3.13 で通しています)・ログイン済みの Claude Code (`claude` が端末から打てること)・Chrome か Edge (小さな窓に使います。無い時と、mac / Linux で Python の tkinter が無い時は、既定のブラウザのタブで開きます)。扇はマウスで試せます。Windows は `python` か `py`、mac / Linux は `python3` と打ちます (以下の `python` は読み替えてください)。
 
 1. 取得します (zip で展開した時は、出来たフォルダー (`blemma-main` など) が次の手順の `blemma` に当たります)。
 
@@ -41,7 +41,7 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 
    **こう見えれば成功:** 画面の右下に小さな窓が開き、扇が横向きに閉じて控えます。ポインタを載せると状態の字が出ます。同じ端末で Claude Code が起き、初回はフォルダーの信頼の確認が端末に出るので、そこで答えます。通常のブラウザで開いた場合、窓の大きさは変わりません。
 
-3. Claude に「次の一手を 3 つ、ask_board で出して」と頼みます (`ask_board` は同梱の道具の名前です。そのまま打てば通じます)。Claude Code へ引数を渡す時は、`python blemma.py -- --continue` のように `--` の後ろに書きます。
+3. Claude に「次の一手を 3 つ、ask_board で出して」と頼みます (`ask_board` は同梱の道具の名前です。そのまま打てば通じます)。Claude Code へ引数を渡す時は、`python blemma.py -- --continue` のように `--` の後ろに書きます (`--settings` だけは BLEMMA が使うので渡せません)。
 
    **こう見えれば成功:** 窓が元の位置と大きさ (既定 640×720) に戻り、上に扇、下の和紙に問いが出ます。羽根には 一 二 三… が出ます (「ここで止める」が無ければ自動で足されます)。ポインタを羽根に載せると、全文が扇の内側の帯に出ます。読むだけでは決まりません。答えたい羽根をダブルクリックするか、1 回押してから同じ羽根を 1.5 秒以内にもう 1 回押してください。帯が「取り消す (3)」に変わり、3 秒後に端末へ答えが返ります。猶予の間は、その帯を 1 回押せば取り消せます。
 
@@ -71,8 +71,8 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 | 扇に何も出ず、端末に確認が出た | 正常です。板が動いていない・窓を閉じた・待ち時間 (既定 5 分・扇の要の上に残りの時間) を過ぎた時は、いつもの確認に戻ります |
 | 権限の確認が扇に出ない | Claude Code の auto mode では権限の確認そのものが出ません。`blemma.py` は `--permission-mode default` (端末の帯に「manual mode on」) で起こします。帯が「auto mode on」なら、途中で mode を替えています |
 | 文字で答える問いや計画の承認が扇に出ない | 扇が答えるのは選ぶ問いだけです。自由記述と計画の承認は端末で答えます |
-| `blemma.py` が「claude が見つかりません」と出して終わった | `claude` が見つからないので、板も窓も開かずに止まりました。`claude` が動く端末で、もう一度 `python blemma.py` を実行します。別の端末で Claude Code を起こす時は、`python board/server.py` で板を起こします (頁が開き、その端末の Ctrl+C で止まります)。Claude Code を起こす端末で `python blemma.py --print-only` を実行し、表示された 1 行を打ちます |
-| 「板を起動できません (ポート・配置を確認)」と出る | その番号 (既定 8765) を他のものが使っています。`python <blemma を置いた所>/blemma.py --port 8766` のように別の番号で起こします。前に残した板が動いている時は、`python blemma.py --stop` で止めてから起こし直せます |
+| `blemma.py` が「claude が見つかりません」と出して終わった | `claude` が見つからないので、板も窓も開かずに止まりました (`claude` が shell の alias だけで動く端末でも、こう出ます。その時は次の手順を使います)。`claude` が動く端末で、もう一度 `python blemma.py` を実行します。別の端末で Claude Code を起こす時は、`python board/server.py` で板を起こします (頁が開き、その端末の Ctrl+C で止まります。開くのは大きなボタンの板 = `--large` と同じ見え方で、扇で使う時は、開いた頁の住所の `#t=` の前に `?mode=small` を足して開き直します)。Claude Code を起こす端末で `python blemma.py --print-only` を実行し、表示された 1 行を打ちます |
+| 「板を起動できません (ポート・配置を確認)」と出る | その番号 (既定 8765) を他のものが使っています。`python <blemma を置いた所>/blemma.py --port 8766` のように別の番号で起こします。前に残した板が動いている時は、`python blemma.py --stop` で止めてから起こし直せます。`board/state` を先に消していた時は、別の番号で起こすか、残った python の process を止めます |
 | 端末が止まって見える (行に「BLEMMA: 板 (ブラウザ) で答えを待っています」) | 扇が答えを待っています。扇で答えるか、右の親骨「戻」でいつもの確認に戻します。小窓が他の窓の裏に居る時は、手前に出してください。端末の Esc は作業ごと止めます |
 | 「板の起動が時間切れです」と出る | もう一度起こします (初回や、ウイルス対策の走査で起動が遅い時に出ます) |
 | 「起動処理に失敗しました (配置・権限を確認)」と出る | 書き込めるフォルダーに置いてください (`board/state/` に起動の記録などを書きます) |
@@ -80,8 +80,11 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 | 「頁の設定の名を確認してください: …」と出る | `--set` の鍵の打ち間違いです (例 `dwel` → `dwell`)。鍵の一覧は [`board/README.md`](board/README.md) にあります |
 | 「Python 3.10 以上で実行してください」と出る | 古い Python で起こしています。`python3 --version` (Windows は `py --version`) で版を確かめ、3.10 以上で起こします |
 | 「ブラウザを開けません」と出る | BLEMMA は、その PC でブラウザを開ける環境で使います。SSH の先・画面の無い Linux・WSL では確かめていません |
+| 「--settings は -- の後ろに渡せません」と出る | BLEMMA は自分の設定を `--settings` で渡します。hooks などは `.claude/settings.json` に書きます |
+| mac / Linux で、小窓でなく通常のタブで開いた | Python の tkinter が無く、画面の寸法が取れません。`python3 -c "import tkinter"` で確かめ、tk を入れる (配布元の手順で) か、`python3 blemma.py --window-position 1200,600` のように位置を渡すと小窓で開きます |
+| 小窓に ERR_UNSAFE_PORT と出る | その番号はブラウザが開きません (6000・6665〜6669・10080 など)。`--port 8766` のように別の番号で起こし直します |
 | 2 つ目の端末で起こしても、窓が増えない | 正常です。扇は 1 枚で、どの端末の札も同じ扇に出ます。扇が見当たらない時は、開いている板の頁を閉じてから起こし直します |
-| 窓に「板の server に繋がりません」と出る、または小窓が閉じた | 板との切断が 10 秒続くとアプリの小窓は閉じます。`blemma.py` を起こし直してください。その間の確認は端末に出ます |
+| 窓に「板の server に繋がりません」と出る、または小窓が閉じた | 板との切断が 10 秒続くとアプリの小窓は閉じます (頁を読み込む前に板が止まった時は残るので、手で閉じます)。`blemma.py` を起こし直してください。その間の確認は端末に出ます |
 | 作業を全部止めたい | 権限の確認の「作業を止める」か、端末の Esc です。質問の「この質問に答えない」と MCP の「この問い合わせを閉じる」は、その問いを閉じるだけです |
 
 ## 安心の 3 行
@@ -115,12 +118,13 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 | 待ちの合図 | `Notification` | 帯と縁で知らせる (扇の表示では札がある間と、その直後 1.5 秒は出さない) | 何も返さない |
 | 作業の状態 | `UserPromptSubmit`・`Stop` | 印 = 作業中・あなたの番・完了 | 何も返さない |
 
-- 設定は起動時に `--settings` と `--mcp-config` で渡すだけで、あなたの `settings.json` は書き換えません。書くのは repo の `board/state/` だけです (起動の記録・日ごとの数の記録・生成した設定 2 本・小窓専用のブラウザの profile・起こし方の名簿)。消す時は `board/state` ごと消して構いません。
+- 設定は起動時に `--settings` と `--mcp-config` で渡すだけで、あなたの `settings.json` は書き換えません。書くのは repo の `board/state/` だけです (起動の記録・日ごとの数の記録・生成した設定 2 本・小窓専用のブラウザの profile・起こし方の名簿)。消す時は、`python blemma.py --stop` で板を止めてから `board/state` ごと消して構いません (板が動いたまま消すと、`--stop` が板を見つけられません)。
 - `ask_board` は subagent の中からも扇に出ます (Claude Code v2.1.318 で確かめました)。subagent の名はカードに出ません (Claude Code がその情報を渡さないため)。
 - 板で 2 分を超えて考えても、答えは届きます。Claude Code は主の会話の MCP の呼び出しが 2 分を過ぎると裏の task へ移しますが、v2.1.319 では `ask_board` の答えを板で待つ間は移さず、答えを受けてから続きを書きます (2026-11-07 に 133 秒で確かめました。版を上げた時は確かめ直してください)。
 - 答えが無いまま待ち時間を過ぎた時、hook は判断を返さずに終わります。線と細目は [`docs/design.md`](docs/design.md) に書きました。
 - 扇に載るのは 1 画面で 1 つを選ぶ問いだけです。複数選択・2 問以上・7 択以上は、同じ窓の縦の一覧に切り替わります。羽根の外の「断る」は MCP の問いの補助のボタンです。
 - 手元で試した OS は Windows だけです。mac と Linux は確かめていません。mac / Linux で右下の小窓になるのは、画面の寸法が取れる時 (Python の tkinter がある時) です。取れない時は、既定のブラウザのタブで開きます。Windows で `--print-only` が表示する 1 行は、PowerShell 用の書き方です。
+- tkinter を入れられない時は `python3 blemma.py --window-position X,Y` (例 `1200,600`) で位置を渡すと、Chrome / Edge の小窓で開きます。
 - 提出版で直さずに残した制限は [`docs/design.md` §5.7](docs/design.md#57-知っていて残した制限) に並べました。
 - Windows の「常に手前」は `POST /window` → `board/window_win.py` → 標準ライブラリの `ctypes` で既存の小窓を固定します。触るのはその板の小窓 1 枚だけです (既定でないポートの板は、窓の名にポート番号が付きます)。対象の窓が見つからない時・固定に失敗した時と他の OS では、対応ブラウザの Document Picture-in-Picture を使います。
 - 11/7 の自動試験の記録は 597 本・skip 0。実ブラウザの試験も含みます。代用品に差し替えている経路と実機での確認範囲は [`docs/design.md` §7.3](docs/design.md#73-試験と検収) に記載しています。
@@ -153,13 +157,13 @@ MIT (see LICENSE). 扇の字体 Yuji Syuku は SIL Open Font License 1.1 で同�
 
 ## In short (EN)
 
-Demo video (3 min): coming soon (the link goes here at submission).
+Demo video (2:31, YouTube): https://youtu.be/Ovf8C1icSXg
 
 **BLEMMA** (Greek βλέμμα, "a glance") turns the moments when Claude Code stops to ask you into OhGi, a small folding fan you can check at a glance. Claude also offers the next step as choices. Permission prompts, Claude's own questions and MCP elicitations land on the same fan. Free text still goes to the terminal. Claude Code itself is not modified: BLEMMA uses only the official hooks and MCP elicitation.
 
 **Theme 2: "What should reach everyone, by right."** The wall is the operation wall: a small terminal prompt that wants arrow keys and Enter (an MCP form took 5 keystrokes in our measurement). The maker operates the PC with eye gaze and sends clicks through the OS gaze tools. Mouse input is the default; dwell, gaze scrolling, the pointer trail and switch scanning are off. Enable dwell in Settings or with `--set dwell=1` to press by looking for one second. Keep `dwell=0` when the OS sends clicks.
 
-**Try it in 5 minutes.** Python 3.10+ (tests pass on 3.10 and 3.13), a logged-in Claude Code, and Chrome or Edge. Clone the repo, run `cd blemma` and `python blemma.py` (`python3` on macOS and Linux), then ask Claude: "Offer three next steps with ask_board". The app window waits with a closed fan, then returns to its full size (640×720 by default), with the fan above the question on washi paper. Hover over a blade to read its full text on the inner band. Click once to select, then click the same blade again within 1.5 seconds to confirm; a double-click also works. The answer is sent after a 3-second undo window. Click the inner Undo band once to cancel. Use `--set click=single` for one-click confirmation or `--large` for the big-button board (it opens in a normal tab of your default browser).
+**Try it in 5 minutes.** Python 3.10+ (tests pass on 3.10 and 3.13), a logged-in Claude Code, and Chrome or Edge. Clone the repo, run `cd blemma` and `python blemma.py` (`python3` on macOS and Linux), then ask Claude: "Offer three next steps with ask_board". The app window waits with a closed fan, then returns to its full size (640×720 by default), with the fan above the question on washi paper. Hover over a blade to read its full text on the inner band. Click once to select, then click the same blade again within 1.5 seconds to confirm; a double-click also works. The answer is sent after a 3-second undo window. Click the inner Undo band once to cancel. Use `--set click=single` for one-click confirmation or `--large` for the big-button board (it opens in a normal tab of your default browser). On macOS/Linux without tkinter the app window falls back to a normal tab; pass `--window-position X,Y` to get the app window.
 
 **Safety.** Never auto-allows: only a human press returns an answer; timeouts and errors return no decision. Without the board you get the normal Claude Code prompt. The board listens on 127.0.0.1 only, with a per-launch token kept in a folder only the current user can read, logs only the choice, the time and counts, and never edits your `settings.json`. It is not meant for machines that several people are logged in to at once, and other programs running as the same user can read the token. If the board dies without cleaning up and another user's program takes the same port first, the hooks treat it as the board; shared machines are out of scope. The hooks and the bundled MCP server are Python that runs with your user's rights; you can read `hooks/` and `mcp/` before installing. BLEMMA starts Claude Code with `--permission-mode default`; in auto mode there is no permission prompt to show.
 
