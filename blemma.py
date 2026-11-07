@@ -32,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, parse_qsl, urlencode
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # -I・-P・PYTHONSAFEPATH=1 でも隣の hooks を読む
 from hooks._client import _Connection as _DeadlineConnection
 
 ROOT = Path(__file__).resolve().parent

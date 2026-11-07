@@ -406,6 +406,27 @@ def test_help_runs_without_starting_apps():
     assert "認証付きの照会に答えれば" in result.stdout and "answers an authenticated check" in result.stdout
 
 
+def test_help_runs_under_isolated_and_safepath_modes(tmp_path):
+    """script の dir を sys.path に置かない起こし方 (-I・3.11 からの -P と PYTHONSAFEPATH=1) でも、隣の hooks を読んで
+    --help まで届く (1 巡目 #2 = blemma.py だけが自分の dir を足さず、板も claude も起きる前に import で落ちた)。
+    -I は PYTHON* の環境変数を見ないので、どの形も環境変数を外し、-X utf8 で同じ文字コードにして比べる。"""
+    script = str(REPO / "blemma.py")
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
+
+    def help_of(*flags, **extra):
+        return subprocess.run([sys.executable, *flags, "-X", "utf8", "-B", script, "--help"], cwd=tmp_path,
+                              capture_output=True, encoding="utf-8", env={**env, **extra}, timeout=30)
+
+    plain = help_of()
+    assert plain.returncode == 0 and plain.stderr == "" and "Launch the board" in plain.stdout
+    runs = {"-I": help_of("-I")}
+    if sys.version_info >= (3, 11):                 # -P と PYTHONSAFEPATH は 3.11 から (3.10 は -I だけで確かめる)
+        runs["-P"] = help_of("-P")
+        runs["PYTHONSAFEPATH=1"] = help_of(PYTHONSAFEPATH="1")
+    for name, result in runs.items():
+        assert (result.returncode, result.stderr, result.stdout) == (0, "", plain.stdout), name
+
+
 def test_old_python_stops_before_the_board_and_window(tmp_path):
     """3.10 未満なら、ほかの import より前に日英 1 行ずつで止まる。版を 3.9 に差し替えて、blemma.py だけを置いた
     写しで走らせる (hooks も board も無い = 確かめが import の後ろにずれると ImportError で落ちる)。"""
