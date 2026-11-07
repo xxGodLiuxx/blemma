@@ -180,6 +180,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     option_mode = args.page_options.pop("mode", "small")
     args.mode = args.mode or (option_mode if option_mode in ("small", "large") else "small")
     args.claude_args = argv[split + 1:]
+    # Claude Code の --settings は値を 1 つだけ持ち、後に出た物が勝つ = -- の後ろに渡すと、生成した設定 (hooks 6 本と
+    # ask_board の許可) が丸ごと外れ、扇に札が来ないまま端末だけで動く。黙って効かなくせず断る。値は写さない (頼みの文を
+    # 含みうる)。判定は語の完全一致と --settings= の前置だけ = 頼みの文の 1 語や --setting-sources には当たらない。
+    if any(value == "--settings" or value.startswith("--settings=") for value in args.claude_args):
+        raise LaunchError("--settings は -- の後ろに渡せません (BLEMMA の設定と置き換わります)。"
+                          "hooks などは .claude/settings.json に書いてください / "
+                          "--settings cannot follow -- (it would replace BLEMMA's settings); "
+                          "put hooks in .claude/settings.json")
     return args
 
 

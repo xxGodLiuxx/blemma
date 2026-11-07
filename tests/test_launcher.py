@@ -335,6 +335,25 @@ def test_flags_and_passthrough(tmp_path, demo):
     assert defaults.window_position is None and defaults.claude_args == []
 
 
+@pytest.mark.parametrize("extra", [["--settings", "my.json"], ["--settings=my.json"], ["--settings", "{}"]])
+def test_settings_after_the_separator_is_refused(monkeypatch, capsys, extra):
+    """`--` の後ろの --settings は断る (2 巡目 i8)。Claude Code の --settings は後に出た物が勝つ = 渡すと生成した設定
+    (hooks 6 本と ask_board の許可) が丸ごと外れ、扇に札が来ないまま端末だけで動く。断る文は 1 行で、値は写さない。
+    --setting-sources (前が同じ別の旗) は今までどおり通す。"""
+    def unexpected(*args, **kwargs):
+        pytest.fail("--settings を断る時は何も起こさない")
+
+    monkeypatch.setattr(L, "launch", unexpected)
+    with pytest.raises(L.LaunchError, match="--settings"):
+        L.parse_args(["--large", "--", "--continue", *extra])
+    assert L.main(["--", "--continue", *extra]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and len(captured.err.splitlines()) == 1
+    assert "--settings" in captured.err and "my.json" not in captured.err and "{}" not in captured.err
+    args = L.parse_args(["--", "--setting-sources", "project,local", "--continue"])
+    assert args.claude_args == ["--setting-sources", "project,local", "--continue"]
+
+
 def test_geometry_env_and_argument_precedence(monkeypatch):
     monkeypatch.setenv("BLEMMA_WINDOW_SIZE", "640x400")
     monkeypatch.setenv("BLEMMA_WINDOW_POSITION", "-200,20")
