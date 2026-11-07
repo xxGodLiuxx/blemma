@@ -204,7 +204,7 @@
 
   function fromText(f) {
     if (!f) return "";
-    return [f.cwd, f.session, f.agent].filter(function (x) { return !!x; }).join(" · ");
+    return C.visibleText([f.cwd, f.session, f.agent].filter(function (x) { return !!x; }).join(" · "));   /* 出どころの行も見えない字を ⟨U+XXXX⟩ で見せる (最終デバッグ 1 巡目 #23 の積み残し) */
   }
 
   /* 本文の 1 節。Edit の変わった所には印を付ける (色だけに頼らない = 消す所は打ち消し線・足す所は下線) */

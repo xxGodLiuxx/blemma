@@ -4122,3 +4122,24 @@ console.log(JSON.stringify(out));
                         for g in (50, 150, 300)},
                        **{"later large": [{"type": "allow_once"}],
                           "later small&click=single": [{"type": "allow_once"}]}), out
+
+
+def test_the_origin_line_shows_hidden_characters(tmp_path, clock):
+    """出どころの行 (cwd・session・agent) も、見えない字 (書字方向の字・幅ゼロの字) を ⟨U+XXXX⟩ にして見せる
+    (最終デバッグ 1 巡目 #23 の積み残し = 頁の fromText だけが素のままで、MCP の agent の名で書字方向を返せた)。
+    ふつうの字はそのまま。"""
+    lim = replace(board_server.Limits(), wait_hold=0.0, pending_hold=0.0, viewer=None)
+    board = board_server.Board(lim, clock=clock)
+    origin = {"cwd": "repo" + chr(0x202E) + "x", "session": "abc123", "agent": "helper" + chr(0x200B)}
+    assert board.ask("permission", origin, dict(PERM_PAYLOAD))[0] == 200
+    perm = board.pending(-1)["card"]
+    out = page(tmp_path, r"""
+const c = await P.boot({ query: "?mode=small&lang=ja" });
+c.show(PERM);
+await c.run(500);
+console.log(JSON.stringify({ from: c.$("from").textContent }));
+""", PERM=perm)
+    line = out["from"]
+    assert "⟨U+202E⟩" in line and chr(0x202E) not in line, line
+    assert "⟨U+200B⟩" in line and chr(0x200B) not in line, line
+    assert "repo" in line and "helper" in line and "abc123" in line, line
