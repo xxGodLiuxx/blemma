@@ -610,6 +610,28 @@ async function closeCard(id) {
   await mouse({x:100,y:200});
   assert(await evaluate(`!document.querySelector('#trail').hidden && getComputedStyle(document.querySelector('#trail')).pointerEvents==='none'`));
   await screenshot('ohgi-idle');
+  // The terminal's habit: there "No" is the third line, reached by ↓↓Enter. With the key focus in the fan the same keys reach
+  // "don't ask again" (a rule saved for good). Enter / Space on the focus takes two presses there, like a number: one alone
+  // only selects it, and the same key again within 1.5 s confirms.
+  await call('Emulation.setDeviceMetricsOverride',{width:660,height:700,deviceScaleFactor:1,mobile:false});
+  await open();
+  const habit=(await api('/ask',{kind:'permission',from:{cwd:'repo'},payload:{head:'Bash',text:'git status',
+    suggestions:[{type:'addRules',rules:[{toolName:'Bash',ruleContent:'git status'}],behavior:'allow',destination:'localSettings'}],
+    blocks:[{label:'command',text:'git status',mono:true}]}})).id;
+  await until(`document.querySelectorAll('#fan [data-key="sugg:0"]').length === 1 && document.querySelector('#more').hidden`);
+  await click('#head');                          // The person clicks the fan window (not a blade) to type into it.
+  await key('ArrowDown'); await key('ArrowDown');
+  assert.equal(await evaluate(`document.activeElement.dataset.key`),'sugg:0','↓↓ reaches "don\'t ask again" in the fan');
+  await key('Enter');
+  await sleep(300);
+  assert.equal((await api('/pending')).card.state,'shown','One Enter on "don\'t ask again" only selects it');
+  assert(await evaluate(`document.querySelector('#fan [data-key="sugg:0"]').classList.contains('armed')`),'The blade shows it is selected');
+  await key('Enter');                            // The same key again confirms.
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  assert.deepEqual((await api('/pending')).card.choice,{type:'allow_always',suggestion:0},'Two Enters confirm it');
+  await key('Escape');                           // Undo, then answer at the terminal.
+  await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan > .btn').disabled`);
+  await closeCard(habit);
   assert.deepEqual(errors,[]);
   console.log('browser checks passed'); ws.close();
 })().catch(error=>{

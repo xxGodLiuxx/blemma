@@ -3248,6 +3248,86 @@ console.log(JSON.stringify(out));
                    "digitThenClick": {"sent": 0, "armed": ["sugg:0"]}, "digitThenClickThen": always0}, out
 
 
+def test_enter_or_space_on_the_key_focus_takes_two_presses_only_for_dont_ask_again(tmp_path, clock):
+    """焦点の上の Enter / Space で「次から訊かない」(settings に恒久で書く許可) を押す時も、数字と同じく 1.5 秒の内に
+    もう 1 回押して決める (最終デバッグ 1 巡目 #19 の再現 = 扇に焦点を持たせた後の、端末の「No」の癖の ↓↓Enter が、
+    扇では「次から訊かない」に当たり、1 押しで送った)。1 回目は選ぶだけ (選んだ印と案内)・1.5 秒を過ぎた 2 回目は
+    選び直し・決まった後は案内を残さない。2 回目は同じ入り方 (焦点の上の鍵) の時だけ決める = click で選んだ羽根を
+    Enter 1 回で、鍵で選んだ羽根を数字や click 1 回で決めない。今回の許可は焦点の Enter 1 回のまま。大きな板で Tab から
+    置いた焦点の Enter も同じ。"""
+    one = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("git status")))
+    out = page(tmp_path, r"""
+function armed(c) { return c.doc().querySelectorAll(".armed").map(function (b) { return b.dataset.key; }); }
+function told(c) { return c.$("status").textContent.indexOf("同じキー") >= 0; }
+async function reach(c, nav) {                     /* 鍵の焦点を 3 番目の羽根 (次から訊かない) へ */
+  if (nav === "Tab") { await c.key("Tab", "Tab"); c.btn("sugg:0").focus(); }
+  else { await c.key(nav, nav); await c.key(nav, nav); }
+}
+async function fresh(mode) {
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(ONE); await c.run(500);
+  return c;
+}
+const out = {};
+for (const [name, mode, nav, key, code] of [["rightEnter", "small", "ArrowRight", "Enter", "Enter"],
+    ["downEnter", "small", "ArrowDown", "Enter", "Enter"], ["rightSpace", "small", "ArrowRight", " ", "Space"],
+    ["tabEnter", "large", "Tab", "Enter", "Enter"]]) {
+  const r = {};
+  let c = await fresh(mode);
+  await reach(c, nav);
+  r.focus = c.active();
+  await c.key(key, code);                          /* 1 回目 = 選ぶだけ */
+  r.first = { sent: c.answers().length, armed: armed(c), told: told(c) };
+  await c.run(500);
+  await c.key(key, code);                          /* 0.5 秒後の 2 回目 = 決まる */
+  r.second = choices(c);
+  c.show(deciding(ONE, { type: "allow_always", suggestion: 0 })); await c.run(300);
+  r.after = c.$("status").textContent;
+  c = await fresh(mode);
+  await reach(c, nav);
+  await c.key(key, code);
+  await c.run(1600);                               /* 1.5 秒を過ぎた 2 回目 = 選び直し */
+  await c.key(key, code);
+  r.lapsed = { sent: c.answers().length, armed: armed(c) };
+  out[name] = r;
+}
+for (const gap of [100, 600]) {
+  const c = await fresh("small");
+  await c.click(c.btn("sugg:0"));                  /* click で選ぶ (羽根に焦点も来る) */
+  await c.run(gap);
+  await c.key("Enter", "Enter");                   /* click の 2 回目にしない = 鍵の 1 回目として選び直す */
+  out["click" + gap] = { sent: c.answers().length, armed: armed(c), by: c.S.armBy };
+}
+let c = await fresh("small");
+await c.key("ArrowRight", "ArrowRight");           /* 焦点は 2 番目の羽根 (許可 今回) */
+await c.key("Enter", "Enter");
+out.once = choices(c);
+c = await fresh("small");
+await c.key("2", "Digit2");                        /* 数字の 1 回目 (前からの形) */
+out.digit = { sent: c.answers().length, armed: armed(c), by: c.S.armBy };
+c = await fresh("small");
+await reach(c, "ArrowRight");
+await c.key("Enter", "Enter");                     /* 鍵で選ぶ */
+await c.key("2", "Digit2");                        /* 数字 1 つでは決めない (数字の 1 回目として選び直す) */
+out.keyThenDigit = { sent: c.answers().length, armed: armed(c), by: c.S.armBy };
+c = await fresh("small");
+await reach(c, "ArrowRight");
+await c.key("Enter", "Enter");
+await c.run(200);
+await c.click(c.btn("sugg:0"));                    /* click 1 回でも決めない (click の 1 回目として選び直す) */
+out.keyThenClick = { sent: c.answers().length, armed: armed(c), by: c.S.armBy };
+console.log(JSON.stringify(out));
+""", ONE=one)
+    always = [{"type": "allow_always", "suggestion": 0}]
+    want = {"focus": "sugg:0", "first": {"sent": 0, "armed": ["sugg:0"], "told": True}, "second": always, "after": "",
+            "lapsed": {"sent": 0, "armed": ["sugg:0"]}}
+    picked = {"sent": 0, "armed": ["sugg:0"]}
+    assert out == {"rightEnter": want, "downEnter": want, "rightSpace": want, "tabEnter": want,
+                   "click100": dict(picked, by="key"), "click600": dict(picked, by="key"),
+                   "once": [{"type": "allow_once"}], "digit": dict(picked, by="digit"),
+                   "keyThenDigit": dict(picked, by="digit"), "keyThenClick": dict(picked, by="click")}, out
+
+
 def test_a_resuming_scan_keeps_the_quiet_after_the_window_got_the_focus(tmp_path, clock):
     """pointer が止まって走査が戻る時も、窓が焦点を得た後の静かな 1 こまは短くしない (外の目の 6 巡目の再現 = 焦点の
     0.5 秒後に pointer の止まりで走査が戻り、0.4 秒の鍵の間が終わった後に許可が光った)。"""
