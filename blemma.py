@@ -7,8 +7,8 @@ from __future__ import annotations
 import sys
 
 if sys.version_info < (3, 10):
-    # 板も窓も起こす前に止める。古い python でもこの行まで届くよう、file 全体を 3.9 の文法で書く
-    # (walrus・match をこの前に置かない)。版は tuple でも読める形で取る。
+    # 板も窓も起こす前に止める。古い python (3.7 から) でもこの行まで届くよう、file 全体を 3.7 の文法で書く
+    # (walrus・match・位置専用引数を置かない)。版は tuple でも読める形で取る。
     _VERSION = "%d.%d" % tuple(sys.version_info[:2])
     sys.stderr.write("BLEMMA: Python 3.10 以上で実行してください (今の版は %s)\n"
                      "BLEMMA: Python 3.10 or later is required (this is %s)\n" % (_VERSION, _VERSION))
@@ -766,7 +766,7 @@ def open_board(info: RunInfo, mode: str, size: tuple[int, int],
 
 def find_claude() -> str | None:
     names = ("claude", "claude.cmd", "claude.exe") if os.name == "nt" else ("claude",)
-    return next((found for name in names if (found := _which(name))), None)
+    return next(filter(None, map(_which, names)), None)   # 最初に見つかった物 (walrus を使わない = 3.7 の文法)
 
 
 def claude_command(executable: str | None, paths: tuple[Path, Path],

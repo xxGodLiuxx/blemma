@@ -40,11 +40,11 @@ def test_repo_packages_win_over_same_named_modules_later_on_the_path(tmp_path):
 
 def test_board_started_by_hand_stops_on_an_old_python(tmp_path):
     """板を手で起こした時 (`python board/server.py`) も、3.10 未満なら ほかの import より前に、起こし方と同じ
-    日英 1 行ずつで止まる。版を 3.9 に差し替えて、server.py だけを置いた写しで走らせる。"""
+    日英 1 行ずつで止まる。版を 3.7 に差し替えて、server.py だけを置いた写しで走らせる。"""
     import ast
     import shutil
     source = (ROOT / "board" / "server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, feature_version=(3, 9))     # 3.9 でも、構文の誤りにならずに確かめの行へ届く
+    tree = ast.parse(source, feature_version=(3, 7))     # 3.7 でも、構文の誤りにならずに確かめの行へ届く
     docstring, future, imported, check = tree.body[:4]
     assert isinstance(docstring, ast.Expr) and isinstance(future, ast.ImportFrom) and future.module == "__future__"
     assert isinstance(imported, ast.Import) and [alias.name for alias in imported.names] == ["sys"]
@@ -52,15 +52,15 @@ def test_board_started_by_hand_stops_on_an_old_python(tmp_path):
     copy = tmp_path / "写し"
     copy.mkdir()
     shutil.copy2(ROOT / "board" / "server.py", copy / "server.py")
-    code = ("import runpy, sys; sys.version_info = (3, 9, 6, 'final', 0); "
+    code = ("import runpy, sys; sys.version_info = (3, 7, 17, 'final', 0); "
             "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
     p = subprocess.run([sys.executable, "-B", "-c", code, str(copy / "server.py"), "--no-browser", "--port", "18899"],
                        cwd=copy, capture_output=True, encoding="utf-8",
                        env={**os.environ, "PYTHONIOENCODING": "utf-8"}, timeout=30)
     assert p.returncode == 1 and p.stdout == ""
     assert p.stderr.splitlines() == [
-        "BLEMMA: Python 3.10 以上で実行してください (今の版は 3.9)",
-        "BLEMMA: Python 3.10 or later is required (this is 3.9)",
+        "BLEMMA: Python 3.10 以上で実行してください (今の版は 3.7)",
+        "BLEMMA: Python 3.10 or later is required (this is 3.7)",
     ]
     assert sorted(path.name for path in copy.iterdir()) == ["server.py"]      # 置き場 (state) も作らない
 

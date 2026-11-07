@@ -428,10 +428,11 @@ def test_help_runs_under_isolated_and_safepath_modes(tmp_path):
 
 
 def test_old_python_stops_before_the_board_and_window(tmp_path):
-    """3.10 未満なら、ほかの import より前に日英 1 行ずつで止まる。版を 3.9 に差し替えて、blemma.py だけを置いた
-    写しで走らせる (hooks も board も無い = 確かめが import の後ろにずれると ImportError で落ちる)。"""
+    """3.10 未満なら、ほかの import より前に日英 1 行ずつで止まる。版を 3.7 に差し替えて、blemma.py だけを置いた
+    写しで走らせる (hooks も board も無い = 確かめが import の後ろにずれると ImportError で落ちる)。file 全体が
+    3.7 の文法で読める = 3.7〜3.9 で起こしても、構文の誤りにならずに案内まで届く (1 巡目 #35)。"""
     source = (REPO / "blemma.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, feature_version=(3, 9))   # 3.9 で起こしても、構文の誤りにならずに確かめの行へ届く
+    tree = ast.parse(source, feature_version=(3, 7))   # 3.7 で起こしても、構文の誤りにならずに確かめの行へ届く
     docstring, future, imported, check = tree.body[:4]
     assert isinstance(docstring, ast.Expr) and isinstance(future, ast.ImportFrom) and future.module == "__future__"
     assert isinstance(imported, ast.Import) and [alias.name for alias in imported.names] == ["sys"]
@@ -439,15 +440,15 @@ def test_old_python_stops_before_the_board_and_window(tmp_path):
     copy = tmp_path / "blemma 写し"
     copy.mkdir()
     shutil.copy2(REPO / "blemma.py", copy / "blemma.py")
-    code = ("import runpy, sys; sys.version_info = (3, 9, 6, 'final', 0); "
+    code = ("import runpy, sys; sys.version_info = (3, 7, 17, 'final', 0); "
             "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
     result = subprocess.run([sys.executable, "-B", "-c", code, str(copy / "blemma.py"), "--large", "--port",
                              str(unused_port()), "--", "日本語の頼み"], cwd=copy, capture_output=True,
                             encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"}, timeout=30)
     assert result.returncode == 1 and result.stdout == ""
     assert result.stderr.splitlines() == [
-        "BLEMMA: Python 3.10 以上で実行してください (今の版は 3.9)",
-        "BLEMMA: Python 3.10 or later is required (this is 3.9)",
+        "BLEMMA: Python 3.10 以上で実行してください (今の版は 3.7)",
+        "BLEMMA: Python 3.10 or later is required (this is 3.7)",
     ]
     assert sorted(path.name for path in copy.iterdir()) == ["blemma.py"]   # board/state も窓の profile も作らない
 

@@ -19,8 +19,8 @@ from __future__ import annotations
 import sys
 
 if sys.version_info < (3, 10):
-    # 手で起こした時も、板を起こす前に止める (blemma.py と同じ文)。古い python でもこの行まで届くよう、
-    # file 全体を 3.9 の文法で書く。
+    # 手で起こした時も、板を起こす前に止める (blemma.py と同じ文)。古い python (3.7 から) でもこの行まで届くよう、
+    # file 全体を 3.7 の文法で書く (walrus・match・位置専用引数を置かない)。
     _VERSION = "%d.%d" % tuple(sys.version_info[:2])
     sys.stderr.write("BLEMMA: Python 3.10 以上で実行してください (今の版は %s)\n"
                      "BLEMMA: Python 3.10 or later is required (this is %s)\n" % (_VERSION, _VERSION))
