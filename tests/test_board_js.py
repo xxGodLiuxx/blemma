@@ -3879,3 +3879,58 @@ console.log(JSON.stringify(out));
     assert out["pip"] == dict(kept, moved=True) and out["back"] == dict(kept, home=True), out
     assert out["newCard"] == {"marks": [], "pressed": ["false", "false"]}, out
     assert out["mcp"] == {"summary": "札: a, b", "sent": [{"type": "accept", "picks": [[0, 1]]}]}, out
+
+
+def test_a_double_click_on_close_does_not_press_the_card_button_that_comes_under_it(tmp_path, clock):
+    """「携帯で開く」・設定の板の「閉じる」をダブルクリックすると、2 回目の click (detail 2) は、閉じた後に pointer の下へ来た
+    札の釦に届く。閉じた直後の 0.4 秒は数えない (closeOverlay の bumpGen・37134be。最終デバッグ 1 巡目 #20 = 試験は Space の
+    2 打目だけで、click の経路が無かった)。大きな板と扇 (click=single)・間 50 / 150 / 300 ms、設定を下端まで送って閉じた所に
+    「作業を止める」が来る形 (大きな板の左下) も。扇では「携帯で開く」は見えない (CSS) ので設定だけ。対照 = 閉じて 0.6 秒より
+    後の click は今までどおり 1 回で送る。"""
+    perm = _card(clock)
+    out = page(tmp_path, r"""
+async function second(c, b) {                       /* ダブルクリックの 2 回目 = 押す → 焦点 → 離す → click (detail 2) */
+  const at = { target: b, clientX: 1, clientY: 1, screenX: 1, screenY: 1, button: 0, pointerType: "mouse", pointerId: 1 };
+  c.event("pointerdown", Object.assign({}, at, { buttons: 1 }));
+  b.focus();
+  c.event("pointerup", Object.assign({}, at, { buttons: 0 }));
+  c.event("click", { target: b, detail: 2 });
+  await P.settle();
+}
+const out = {};
+const cases = [["large", "phone-btn", "allow_once"], ["large", "gear-btn", "allow_once"], ["large", "gear-btn", "fixed"],
+               ["small&click=single", "gear-btn", "allow_once"]];
+for (const [mode, panel, hit] of cases) for (const gap of [50, 150, 300]) {
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(PERM);
+  await c.run(500);
+  await c.click(c.$(panel));                        /* 板を開く */
+  await c.run(500);
+  await c.click(c.$("panel-close"));                /* 1 回目 = 閉じる */
+  const closed = c.$("overlay").hidden;
+  await c.run(gap);
+  await second(c, c.btn(hit));                       /* 2 回目 = 閉じた後に pointer の下へ来た札の釦 */
+  await c.run(100);
+  out[[mode, panel, hit, gap].join(" ")] = { closed: closed, sent: choices(c) };
+}
+for (const mode of ["large", "small&click=single"]) {
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(PERM);
+  await c.run(500);
+  await c.click(c.$("gear-btn"));
+  await c.run(500);
+  await c.click(c.$("panel-close"));
+  await c.run(600);
+  await c.click(c.btn("allow_once"));                /* 対照 = 閉じて 0.6 秒後の click */
+  out["later " + mode] = choices(c);
+}
+console.log(JSON.stringify(out));
+""", PERM=perm)
+    nothing = {"closed": True, "sent": []}
+    assert out == dict({f"{m} {p} {h} {g}": nothing for m, p, h in (("large", "phone-btn", "allow_once"),
+                                                                       ("large", "gear-btn", "allow_once"),
+                                                                       ("large", "gear-btn", "fixed"),
+                                                                       ("small&click=single", "gear-btn", "allow_once"))
+                        for g in (50, 150, 300)},
+                       **{"later large": [{"type": "allow_once"}],
+                          "later small&click=single": [{"type": "allow_once"}]}), out
