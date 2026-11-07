@@ -3328,6 +3328,49 @@ console.log(JSON.stringify(out));
                    "keyThenDigit": dict(picked, by="digit"), "keyThenClick": dict(picked, by="click")}, out
 
 
+def test_enter_then_space_on_the_key_focus_does_not_confirm_dont_ask_again(tmp_path, clock):
+    """焦点の上の「次から訊かない」は、同じキーを 2 回押した時だけ決まる (外の目の 9 巡目の再現 = Enter を押して離し、
+    0.5 秒後の Space (逆の順も) で allow_always を送った。README の「同じキーをもう 1 回」と食い違っていた)。別のキーの
+    2 回目は決めずに選び直し (そのキーの 1 回目) = その後に同じキーをもう 1 回押すと決まる。扇でも大きな板でも同じ。
+    同じキー同士 (Enter → Enter・Space → Space) は今までどおり 2 回目で決まる。"""
+    one = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("git status")))
+    out = page(tmp_path, r"""
+function armed(c) { return c.doc().querySelectorAll(".armed").map(function (b) { return b.dataset.key; }); }
+function told(c) { return c.$("status").textContent.indexOf("同じキー") >= 0; }
+const KEYS = { Enter: ["Enter", "Enter"], Space: [" ", "Space"] };
+const out = {};
+for (const [mode, nav] of [["small", "ArrowRight"], ["large", "Tab"]]) {
+  for (const [first, second] of [["Enter", "Space"], ["Space", "Enter"], ["Enter", "Enter"], ["Space", "Space"]]) {
+    const c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+    c.show(ONE); await c.run(500);
+    if (nav === "Tab") { await c.key("Tab", "Tab"); c.btn("sugg:0").focus(); }
+    else { await c.key(nav, nav); await c.key(nav, nav); }   /* 鍵の焦点を「次から訊かない」へ */
+    const r = { focus: c.active() };
+    await c.key(KEYS[first][0], KEYS[first][1]);   /* 1 回目 = 選ぶだけ */
+    await c.run(500);
+    await c.key(KEYS[second][0], KEYS[second][1]); /* 0.5 秒後の 2 回目 */
+    r.second = { sent: choices(c), armed: armed(c) };
+    if (first !== second) {
+      r.told = told(c);                              /* 選び直した = 「同じキーをもう 1 回」の案内のまま */
+      await c.run(500);
+      await c.key(KEYS[second][0], KEYS[second][1]);   /* 選び直したキーをもう 1 回 = 決まる */
+      r.again = choices(c);
+    }
+    out[mode + ":" + first + ">" + second] = r;
+  }
+}
+console.log(JSON.stringify(out));
+""", ONE=one)
+    always = [{"type": "allow_always", "suggestion": 0}]
+    mixed = {"focus": "sugg:0", "second": {"sent": [], "armed": ["sugg:0"]}, "told": True, "again": always}
+    same = {"focus": "sugg:0", "second": {"sent": always, "armed": []}}
+    want = {}
+    for mode in ("small", "large"):
+        want.update({f"{mode}:Enter>Space": mixed, f"{mode}:Space>Enter": mixed,
+                     f"{mode}:Enter>Enter": same, f"{mode}:Space>Space": same})
+    assert out == want, out
+
+
 def test_a_resuming_scan_keeps_the_quiet_after_the_window_got_the_focus(tmp_path, clock):
     """pointer が止まって走査が戻る時も、窓が焦点を得た後の静かな 1 こまは短くしない (外の目の 6 巡目の再現 = 焦点の
     0.5 秒後に pointer の止まりで走査が戻り、0.4 秒の鍵の間が終わった後に許可が光った)。"""

@@ -1270,11 +1270,12 @@
     }
     if ((e.key === "Enter" || e.key === " ") && active && active.dataset.dwell) {
       e.preventDefault();
-      /* 焦点の上の Enter / Space も、「次から訊かない」だけは同じ入り方の 2 回で決める (数字と同じ・1 回目は選ぶだけ) =
+      /* 焦点の上の Enter / Space も、「次から訊かない」だけは同じキーの 2 回で決める (数字と同じ・1 回目は選ぶだけ) =
          扇に鍵の焦点を持たせたまま、端末の癖で打った ↓↓Enter (端末では「No」・扇では「次から訊かない」に当たる) が、恒久の
-         規則を書かない (最終デバッグ 1 巡目 #19)。大きな板で Tab から置いた焦点も同じ。今回の許可・拒否・止・戻は 1 回のまま */
+         規則を書かない (最終デバッグ 1 巡目 #19)。Enter の後の Space (逆も) では決めない = 別のキーを 1 回ずつで恒久の
+         許可を書かない (外の目の 9 巡目)。大きな板で Tab から置いた焦点も同じ。今回の許可・拒否・止・戻は 1 回のまま */
       var fk = active.dataset.key;
-      if (fk.indexOf("sugg:") !== 0 || armTwice(fk, "key")) press(fk, "key");
+      if (fk.indexOf("sugg:") !== 0 || armTwice(fk, "key", code)) press(fk, "key");
     }
   }
 
@@ -1551,12 +1552,13 @@
 
   /* 扇の選択肢 = 1 回目の click は選ぶだけ。同じ羽根をもう 1 回押すと決まる (ダブルクリックもこの形) */
   var ARM_MS = 1500;
-  function armChoice(b, now, by) {
+  function armChoice(b, now, by, code) {
     disarm();
     S.armKey = b.dataset.key;
     S.armBtn = b;
     S.armAt = now;
     S.armBy = by;                     /* 選んだ入り方 (click / digit / key) = 2 回目は同じ入り方の時だけ決める */
+    S.armCode = code || null;         /* 焦点の上の鍵で選んだ時の、押したキー (e.code || e.key) = 2 回目は同じキーの時だけ */
     b.classList.add("armed");
     spotlight(b);
     var t = $("fan-script-1");
@@ -1567,19 +1569,21 @@
   }
 
   /* 数字か、焦点の上の Enter / Space で「次から訊かない」を押した = 1 回目は選ぶだけ (羽根・釦に選んだ印・案内の文)、
-     同じ入り方の 2 回目 (1.5 秒の内) で決める (how = "digit" は同じ数字・"key" は焦点の上の鍵 = 数字で選んだ物を Enter で、
-     Enter で選んだ物を数字や click で決めない)。間に描き直し (新しい札・状態の変化・設定) が入ると選び直し (renderFan の
-     disarm)。押しを数えない間 (表示が替わった直後・窓が焦点を得た直後) の押しは、選ぶ 1 回目にも数えない (press と同じ間・
-     扇の 1 回目の click と同じ考え)。焦点の上の鍵は、名指しで札の中を進めた直後の間も数えない (press と同じ・名指しの数字は
-     数える)。戻り値 = 決める押しか (true の時だけ press へ渡す) */
-  function armTwice(key, how) {
+     同じ入り方の 2 回目 (1.5 秒の内) で決める (how = "digit" は同じ数字・"key" は焦点の上の同じキー = 数字で選んだ物を
+     Enter で、Enter で選んだ物を数字や click や Space で決めない。code = 押したキー (e.code || e.key・押したままの鍵の印と
+     同じ物) = 別のキーの 2 回目は、そのキーの 1 回目として選び直す・外の目の 9 巡目)。間に描き直し (新しい札・状態の変化・
+     設定) が入ると選び直し (renderFan の disarm)。押しを数えない間 (表示が替わった直後・窓が焦点を得た直後) の押しは、選ぶ
+     1 回目にも数えない (press と同じ間・扇の 1 回目の click と同じ考え)。焦点の上の鍵は、名指しで札の中を進めた直後の間も
+     数えない (press と同じ・名指しの数字は数える)。戻り値 = 決める押しか (true の時だけ press へ渡す) */
+  function armTwice(key, how, code) {
     var at = performance.now(), card = S.card, b = S.btns[key];
     if (!card || S.overlay || S.answering || card.state !== "shown" || !b || b.disabled) return false;
     if (at - S.genAt < SETTLE_MS || at - (S.focusAt || -1e9) < SETTLE_MS) return false;
     if (how === "key" && at - (S.stepAt || -1e9) < SETTLE_MS) return false;
-    var step = C.armStep(S.armKey && S.armBy === how ? { key: S.armKey, at: S.armAt } : null, key, at, ARM_MS);
+    var same = S.armKey && S.armBy === how && (how !== "key" || S.armCode === code);
+    var step = C.armStep(same ? { key: S.armKey, at: S.armAt } : null, key, at, ARM_MS);
     if (step.confirm) { disarm(); return true; }
-    armChoice(b, at, how);
+    armChoice(b, at, how, code);
     var kind = how === "digit" ? "digit_again" : "key_again";
     S.notice = L()[kind];
     S.noticeUntil = at + ARM_MS;
@@ -1596,6 +1600,7 @@
     S.armKey = null;
     S.armBtn = null;
     S.armBy = null;
+    S.armCode = null;
   }
 
   function copyPage(dir) {
