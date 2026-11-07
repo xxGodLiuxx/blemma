@@ -163,17 +163,24 @@ async function closeCard(id) {
   await closeCard(multi);
   await open('mode=small&lang=ja&dwell=0.3&scan=0.5');
   const dwell=await card(2);
-  // With gaze dwell on, holding a button (selecting text, dragging) and resting on a blade must never answer.
-  const heldBlade=await point('#fan [data-key="opt:0"]');
-  await mouse({x:5,y:5});
-  await mouse({x:5,y:5},'mousePressed');
+  // With gaze dwell on, holding a button (selecting text) and resting on a blade must never answer.
+  // The press starts on the question text. A press on the fan background grabs the window instead: while it drags, the
+  // page only moves the window and never sees the pointer reach the blade, so these checks would pass with no guard.
+  const textAt=await point('#question'), heldBlade=await point('#fan [data-key="opt:0"]');
+  assert(await evaluate(`(() => { const e=document.elementFromPoint(${textAt.x},${textAt.y});
+    return !!e?.closest('#question') && !e.closest('#fan-scroll, #closed, [data-key]'); })()`),'The press starts on the question text, not on the fan background');
+  await mouse(textAt);
+  await mouse(textAt,'mousePressed');
   await mouse({...heldBlade,buttons:1});
+  // Read at once: a pointer that rests for 1.5 s lets the scan light the blades, which shows the same description.
+  assert((await evaluate(`document.querySelector('#spot-desc').textContent`)).includes('既存の説明 1'),'The page sees the held pointer on the blade');
   await sleep(700);
   assert.equal((await api('/pending')).card.state,'shown','Dwell does not count while a button is held');
   await mouse(heldBlade,'mouseReleased');
   await sleep(700);
   assert.equal((await api('/pending')).card.state,'shown','After release the blade must be re-entered first');
-  await mouse({x:5,y:5}); await mouse(await point('#fan [data-key="opt:0"]'));
+  // Re-entering = off the blades for longer than the 150 ms a gaze may shake off a blade's edge.
+  await mouse({x:5,y:5}); await sleep(300); await mouse(heldBlade);
   await until(`!document.querySelector('#undo-zone').hidden`);
   await key(' ','Space');
   await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan > .btn').disabled`);
