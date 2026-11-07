@@ -5,7 +5,11 @@ __pycache__/
 *.log
 *.token
 .env
+.env.*
+*.pem
+*.key
 board/state/
+tests/.tmp-*/
 .claude/
 _work/
 *.bak

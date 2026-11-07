@@ -460,6 +460,35 @@ console.log(JSON.stringify({keys:m.options.map(o=>o.key), fits:core.fanEligible(
     assert "decline" in out["keys"] and out["fits"] is True
 
 
+def test_the_dont_ask_again_button_shows_hidden_characters(tmp_path):
+    """「次から訊かない」(恒久の許可を書く釦) の文も、見えない字 (書字方向の字・幅ゼロの字・制御の字) を ⟨U+XXXX⟩ にして見せる
+    (外部の点検の所見 = 本文は hook が直していたのに、頁がここで作る釦の文だけ素のままで、書字方向の字で別の規則に見せられた)。
+    規則・フォルダ・名の付いた文・形の分からない suggestion の全部で同じ。改行とタブ、ふつうの字はそのまま。"""
+    out = node(tmp_path, r"""
+const rlo = String.fromCharCode(0x202e), zw = String.fromCharCode(0x200b), bel = String.fromCharCode(7);
+const cards = [
+  { type: 'addRules', behavior: 'allow', destination: 'localSettings', rules: [{ toolName: 'Bash', ruleContent: 'git ' + rlo + 'sutats:*' }] },
+  { type: 'addDirectories', destination: 'session', directories: ['/tmp/a' + zw + 'b'] },
+  { type: 'setMode', mode: 'acceptEdits', label: 'ok' + bel },
+  { type: 'replaceRules', rules: [{ toolName: 'Read', ruleContent: 'x' + rlo }] },
+];
+const card = { kind: 'permission', payload: { head: 'Bash', text: 'git status', blocks: [], suggestions: cards.slice(0, 2) } };
+const m = core.buildScreen(card, core.newUi(card), 'ja');
+console.log(JSON.stringify({
+  labels: cards.map(function (s) { return core.suggestionLabel(s, 'ja'); }),
+  buttons: m.options.filter(function (o) { return o.key.indexOf('sugg:') === 0; }).map(function (o) { return o.label; }),
+  keep: core.visibleText('a\tb\nc 日本語'),
+}));
+""")
+    labels = out["labels"]
+    assert "⟨U+202E⟩" in labels[0] and chr(0x202E) not in labels[0], labels
+    assert "⟨U+200B⟩" in labels[1] and chr(0x200B) not in labels[1], labels
+    assert labels[2] == "ok⟨U+0007⟩", labels
+    assert "⟨U+202E⟩" in labels[3], labels
+    assert all("⟨U+" in b for b in out["buttons"]) and len(out["buttons"]) == 2, out["buttons"]
+    assert out["keep"] == "a\tb\nc 日本語"
+
+
 def test_script_and_arrow_keys_cannot_change_the_text_while_dwelling():
     """滞留の間は全文を数えている羽根に固定し、走査を止める (外部のレビュー 4 巡目の BLOCKER の反例)。"""
     src = (Path(__file__).resolve().parent.parent / "board" / "static" / "board.js").read_text(encoding="utf-8")

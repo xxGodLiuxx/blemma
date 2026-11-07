@@ -341,7 +341,33 @@
     return out;
   }
 
+  /* 見えない字 (制御の字・書字方向の字・幅ゼロの字など) を ⟨U+XXXX⟩ にして見せる。hooks/permission.py の visible と同じ種
+     (Cc・Cf・Cs・Zl・Zp・改行とタブは残す)。本文は hook の側で直してあるが、「次から訊かない」の文は頁がここで作る =
+     恒久の許可を書く釦の文が、書字方向の字で別の規則に見えないように、ここでも同じに直す */
+  var HIDDEN_RE = (function () {
+    try {
+      return new RegExp("[\\p{Cc}\\p{Cf}\\p{Cs}\\p{Zl}\\p{Zp}]", "gu");
+    } catch (e) {            /* 古い JS の処理系 = 主な見えない字の範囲だけ (番号で組む = source に見えない字を書かない) */
+      var ranges = [[0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x61c, 0x61c], [0x180e, 0x180e], [0x200b, 0x200f],
+                    [0x2028, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f], [0xfeff, 0xfeff], [0xfff9, 0xfffb], [0xd800, 0xdfff]];
+      var esc = function (n) { var h = n.toString(16); while (h.length < 4) h = "0" + h; return "\\" + "u" + h; };
+      return new RegExp("[" + ranges.map(function (r) { return esc(r[0]) + "-" + esc(r[1]); }).join("") + "]", "g");
+    }
+  })();
+  function visibleText(s) {
+    return String(s).replace(HIDDEN_RE, function (ch) {
+      if (ch === "\n" || ch === "\t") return ch;
+      var hex = ch.codePointAt(0).toString(16).toUpperCase();
+      while (hex.length < 4) hex = "0" + hex;
+      return "⟨U+" + hex + "⟩";
+    });
+  }
+
   function suggestionLabel(s, lang) {
+    return visibleText(suggestionText(s, lang));
+  }
+
+  function suggestionText(s, lang) {
     var L = I18N[lang];
     if (s && s.label !== undefined) return tx(s.label, lang);
     var dest = s.destination ? (L["dest_" + s.destination] || s.destination) : "";
@@ -826,7 +852,7 @@
   var api = {
     I18N: I18N, INPUTS: INPUTS, FIXED: FIXED, fmt: fmt, tx: tx, pickLang: pickLang,
     parseDwell: parseDwell, parseScan: parseScan, mmss: mmss, Dwell: Dwell, Scan: Scan,
-    reasonsOf: reasonsOf, visibleSuggestions: visibleSuggestions, suggestionLabel: suggestionLabel,
+    reasonsOf: reasonsOf, visibleSuggestions: visibleSuggestions, suggestionLabel: suggestionLabel, visibleText: visibleText,
     steps: steps, needConfirm: needConfirm, newUi: newUi, uiAfterUndo: uiAfterUndo,
     fanEligible: fanEligible, fanLayout: fanLayout, fanMark: fanMark, fanScript: fanScript, scrollDirection: scrollDirection, actionDescription: actionDescription,
     priorityState: priorityState, diffRange: diffRange,
