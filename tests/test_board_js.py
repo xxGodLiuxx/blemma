@@ -3678,3 +3678,33 @@ console.log(JSON.stringify(out));
     assert out["next"] == {"top": 0, "more": "▼ 続き (↓)"}, out
     assert out["afterIdle"] == 0 and out["large"] == 0, out
     assert out["nextQuestion"] == {"top": 0, "question": True}, out
+
+
+def test_answer_409_other_than_stale_does_not_say_choose_again(tmp_path, clock):
+    """/answer の 409 を全部「画面が古くなっていました。もう一度選んでください」で出していた = 期限と同時の押し (expired)・
+    終わった札 (ended)・頭に居ない札 (not_current)・ほかの頁が先に答えた札 (not_shown) でも「選び直せ」と出て、終わりの文
+    (時間切れ) を 5 秒隠し、次の札の上にも重なった (2 巡目 i21)。選び直せば通る時 (stale) だけ今の文を出し、ほかは黙って
+    写しを取り直す (取り直した表示と終わりの文に任せる・取り消しの 409 と同じ形)。"""
+    a = _card(clock)
+    b = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const error of ["expired", "ended", "not_current", "not_shown", "stale"]) {
+  const c = await P.boot({ query: "?mode=small&lang=ja", reply: function (p) {
+    return p === "/answer" ? { status: 409, data: { error: error } } : null; } });
+  c.show(A); await c.run(500);
+  await c.key("1", "Digit1");                        /* 許可 (今回) = 板が 409 で断る */
+  const r = { sent: c.answers().length, kicked: c.S.seq === -1 };
+  c.show(null, { last: { id: A.id, kind: "permission", end: "expired", from_deciding: false, ago: 0, answered_by: null } });
+  await c.run(100);
+  r.idle = c.$("status").textContent;                /* 札が終わった後の行 */
+  c.show(B); await c.run(100);
+  r.next = c.$("status").textContent;                /* 次の札の上の行 */
+  out[error] = r;
+}
+console.log(JSON.stringify(out));
+""", A=a, B=b)
+    for error in ("expired", "ended", "not_current", "not_shown"):
+        assert out[error] == {"sent": 1, "kicked": True, "idle": "時間切れ。端末で答えてください", "next": ""}, out
+    assert out["stale"]["sent"] == 1 and out["stale"]["kicked"] is True, out
+    assert out["stale"]["idle"] == "画面が古くなっていました。もう一度選んでください", out

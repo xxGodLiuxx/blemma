@@ -1091,7 +1091,11 @@
         if (r.status === 401) {
           S.problem = L().bad_token;
         } else {
-          showNotice(L().stale);
+          /* 「画面が古くなっていました。もう一度選んでください」は、選び直せば通る時だけ (409 の stale・400・分からない返り)。
+             期限と同時の押し (expired)・終わった札 (ended)・頭に居ない札 (not_current)・ほかの頁が先に答えた札 (not_shown) では
+             言わず、取り直した表示と終わりの文に任せる (doUndo と同じ形・次の札の上に前の札への文を重ねない) */
+          var err = r.status === 409 && r.data ? r.data.error : null;
+          if (!(r.status === 409 && err && err !== "stale")) showNotice(L().stale);
           kick();
         }
       }, function () {
