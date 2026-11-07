@@ -780,7 +780,7 @@ blemma/
 
 ### 7.3 試験と検収
 - **自動の試験**: hook の入出力の契約 (判断を返す 3 本・Notification・状態の 2 本)・server の状態と期限・token と Host・ask_board の JSON-RPC と任意の説明・頁の入力と設定・扇の形。Claude Code の代わりに stdin / JSON-RPC を送り、頁の代わりに HTTP で answer を打つ試験を含む。実ブラウザの描画は別の試験で通す (下)。
-- **11/7 の実行記録 = 644 passed・0 skipped** (Python 3.13.17 と 3.10.6 の両方・`python -m pytest tests -q`・全 597 件・試験の Python file 12 本 + `conftest.py`・同日の朝は 588 件 = 午後の公開の点検の直しとその外の目で 9 本を足した)。実ブラウザの試験も走る。Chromium の描画・node と組み込みの WebSocket が必要で、使えない環境ではその試験を skip する (skip を合格には数えない)。管理者権限の端末から起こした Chrome は、権限を下げた別の process として自分を起こし直す。メモリ上限つきの job の中ではその起こし直しが実らず、この試験が黙って skip になった (11/6 夜) = 試験の起動に `--do-not-de-elevate` を付けて、起こした process をそのまま browser にする。
+- **11/7 の実行記録 = 644 passed・0 skipped** (Python 3.13.17 と 3.10.6 の両方・`python -m pytest tests -q`・全 644 件・試験の Python file 12 本 + `conftest.py`・同日の朝は 588 件 = 午後の公開の点検の直しとその外の目で 9 本を足した)。実ブラウザの試験も走る。Chromium の描画・node と組み込みの WebSocket が必要で、使えない環境ではその試験を skip する (skip を合格には数えない)。管理者権限の端末から起こした Chrome は、権限を下げた別の process として自分を起こし直す。メモリ上限つきの job の中ではその起こし直しが実らず、この試験が黙って skip になった (11/6 夜) = 試験の起動に `--do-not-de-elevate` を付けて、起こした process をそのまま browser にする。
 
 | file | 本 | 見る物 |
 |---|---|---|
@@ -799,7 +799,7 @@ blemma/
 
 - **headless のブラウザでの確かめ** (自動の試験の外・11/4): 隔離した設定の Chrome / Edge で実の頁を動かす確かめ 23 件 + 13 件 (全部通った)。
 - **実機の検収** (11/6): 出荷の code と実の Claude Code v2.1.318 で 15 経路中 14 が PASS・残る 1 件は複数行の commit の suggestion の形の問題。異常の経路で勝手に続行した例は 0。検収で直した 4 件・扇を実物で見て直した所 = §16。
-- **自動の試験だけでは通らない経路**: `test_board_js.py` は `init()` と通信を差し替え、`test_pip_uses_visible_window_focus_and_retains_held_keys` も代用品の窓でイベントを渡すだけで、実の `requestWindow()` と描画は通らない。`browser_ohgi.cjs` にも PiP を開く操作は無く、ドラッグは `window.moveTo`、コピーは `navigator.clipboard.writeText`、待機の縮小は `window.matchMedia`・`window.resizeTo`・`window.moveTo` を代用品へ差し替える。したがって OS の実窓の移動・縮小・実クリップボードは未検証。`test_window_win.py` は窓と Win32 の呼び出しをすべて代用品へ替え (1 枚だけに当てる決まり・失敗の返し方・region の解放の順を見る)、実の `SetWindowPos`・`SetWindowRgn` による固定・透過は通さない。`test_pending_returns_at_once_when_the_viewer_closed` は `alive` を偽の切断判定に差し替え、実の接続の切断検知までは通さない。`test_launcher.py` は `monkeypatch` で Claude Code とブラウザの起動を差し替える。`page_dom.cjs` (頁を init() ごと回す代用品) は配置 (CSS) を持たず、当たり判定は試験が決める。焦点の外れ方・送りの知らせ・Enter と Space の既定の click の順は、実の Chromium 156 で測った物を前提として置く。597 件の合格だけで、これらの実機の検収まで済んだとはしない (残りは §10.4)。
+- **自動の試験だけでは通らない経路**: `test_board_js.py` は `init()` と通信を差し替え、`test_pip_uses_visible_window_focus_and_retains_held_keys` も代用品の窓でイベントを渡すだけで、実の `requestWindow()` と描画は通らない。`browser_ohgi.cjs` にも PiP を開く操作は無く、ドラッグは `window.moveTo`、コピーは `navigator.clipboard.writeText`、待機の縮小は `window.matchMedia`・`window.resizeTo`・`window.moveTo` を代用品へ差し替える。したがって OS の実窓の移動・縮小・実クリップボードは未検証。`test_window_win.py` は窓と Win32 の呼び出しをすべて代用品へ替え (1 枚だけに当てる決まり・失敗の返し方・region の解放の順を見る)、実の `SetWindowPos`・`SetWindowRgn` による固定・透過は通さない。`test_pending_returns_at_once_when_the_viewer_closed` は `alive` を偽の切断判定に差し替え、実の接続の切断検知までは通さない。`test_launcher.py` は `monkeypatch` で Claude Code とブラウザの起動を差し替える。`page_dom.cjs` (頁を init() ごと回す代用品) は配置 (CSS) を持たず、当たり判定は試験が決める。焦点の外れ方・送りの知らせ・Enter と Space の既定の click の順は、実の Chromium 156 で測った物を前提として置く。644 件の合格だけで、これらの実機の検収まで済んだとはしない (残りは §10.4)。
 - **皿ごとの検収** (11/3・11/4) は実の `claude` で、完成版の hook の出力を Claude Code に解釈させる (偽の答えで済ませない)。
 - **完成版の異常の経路の検収項目** (当初 11/5 の予定・11/6 の記録は §16): ①端末先着 (§3.7 の (a) か (b) の通りに閉じる) ②板先着 ③待機中の server 停止 ④2 件同時 (待ち行列と 2 件目の期限) ⑤2 画面からの競合 (大きな頁と小窓で同時に押す) ⑥スイッチの取り消し (1 鍵で猶予のうちに)。§3.5 の表の状態と頁の文に照らす。
 - **初日の確かめの成功を完成版の検収に代用しない** (初日は使い捨ての試し・§10.1)。
