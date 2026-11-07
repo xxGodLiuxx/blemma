@@ -233,6 +233,7 @@
     var screen = card ? [card.id, S.ui.step, S.ui.sub || ""].join("|") : "";
     var sameScreen = screen === S.drawnScreen;
     S.drawnScreen = screen;
+    S.layoutTops = null;              /* 描き直した = 押せる的の位置は次の updateSide で測り直す (替わった札は bumpGen が守る) */
     viewDocument.documentElement.lang = lang;
     $("kind").textContent = card ? T["kind_" + card.kind] : "";
     if (S.mode === "small" && card && card.kind === "elicitation" && card.payload.head === "blemma") {
@@ -855,6 +856,23 @@
       $("card").classList.remove("blink");
     }
     updateUndo(now);
+    /* 札を出している間に、上の帯 (待ち N 件)・状態の行 (繋がりません・知らせ・数字の案内) の出入りで押せる的が縦にずれた =
+       置いたままの pointer の下の釦が入れ替わる (小型の 7 択の列が「待ち 1 件」で 22px 下がり、上端に置いた pointer が上の
+       釦に載った・大きな板は繋ぎ直しで列が戻り、隙間の pointer が「次から訊かない」に載った・最終デバッグ 1 巡目 #4)。
+       送られた時と同じ守り (scrolled = 0.6 秒数えず、その後に届いた pointer の下の釦は入り直すまで数えない・線 3)。
+       比べるのは縦の位置だけ (横の変化と残りの秒の字では守らない)。札が替わった時は render が前の値を捨て、bumpGen が守る */
+    var tops = card && card.state === "shown" ? pressableTops() : null, was = S.layoutTops;
+    S.layoutTops = tops;
+    if (tops && was && tops.some(function (t, i) { return t !== null && was[i] !== null && Math.abs(t - was[i]) >= 0.5; })) scrolled();
+  }
+
+  /* 押せる的の入れ物の縦の位置 = 扇は扇の枠 (羽根・補助の釦・取り消しの帯)、それ以外は釦の列 (止・戻の釦はその下に続く)。
+     小型の「▼ 続き」は、見えている時だけ比べる (null = 隠れている。出入りそのものは何も動かさない)。扇の和紙そのものは
+     比べない (横向きの扇では、和紙だけが下がっても羽根は動かない = 見ている羽根の滞留を捨てない) */
+  function pressableTops() {
+    var more = $("more");
+    return [$(S.fan ? "fan-scroll" : "opts").getBoundingClientRect().top,
+            S.mode === "small" && !more.hidden ? more.getBoundingClientRect().top : null];
   }
 
   /* 板が止まったと見る時刻 (止まっていなければ null)。1 回の通信の失敗では決めない =

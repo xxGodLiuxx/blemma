@@ -632,6 +632,59 @@ async function closeCard(id) {
   await key('Escape');                           // Undo, then answer at the terminal.
   await until(`document.querySelector('#undo-zone').hidden && !document.querySelector('#fan > .btn').disabled`);
   await closeCard(habit);
+  // A line that comes or goes above the buttons ("1 waiting" in the header, "cannot reach the board" in the status line)
+  // moves the column under a pointer left where it was. Nobody looked at the button that comes under it: dwell must not
+  // press it (the same guard as a scrolled list). Moving out and back in counts again.
+  await call('Emulation.setDeviceMetricsOverride',{width:640,height:720,deviceScaleFactor:1,mobile:false});
+  await open('mode=small&lang=ja&dwell=1');
+  const seven=(await api('/ask',{kind:'elicitation',from:{cwd:'repo'},payload:{head:'blemma',text:'どれにしますか',fields:[{name:'choice',title:'どれにしますか',multi:false,required:true,
+    options:Array.from({length:7},(_,i)=>({label:'選択肢 '+(i+1),value:String(i+1)}))}]}})).id;
+  await until(`document.querySelectorAll('#opts .btn').length>=7 && ${READY}`);
+  await mouse({x:5,y:5});
+  const rowTop=await evaluate(`document.querySelector('#opts [data-key="opt:1"]').getBoundingClientRect().top`);
+  const edge={x:200,y:rowTop+5};
+  await mouse(edge);                             // On the top edge of the second choice.
+  await sleep(600);
+  const later=(await api('/ask',{kind:'question',from:{session:'other'},payload:{questions:[{header:'次',question:'次の問い',multiSelect:false,options:[{label:'a'},{label:'b'}]}]}})).id;
+  await until(`document.querySelector('#queue').textContent.length>0`);
+  assert(await evaluate(`document.querySelector('#opts [data-key="opt:1"]').getBoundingClientRect().top`)>edge.y,'"1 waiting" moved the column down');
+  assert.equal(await evaluate(`document.elementFromPoint(${edge.x},${edge.y})?.closest('[data-key]')?.dataset.key`),'opt:0','The first choice came under the resting pointer');
+  await sleep(1500);
+  const rested=(await api('/pending')).card;
+  assert.equal(rested.state,'shown','A button the column moves under a resting pointer is not pressed: '+JSON.stringify(rested.choice));
+  await mouse({x:5,y:5}); await sleep(300); await mouse(edge);   // Out and back in: dwell counts again.
+  await until(`!document.querySelector('#undo-zone').hidden`);
+  assert.equal((await api('/pending')).card.state,'deciding','Looking at it again presses it');
+  await mouse({x:5,y:5});
+  await sleep(1050); await api('/wait?id='+seven);
+  await until(`document.querySelectorAll('#fan .btn[data-key="opt:0"]').length===1`);
+  await closeCard(later);
+  // The large board in a narrow window: "cannot reach the board" pushes the column down, and reconnecting pulls it back
+  // up. A pointer resting in the gap between Allow and "don't ask again" ends up on "don't ask again" (a rule saved for good).
+  await open('mode=large&lang=ja&dwell=2');
+  const wired=(await api('/ask',{kind:'permission',from:{cwd:'repo'},payload:{head:'Bash',text:'ls',
+    suggestions:[{type:'addRules',rules:[{toolName:'Bash',ruleContent:'ls'}],behavior:'allow',destination:'localSettings'}],
+    blocks:[{label:'command',text:'ls',mono:true}]}})).id;
+  await until(`document.querySelectorAll('#opts [data-key="sugg:0"]').length===1 && ${READY}`);
+  await mouse({x:5,y:5});
+  const colTop=await evaluate(`document.querySelector('#opts').getBoundingClientRect().top`);
+  await call('Network.enable');
+  await call('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+  await until(`document.querySelector('#status').textContent.length>0`);
+  assert(await evaluate(`document.querySelector('#opts').getBoundingClientRect().top`)>colTop+5,'The status line moved the column down');
+  const between=await evaluate(`(() => { const a=document.querySelector('#opts [data-key="allow_once"]').getBoundingClientRect(), s=document.querySelector('#opts [data-key="sugg:0"]').getBoundingClientRect();
+    return {x:a.left+a.width/2, y:(a.bottom+s.top)/2}; })()`);
+  await mouse(between);                          // Resting in the gap presses nothing.
+  await sleep(500);
+  await call('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+  await call('Network.disable');
+  for (let i=0; i<300 && await evaluate(`document.querySelector('#status').textContent.length>0`); i++) await sleep(20);
+  assert.equal(await evaluate(`document.elementFromPoint(${between.x},${between.y})?.closest('[data-key]')?.dataset.key`),'sugg:0','Back online, "don\'t ask again" came under the resting pointer');
+  await sleep(2600);                             // More than the dwell time with the pointer left where it was.
+  const still=(await api('/pending')).card;
+  assert.equal(still.state,'shown','A button the column moves under a resting pointer is not pressed, not even "don\'t ask again": '+JSON.stringify(still.choice));
+  await mouse({x:5,y:5});
+  await closeCard(wired);
   assert.deepEqual(errors,[]);
   console.log('browser checks passed'); ws.close();
 })().catch(error=>{

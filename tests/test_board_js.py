@@ -1513,7 +1513,7 @@ const t = loadPage(function (path, opt) { sent.push(JSON.parse(opt.body).id); re
 show(t);
 const el = { hidden: true, style: {}, classList: { add: function () {}, remove: function () {}, toggle: function () {} }, dataset: {}, appendChild: function () {},
              insertBefore: function () {}, replaceChildren: function () {}, setAttribute: function () {}, querySelector: function () { return null; },
-             querySelectorAll: function () { return []; } };
+             querySelectorAll: function () { return []; }, getBoundingClientRect: function () { return { top: 0, left: 0, width: 0, height: 0 }; } };
 el.parentNode = el;
 t.selectWindow({ document: { hidden: false, body: el, documentElement: el, activeElement: el, elementFromPoint: function () { return null; },
                              getElementById: function () { return el; }, createElement: function () { return Object.assign({}, el, { dataset: {}, style: {} }); },
