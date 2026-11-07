@@ -610,6 +610,71 @@ async function closeCard(id) {
   await mouse({x:100,y:200});
   assert(await evaluate(`!document.querySelector('#trail').hidden && getComputedStyle(document.querySelector('#trail')).pointerEvents==='none'`));
   await screenshot('ohgi-idle');
+  // While the scan light runs, the blade under a resting pointer (:hover) and the blade with the key focus (:focus-visible)
+  // must not look like the light: the next switch press goes to the lit blade only. All three looked the same (final
+  // debugging, round 1 #3), so a late press meant for the blade the person saw lit could send Allow.
+  await call('Emulation.setDeviceMetricsOverride',{width:640,height:720,deviceScaleFactor:1,mobile:false});
+  await open('mode=small&lang=ja&dwell=0&scan=1.5&theme=light&trail=off');
+  const runs=(await api('/ask',perm('scan-light'))).id;
+  await until(shows('scan-light'));
+  const bladeOf=key=>`document.querySelector('#fan [data-key="${key}"]')`;
+  // A point inside a blade, on the line from the pivot through its mark, dr fan pixels out from the mark (the fan is scaled).
+  const inside=(key,dr)=>evaluate(`(() => { const b=${bladeOf(key)}, r=b.getBoundingClientRect(), s=getComputedStyle(b), k=r.width/b.offsetWidth;
+    const lx=parseFloat(s.getPropertyValue('--lx')), ly=parseFloat(s.getPropertyValue('--ly')), cx=parseFloat(s.getPropertyValue('--cx')), cy=parseFloat(s.getPropertyValue('--cy'));
+    const t=1+${dr}/Math.hypot(lx-cx,ly-cy);
+    return {x:Math.round(r.x+(cx+(lx-cx)*t)*k), y:Math.round(r.y+(cy+(ly-cy)*t)*k)}; })()`);
+  // The colour really painted at a point = a 1x1 screenshot. In a one-pixel PNG every row filter leaves the pixel as it is.
+  const paint=async p=>{
+    const png=Buffer.from((await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,clip:{x:p.x,y:p.y,width:1,height:1,scale:1}})).data,'base64');
+    const idat=[];
+    for (let at=8; at<png.length; ) { const n=png.readUInt32BE(at); if (png.toString('ascii',at+4,at+8)==='IDAT') idat.push(png.subarray(at+8,at+8+n)); at+=12+n; }
+    const row=require('zlib').inflateSync(Buffer.concat(idat)); return [row[1],row[2],row[3]];
+  };
+  const apart=(a,b)=>Math.max(...a.map((v,i)=>Math.abs(v-b[i])));
+  const look=key=>evaluate(`(() => { const b=${bladeOf(key)}, s=getComputedStyle(b), a=getComputedStyle(b.querySelector('.dwell-arc path'));
+    return {lit:b.classList.contains('scan'), bg:s.backgroundImage, color:s.backgroundColor, ring:parseFloat(a.strokeDashoffset)===0}; })()`);
+  // The moment the light is on `on`: how `on` and `other` look, and the colour painted inside each.
+  const compare=async(on,other)=>{
+    await lit(on);
+    const seen={on:await look(on), other:await look(other), fill:[await paint(await inside(on,-30)),await paint(await inside(other,-30))]};
+    assert(await evaluate(`${bladeOf(on)}.classList.contains('scan')`),'The looks were taken while the light was still on '+on);
+    return seen;
+  };
+  await mouse(await point('#fan [data-key="deny"]'));     // The pointer rests on 二 (Deny…).
+  await until(`!document.querySelector('#fan .scan')`);   // A moving pointer stops the light.
+  for (const on of ['allow_once','fixed','terminal','allow_once']) {   // 1.5 s after it stops the light runs from 一 round to 一.
+    const seen=await compare(on,'deny');
+    assert(seen.on.lit && seen.on.bg!=='none','The lit blade shows the light: '+JSON.stringify(seen));
+    assert.equal(seen.other.bg,'none','While the light runs, the blade under the pointer does not light up: '+JSON.stringify(seen));
+    assert(apart(...seen.fill)>60,'The lit blade and the blade under the pointer are painted apart: '+JSON.stringify(seen));
+  }
+  await mouse({x:5,y:5});                                  // The pointer leaves the fan,
+  await until(`!document.querySelector('#fan .scan')`);
+  await key('ArrowRight'); await key('ArrowRight');        // and the key focus moves to 二 (Deny…).
+  assert.equal(await evaluate(`document.activeElement.dataset.key`),'deny');
+  assert(await evaluate(`document.activeElement.matches(':focus-visible')`),'The key focus is shown');
+  {
+    const seen=await compare('allow_once','deny');
+    const ring=[await paint(await inside('deny',43)), seen.fill[1]];   // On the outer edge of 二, and inside it.
+    assert.equal(seen.other.bg,'none','While the light runs, the key focus does not take the fill of the light: '+JSON.stringify(seen));
+    assert(seen.other.ring && apart(...ring)>60,'The key focus shows as a ring along the outer edge: '+JSON.stringify([seen,ring]));
+    assert(apart(...seen.fill)>60,'The lit blade and the blade with the key focus are painted apart: '+JSON.stringify(seen));
+  }
+  // With forced colours (a Windows contrast theme) the light keeps the system highlight; the key focus and the pointer do not.
+  await call('Emulation.setEmulatedMedia',{features:[{name:'forced-colors',value:'active'}]});
+  {
+    const seen=await compare('fixed','deny');              // The key focus is still on 二.
+    assert(seen.other.ring && seen.on.color!==seen.other.color && apart(...seen.fill)>60,'With forced colours the key focus is not the light: '+JSON.stringify(seen));
+  }
+  await evaluate(`document.activeElement.blur()`);
+  await mouse(await point('#fan [data-key="deny"]'));     // The pointer rests on 二 again.
+  await until(`!document.querySelector('#fan .scan')`);
+  {
+    const seen=await compare('allow_once','deny');
+    assert(seen.on.color!==seen.other.color && apart(...seen.fill)>60,'With forced colours the blade under the pointer is not the light: '+JSON.stringify(seen));
+  }
+  await call('Emulation.setEmulatedMedia',{features:[{name:'forced-colors',value:'none'}]});
+  await mouse({x:5,y:5}); await closeCard(runs);
   assert.deepEqual(errors,[]);
   console.log('browser checks passed'); ws.close();
 })().catch(error=>{

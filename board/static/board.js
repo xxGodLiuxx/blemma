@@ -1309,6 +1309,7 @@
         now - (S.focusAt || -1e9) >= SETTLE_MS) setSettling(false);
     if (S.armKey && now - S.armAt > ARM_MS) { disarm(); if (S.spotBtn) spotlight(S.spotBtn); }
     if (S.overMore) hoverMore(now);
+    var scanning = false;                                    /* 走査が押す番か (光っている時と、光の前の静かな 1 こま) */
     if (S.scanMs > 0) {
       var card = S.card;
       var target = null;
@@ -1325,6 +1326,7 @@
       } else if (card && card.state === "shown" && !S.overlay && !S.answering && inputActive() && !moving) {
         var i = S.scan.index(now, S.scanList.length);
         target = i >= 0 ? S.scanList[i] : null;
+        scanning = true;
       }
       if (S.scanEl !== target) {
         if (S.scanEl) S.scanEl.classList.remove("scan");
@@ -1343,6 +1345,11 @@
         if (target) spotlight(target);
       }
     }
+    /* 走査が回っている間 (光っている時と静かな 1 こま = pointer が止まっている時) は、pointer の載った羽根を光らせず、鍵の焦点は
+       光と別の形にする (CSS の body.scanning) = 光って見えるのは、次の 1 押しで押される羽根だけ (最終デバッグ 1 巡目 #3)。
+       今見ている文書の印を毎こま揃える = 走査を切った後も、PiP の窓へ移った・戻った後も、印が古いまま残らない */
+    var page = viewDocument.body;
+    if (page && page.classList) page.classList.toggle("scanning", scanning || !!S.scanEl);
     gazeScroll(now);
     if (now - S.sideAt > 250) {
       S.sideAt = now;
