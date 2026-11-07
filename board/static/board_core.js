@@ -350,15 +350,20 @@
     return out;
   }
 
-  /* 見えない字 (制御の字・書字方向の字・幅ゼロの字など) を ⟨U+XXXX⟩ にして見せる。hooks/permission.py の visible と同じ種
-     (Cc・Cf・Cs・Zl・Zp・改行とタブは残す)。本文は hook の側で直してあるが、「次から訊かない」の文は頁がここで作る =
-     恒久の許可を書く釦の文が、書字方向の字で別の規則に見えないように、ここでも同じに直す */
+  /* 見えない字 (制御の字・書字方向の字・幅ゼロの字など) を ⟨U+XXXX⟩ にして見せる。hooks/permission.py の visible と同じ網
+     (種 Cc・Cf・Cs・Zl・Zp + 種では拾えない 6 字 (U+034F・U+115F・U+1160・U+3164・U+FFA0・U+2800) + 記号の後でない
+     U+FE00〜FE0F と、文字 (Lo) の後でない U+E0100〜E01EF の異体字セレクタ・改行とタブは残す)。権限の札の本文は hook で、
+     質問と MCP の札の字と「次から訊かない」の文は頁がここで直す (表示だけ = 返す答えは番号のまま) */
   var HIDDEN_RE = (function () {
     try {
-      return new RegExp("[\\p{Cc}\\p{Cf}\\p{Cs}\\p{Zl}\\p{Zp}]", "gu");
-    } catch (e) {            /* 古い JS の処理系 = 主な見えない字の範囲だけ (番号で組む = source に見えない字を書かない) */
-      var ranges = [[0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x61c, 0x61c], [0x180e, 0x180e], [0x200b, 0x200f],
-                    [0x2028, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f], [0xfeff, 0xfeff], [0xfff9, 0xfffb], [0xd800, 0xdfff]];
+      return new RegExp("[\\p{Cc}\\p{Cf}\\p{Cs}\\p{Zl}\\p{Zp}\\u034F\\u115F\\u1160\\u3164\\uFFA0\\u2800]|" +
+                        "(?<!\\p{S})[\\uFE00-\\uFE0F]|(?<!\\p{Lo})[\\u{E0100}-\\u{E01EF}]", "gu");
+    } catch (e) {            /* 古い JS の処理系 = 主な見えない字の範囲だけ (番号で組む = source に見えない字を書かない)。
+                                異体字セレクタは前の字を見られない (後ろ読みが無い) ので、この予備では拾わない */
+      var ranges = [[0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x34f, 0x34f], [0x61c, 0x61c], [0x115f, 0x1160],
+                    [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f],
+                    [0x2800, 0x2800], [0x3164, 0x3164], [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff9, 0xfffb],
+                    [0xd800, 0xdfff]];
       var esc = function (n) { var h = n.toString(16); while (h.length < 4) h = "0" + h; return "\\" + "u" + h; };
       return new RegExp("[" + ranges.map(function (r) { return esc(r[0]) + "-" + esc(r[1]); }).join("") + "]", "g");
     }
@@ -621,7 +626,7 @@
   }
 
   function optionLabels(opts, picks, lang, emptyText) {
-    var labels = (picks || []).map(function (i) { return tx(((opts || [])[i] || {}).label, lang); });
+    var labels = (picks || []).map(function (i) { return visibleText(tx(((opts || [])[i] || {}).label, lang)); });
     return labels.length ? labels.join(", ") : emptyText;
   }
 
@@ -652,12 +657,12 @@
     var st = steps(card);
     var n = st.length;
     if (card.kind === "elicitation") {
-      out.head = tx(p.head, lang);
-      out.text = tx(p.text, lang);
+      out.head = visibleText(tx(p.head, lang));
+      out.text = visibleText(tx(p.text, lang));
       /* 板で描けない任意の欄 (hook が札から落とした物) は、黙って落とさず知らせる = 人が見ていない欄を空のまま送らせない */
       var omitted = (Array.isArray(p.omitted) ? p.omitted : []).filter(function (x) { return typeof x === "string" && x; });
       if (omitted.length) {
-        out.blocks.push({ label: "", text: fmt(L.omitted, { n: omitted.length, names: omitted.join(lang === "ja" ? "・" : ", ") }), mono: false });
+        out.blocks.push({ label: "", text: fmt(L.omitted, { n: omitted.length, names: omitted.map(function (x) { return visibleText(x); }).join(lang === "ja" ? "・" : ", ") }), mono: false });
       }
     }
     if (ui.step < n) {
@@ -665,20 +670,20 @@
       var multi = isMulti(card, cur);
       var defs = Array.isArray(cur.default) ? cur.default : [];
       if (card.kind === "question") {
-        out.head = tx(cur.header, lang);
-        out.question = tx(cur.question, lang);
+        out.head = visibleText(tx(cur.header, lang));
+        out.question = visibleText(tx(cur.question, lang));
       } else {
-        out.question = tx(cur.title, lang);
+        out.question = visibleText(tx(cur.title, lang));
       }
       if (card.kind === "elicitation" && n === 1 && out.question === out.text) out.question = "";
       /* 欄に題と別の説明がある時は、問いの上に出す = 題が「Confirm」だけでも、何を確かめる問いかが見える */
       if (card.kind === "elicitation" && tx(cur.description, lang)) {
-        out.blocks.push({ label: "", text: tx(cur.description, lang), mono: false });
+        out.blocks.push({ label: "", text: visibleText(tx(cur.description, lang)), mono: false });
       }
       if (n > 1) out.question = (out.question ? out.question + "  " : "") + "(" + (ui.step + 1) + " / " + n + ")";
       (Array.isArray(cur.options) ? cur.options : []).forEach(function (o, i) {
         o = o || {};
-        out.options.push({ key: "opt:" + i, label: tx(o.label, lang), desc: tx(o.description, lang),
+        out.options.push({ key: "opt:" + i, label: visibleText(tx(o.label, lang)), desc: visibleText(tx(o.description, lang)),
                            def: defs.indexOf(i) >= 0, marked: multi ? ui.marks.indexOf(i) >= 0 : null });
       });
       if (card.kind === "elicitation" && !cur.required && !multi) {
@@ -690,10 +695,10 @@
     } else {
       out.question = L.confirm;
       out.summary = st.map(function (s, k) {
-        var name = card.kind === "question" ? tx(s.header || s.question, lang) : tx(s.title || s.name, lang);
+        var name = visibleText(card.kind === "question" ? tx(s.header || s.question, lang) : tx(s.title || s.name, lang));
         /* 送る前の確かめでも、欄ごとの説明をもう一度見せる (何に答えたのかを題だけで判断させない) */
         if (card.kind === "elicitation" && tx(s.description, lang)) {
-          out.blocks.push({ label: name, text: tx(s.description, lang), mono: false });
+          out.blocks.push({ label: name, text: visibleText(tx(s.description, lang)), mono: false });
         }
         return name + ": " + optionLabels(s.options, ui.picks[k], lang, L.empty_field);
       });

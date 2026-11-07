@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -634,4 +637,105 @@ def test_pending_returns_at_once_when_the_viewer_closed(clock):
         return False
     b.pending(b.seq, alive=closed)
     assert calls and b.viewers_open == 0
+
+
+# ---- 頁の計算 (board/static/board_core.js) を node の require() で = 札の字 (DOM なし) ----
+
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="node が無い (頁の計算の試験は node で走らせる)")
+CORE_JS = Path(__file__).resolve().parent.parent / "board" / "static" / "board_core.js"
+ZW, RLO = "​", "‮"
+
+
+def core_js(tmp_path, body: str, data) -> object:
+    """board_core.js を読み、body (DATA = data の JSON) が console.log で出す JSON を返す。data は \\u の形で渡す
+    (JS の source に見えない字を書かない)。"""
+    script = tmp_path / "core.js"
+    script.write_text(f"const core = require({json.dumps(str(CORE_JS))});\nconst DATA = {json.dumps(data)};\n" + body,
+                      encoding="utf-8")
+    p = subprocess.run([NODE, str(script)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert p.returncode == 0, p.stderr
+    return json.loads(p.stdout)
+
+
+def no_raw_hidden(screen) -> bool:
+    text = json.dumps(screen, ensure_ascii=False)
+    return ZW not in text and RLO not in text
+
+
+@needs_node
+def test_question_card_shows_hidden_characters(tmp_path):
+    """Claude の質問の札は、見えない字 (幅ゼロ・書字方向) を ⟨U+XXXX⟩ にして描く (1 巡目 #23 = 'Yes' と 'Ye'+U+200B+'s' の
+    釦が見分けられなかった)。直すのは表示だけ = 板へ返すのは番号 (picks) で、hook が組む answers は逐語 (test_hooks)。
+    1 問の札 (頭・問い・選択肢の字と説明) と、2 問の札の確かめの画面 (要約の名と選んだ字)・猶予の間の答えの字。"""
+    one = {"question": "Which?" + RLO, "header": "h" + ZW, "multiSelect": False,
+           "options": [{"label": "Yes"}, {"label": "Ye" + ZW + "s", "description": "d" + ZW + "x"}]}
+    out = core_js(tmp_path, r"""
+const one = {kind: 'question', payload: {questions: [DATA.one]}};
+const two = {kind: 'question', payload: {questions: [DATA.one, DATA.two]}};
+const ui = core.newUi(); ui.step = 2; ui.picks = [[1], [1]];
+console.log(JSON.stringify({one: core.buildScreen(one, core.newUi(), 'ja'), confirm: core.buildScreen(two, ui, 'ja'),
+  answer: core.choiceLabel(two, {type: 'answer', picks: [[1], [0]]}, 'ja'), send: core.pressKey(one, core.newUi(), 'opt:1')}));
+""", {"one": one, "two": dict(one, header="k" + RLO)})
+    s = out["one"]
+    assert (s["head"], s["question"]) == ("h⟨U+200B⟩", "Which?⟨U+202E⟩")
+    assert [(o["label"], o["desc"]) for o in s["options"]] == [("Yes", ""), ("Ye⟨U+200B⟩s", "d⟨U+200B⟩x")]
+    assert out["confirm"]["summary"] == ["h⟨U+200B⟩: Ye⟨U+200B⟩s", "k⟨U+202E⟩: Ye⟨U+200B⟩s"]
+    assert out["answer"] == "Ye⟨U+200B⟩s / Yes"
+    assert out["send"] == {"send": {"type": "answer", "picks": [[1]]}}          # 答えは番号だけ (字は hook が逐語で引く)
+    assert no_raw_hidden(out)
+
+
+@needs_node
+def test_mcp_card_shows_hidden_characters(tmp_path):
+    """MCP の問いの札も、頭 (server の名)・本文 (message)・欄の題と説明・選択肢の字と説明・板で描けない欄の名・確かめの
+    画面の要約と説明の、見えない字を ⟨U+XXXX⟩ にして描く (1 巡目 #23 = 'invoice_'+U+202E+'fdp.exe' が 'invoice_exe.pdf'
+    に見えた)。題が本文と同じ 1 欄の札は、直した後の字で比べて問いを重ねて出さない。"""
+    field = {"name": "ok", "title": "Open invoice_" + RLO + "fdp.exe ?", "description": "attach " + RLO + "fdp.exe",
+             "required": True, "multi": False,
+             "options": [{"label": "send invoice_" + RLO + "fdp.exe", "description": "d" + ZW + "x"}, {"label": "no"}]}
+    payload = {"head": "srv" + RLO + "xe", "text": "Send invoice_" + RLO + "fdp.exe", "fields": [field],
+               "omitted": ["note" + RLO + "txt.exe"]}
+    out = core_js(tmp_path, r"""
+const one = {kind: 'elicitation', payload: DATA.payload};
+const two = {kind: 'elicitation', payload: Object.assign({}, DATA.payload, {fields: [DATA.field, DATA.field]})};
+const same = {kind: 'elicitation', payload: Object.assign({}, DATA.payload, {text: DATA.field.title, fields: [DATA.field]})};
+const ui = core.newUi(); ui.step = 2; ui.picks = [[0], [1]];
+console.log(JSON.stringify({one: core.buildScreen(one, core.newUi(), 'ja'), confirm: core.buildScreen(two, ui, 'ja'),
+  same: core.buildScreen(same, core.newUi(), 'ja')}));
+""", {"payload": payload, "field": field})
+    s = out["one"]
+    assert (s["head"], s["text"]) == ("srv⟨U+202E⟩xe", "Send invoice_⟨U+202E⟩fdp.exe")
+    assert s["question"] == "Open invoice_⟨U+202E⟩fdp.exe ?"
+    assert "note⟨U+202E⟩txt.exe" in s["blocks"][0]["text"] and s["blocks"][1]["text"] == "attach ⟨U+202E⟩fdp.exe"
+    assert [(o["label"], o["desc"]) for o in s["options"] if o["key"].startswith("opt:")] == [
+        ("send invoice_⟨U+202E⟩fdp.exe", "d⟨U+200B⟩x"), ("no", "")]
+    c = out["confirm"]
+    assert c["summary"] == ["Open invoice_⟨U+202E⟩fdp.exe ?: send invoice_⟨U+202E⟩fdp.exe",
+                            "Open invoice_⟨U+202E⟩fdp.exe ?: no"]
+    assert [(b["label"], b["text"]) for b in c["blocks"][1:]] == [("Open invoice_⟨U+202E⟩fdp.exe ?", "attach ⟨U+202E⟩fdp.exe")] * 2
+    assert out["same"]["question"] == "" and out["same"]["text"] == "Open invoice_⟨U+202E⟩fdp.exe ?"
+    assert no_raw_hidden(out)
+
+
+# hook の visible と同じ答えになるべき 17 本 = 種では拾えない 6 字・文字の後の異体字セレクタ (と組み合わせ)・正当な異体字セレクタ・
+# 改行とタブ・どちらの網でも拾う字。字は古くからの物だけ (3.10 の unicodedata と node の Unicode の版の差を避ける)。
+HIDDEN_CASES = [
+    "a͏b", "aᅟb", "aᅠb", "aㅤb", "aﾠb", "rm⠀-rf", "r️m -rf", "x\U000e0100y",
+    "⠀️", "​️", "x︎",
+    "❤️", "葛\U000e0100", "\U0001f44d️", "a\tb\nc 日本語", "ok‮; rm", "a​b\r",
+]
+
+
+@needs_node
+def test_page_and_hook_mark_the_same_hidden_characters(tmp_path):
+    """頁の visibleText (board_core.js) と hook の visible (hooks/permission.py) は、同じ字に印を付ける (1 巡目 #25 = hook の網を
+    広げた後も、頁は種 5 つのままで、点字の空白・ハングルの埋め字・文字の後の異体字セレクタを素通しにした)。"""
+    import permission as PERM
+
+    got = core_js(tmp_path, "console.log(JSON.stringify(DATA.map(function (s) { return core.visibleText(s); })));",
+                  HIDDEN_CASES)
+    want = [PERM.visible(s) for s in HIDDEN_CASES]
+    assert [(case, g, w) for case, g, w in zip(HIDDEN_CASES, got, want) if g != w] == []
+    assert len(got) == len(want) == 17
 
