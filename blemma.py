@@ -505,8 +505,15 @@ def stop_reused_board(session: BoardSession) -> None:
 
 
 CLIENT_FILE = re.compile(r"client-([0-9]{1,10})-[0-9a-f]{8}\.json")
-LOCK_WAIT = 15.0     # 名簿の錠 (clients/.lock) を待つ最長 (秒)。待ち切れない時は錠なしで進む (今までの動き)
-LOCK_STALE = 60.0    # これより古い錠は、持ち主が後始末なしに消えた物として壊す
+LOCK_WAIT = 15.0     # 名簿の錠 (clients/.lock) を待つ最長 (秒)。待ち切れない時は守る区間に入らない (起こす側は止まり、終わる側は板を残す)
+LOCK_STALE = 60.0    # 持ち主の記録 (pid) の無い錠を、後始末なしに消えた回の物として回収するまでの秒 (pid の在る錠は pid の生死だけで決める)
+ROSTER_BUSY = (
+    "名簿の錠が取れません。別の端末の blemma.py が起動か終わりの途中です。少し待ってから起こし直してください "
+    "(ほかに blemma.py が動いていないのに 1 分を過ぎても続く時は、board/state/clients/.lock を消します)。\n"
+    "Could not lock the launcher list: another blemma.py is starting or ending. Wait a moment and start again "
+    "(if no other blemma.py is running and this lasts over a minute, delete board/state/clients/.lock).")
+ROSTER_LEFT = ("BLEMMA: 名簿の錠が取れないため、板を止めずに残しました (止める時は python blemma.py --stop) / "
+               "Could not lock the launcher list, so the board was left running (stop it with python blemma.py --stop)")
 
 
 class Clients:
@@ -515,6 +522,7 @@ class Clients:
     Claude を起こす回は 1 file で名乗る (名 = pid と乱数・中身 = pid と始めた時刻)。板を起こした回は
     「起こし方が起こした板」の印 board-<板の pid>.json を置く (手で起こした板には無い)。最後の使い手が、
     印のある板だけを止める。名簿の読み書きに失敗した回は、今までの動き (自分が起こした板だけを止める) に戻る。
+    名簿の錠が取れない回は、名乗らずに止まる (起こす側)・板を止めずに残す (終わる側)。
     Launchers sharing one board register here; the last one stops only a launcher-started board."""
 
     def __init__(self, state: Path) -> None:
@@ -526,8 +534,9 @@ class Clients:
     def _lock(self):
         """名簿の錠 (clients/.lock) = 名乗り (join) と、最後の使い手の「ほかの使い手を数える → 板を止める」(leave) を互いに
         割り込ませない (外の目の 8 巡目 = A が 0 人と数えた直後に B が名乗って板を使い回し、その後で A が板を止めた)。
-        錠は file の作成の原子性 (O_EXCL) で取る。取れない時は待ち、待ち切れたら錠なしで進む (今までの動き = 止める側に倒さない)。
-        持ち主が後始末なしに消えた古い錠は壊す。"""
+        錠は file の作成の原子性 (O_EXCL) で取り、持ち主の pid と時刻を書く。取れない時は LOCK_WAIT まで待ち、待ち切れたら
+        取れなかった事 (False) を渡す = 呼び手は守る区間に入らない (9 巡目 = 錠なしで進むと、数え終えて止める直前の回の板を
+        使い回せた)。古い錠の回収は経過時間だけで決めない (_stale)。"""
         path = self.dir / ".lock"
         fd = None
         deadline = time.monotonic() + LOCK_WAIT
@@ -537,33 +546,76 @@ class Clients:
                 try:
                     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                     break
-                except FileExistsError:
-                    try:
-                        if time.time() - path.stat().st_mtime > LOCK_STALE:
+                except (FileExistsError, PermissionError):
+                    # PermissionError = Windows で、別の回が開いている間に消された錠 (消える途中) = 在る錠と同じく待つ
+                    if self._stale(path):
+                        try:
                             path.unlink(missing_ok=True)
+                        except OSError:
+                            pass           # 別の回が開いている一瞬 (Windows) = 次の回で
+                        else:
                             continue
-                    except OSError:
-                        pass
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(0.05)
         except OSError:
             fd = None
         try:
-            yield
-        finally:
             if fd is not None:
                 try:
-                    os.close(fd)
+                    os.write(fd, json.dumps({"pid": os.getpid(), "at": datetime.now().astimezone().isoformat(
+                        timespec="seconds")}).encode("utf-8"))
                 except OSError:
-                    pass
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                    pass                   # 記録の無い錠も錠 (ほかの回は LOCK_STALE を過ぎるまで待つ)
+            yield fd is not None
+        finally:
+            if fd is not None:
+                self._unlock(path, fd)
+
+    @staticmethod
+    def _stale(path: Path) -> bool:
+        """回収してよい古い錠か。持ち主の pid が書いてあれば、その生死だけで決める = 生きている pid の錠は、どれだけ古くても
+        奪わない (止まっているだけの持ち主の名簿の区間に割り込まない・外の目の 9 巡目)。記録の無い錠 (作った直後でまだ
+        書いていない・書けなかった・消せずに残った・前の版の錠) は、LOCK_STALE を過ぎた時だけ。読めない時は回収しない。"""
+        try:
+            age = time.time() - path.stat().st_mtime
+            raw = path.read_bytes()
+        except OSError:
+            return False
+        try:
+            pid = json.loads(raw.decode("utf-8")).get("pid")
+        except (ValueError, AttributeError, RecursionError):
+            pid = None
+        if type(pid) is int and 0 < pid < 2 ** 31:
+            return not pid_alive(pid)
+        return age > LOCK_STALE
+
+    @staticmethod
+    def _unlock(path: Path, fd: int) -> None:
+        # 記録を先に空にする = 消せずに残った錠も、記録の無い錠として LOCK_STALE で回収される (空にしないと、生きている
+        # この process の pid のまま残り、回の終わりまで、ほかの起こし方が待ち切って止まる)。
+        try:
+            os.ftruncate(fd, 0)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        for _ in range(20):
+            try:
+                path.unlink(missing_ok=True)
+                return
+            except PermissionError:        # Windows = 別の回が錠の記録を読んでいる一瞬 (_write の置き換えと同じ扱い)
+                time.sleep(0.05)
+            except OSError:
+                return
 
     def join(self) -> None:
-        with self._lock():
+        with self._lock() as held:
+            if not held:
+                # 錠なしで名乗ると、数え終えて止める直前の回の板を使い回せる = 板も Claude Code も起こさずに止まる
+                raise LaunchError(ROSTER_BUSY)
             pid = os.getpid()
             path = self.dir / f"client-{pid}-{secrets.token_hex(4)}.json"
             if self._write(path, {"pid": pid, "started": datetime.now().astimezone().isoformat(timespec="seconds")}):
@@ -577,16 +629,28 @@ class Clients:
 
     def leave(self, session: BoardSession | None, keep: bool) -> None:
         """終わる時の順 = 自分の登録を消す → ほかの使い手を数える → 残すか、印のある板だけを止める。全部を名簿の錠の中で
-        行う = 数えてから止めるまでの間に、新しい使い手が名乗って板を使い回せない。"""
-        with self._lock():
-            self._leave(session, keep)
+        行う = 数えてから止めるまでの間に、新しい使い手が名乗って板を使い回せない。錠が取れない時は、数えも止めもしない
+        (錠を持つ回の名乗りや数えの途中に板を止めない = 板は残し、次の起こし方の後始末か --stop に任せる)。錠なしでも
+        安全な 2 つだけ、この順で行う = 残すと決めた板の印を外す (止めにくくする向き)・自分の登録を消す (数を減らすだけ)。"""
+        with self._lock() as held:
+            if held:
+                self._leave(session, keep)
+                return
+        if session is not None and keep and self.ok:
+            self._unmark(session.info)
+        self._forget()
+        if session is not None and not keep:
+            print(ROSTER_LEFT, file=sys.stderr)
 
-    def _leave(self, session: BoardSession | None, keep: bool) -> None:
+    def _forget(self) -> None:
         if self.me is not None:
             try:
                 self.me.unlink(missing_ok=True)
             except OSError:
                 pass                       # 消せなかった登録は、この pid が死んだ後に別の回が消す
+
+    def _leave(self, session: BoardSession | None, keep: bool) -> None:
+        self._forget()
         if session is None:
             return
         others = self._others() if self.ok else None

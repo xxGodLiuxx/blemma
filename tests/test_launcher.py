@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import os
 import shutil
@@ -1283,7 +1284,9 @@ def test_the_roster_lock_covers_joining_and_the_last_users_stop(isolated_repo, m
 
 
 def test_a_held_roster_lock_delays_the_stop_and_a_stale_lock_is_broken(isolated_repo, monkeypatch):
-    """別の回が錠を持っている間は、最後の使い手の止めは待つ (錠が外れてから止める)。持ち主が後始末なしに消えた古い錠は壊して進む。"""
+    """別の回が錠を持っている間は、最後の使い手の止めは待つ (錠が外れてから止める)。持ち主の記録 (pid) の無い錠は、
+    LOCK_STALE を過ぎた時だけ、後始末なしに消えた回の古い錠として壊して進む (外の目の 9 巡目の後 = pid の在る錠は
+    pid の生死だけで決める・下の試験。この試験の錠は平文なので、記録の無い錠の枝を通る)。"""
     state = isolated_repo / "board" / "state"
     (state / "clients").mkdir(parents=True)
     lock = state / "clients" / ".lock"
@@ -1306,6 +1309,117 @@ def test_a_held_roster_lock_delays_the_stop_and_a_stale_lock_is_broken(isolated_
     started = time.monotonic()
     a.leave(L.BoardSession(state / "run.json", L.RunInfo(1, "t", 1)), keep=False)
     assert order == ["release", "stop", "stop"] and time.monotonic() - started < 2 and not lock.exists()
+
+
+HOLD_LOCK = ("import os, sys\n"
+             "from pathlib import Path\n"
+             "sys.path.insert(0, sys.argv[1])\n"
+             "import blemma\n"
+             "with blemma.Clients(Path(sys.argv[2]))._lock():\n"
+             "    print('held', flush=True)\n"
+             "    if sys.argv[3] == 'die':\n"
+             "        os._exit(0)\n"
+             "    sys.stdin.read()\n")
+
+
+@contextlib.contextmanager
+def roster_lock_held(state, how="hold"):
+    """別の起こし方 (実の python の process) が、本物の _lock で名簿の錠を取る。hold = 錠を持ったまま止まっている
+    (stdin を閉じると外して終わる)・die = 錠の中で後始末なしに消えた (錠の file が残る)。python は本体 (venv の転送役は
+    孫を起こすので、錠に書かれる pid と child.pid が合わない)。"""
+    child = subprocess.Popen([L.python_executable(), "-I", "-c", HOLD_LOCK, str(REPO), str(state), how],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8")
+    try:
+        assert child.stdout.readline().strip() == "held"
+        if how == "die":
+            child.wait(10)
+        yield child
+    finally:
+        if child.poll() is None:
+            child.stdin.close()
+            child.wait(10)
+        child.stdout.close()
+
+
+def test_a_launcher_that_cannot_take_the_roster_lock_starts_nothing(isolated_repo, monkeypatch, capsys):
+    """名簿の錠が待ち時間 (LOCK_WAIT) の内に取れない起こし方は、名乗らずに止まる = 板も窓も Claude Code も起こさず、
+    理由を日英 1 行ずつ出して戻り値 1 (外の目の 9 巡目 = 錠を待ち切ると錠なしで名乗り、人数を数え終えて止める直前の
+    別の回の板を使い回した。その回が再開すると、使い中の板を止めた)。持ち主の錠には触らない。"""
+    state = isolated_repo / "board" / "state"
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")
+    monkeypatch.setattr(L, "LOCK_WAIT", 0.3)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("名簿の錠が無いまま、板・窓・claude へ進んだ")
+
+    for name in ("ensure_board", "open_board", "run_claude"):
+        monkeypatch.setattr(L, name, unexpected)
+    with roster_lock_held(state) as holder:
+        record = (state / "clients" / ".lock").read_text(encoding="utf-8")
+        assert L.main(["--port", str(unused_port())]) == 1
+        assert client_files(isolated_repo) == [".lock"]                       # 名乗っていない
+        assert (state / "clients" / ".lock").read_text(encoding="utf-8") == record
+        assert holder.poll() is None
+    captured = capsys.readouterr()
+    lines = captured.err.splitlines()
+    assert captured.out == "" and len(lines) == 2, captured.err
+    assert lines[0].startswith("BLEMMA: 名簿の錠が取れません") and lines[1].startswith("BLEMMA: Could not lock")
+    assert not (state / "run.json").exists()
+
+
+def test_a_last_user_that_cannot_take_the_roster_lock_leaves_the_board_running(isolated_repo, sessions, monkeypatch,
+                                                                              capsys):
+    """終わる側も、名簿の錠が取れない時は数えも止めもしない = 板は止めずに残し (印も残す = 次の起こし方の後始末か
+    --stop が止める)、理由を stderr に 1 行出す。錠を持つ回が名乗りや数えの途中の間に、錠なしで板を止めない。
+    止めの道は実物 (_stop_used・実の子の板)。自分の登録は消す (数を減らすだけ = 錠なしでも誰の板も止めない)。"""
+    state = isolated_repo / "board" / "state"
+    monkeypatch.setattr(L, "LOCK_WAIT", 0.3)
+    session = L.ensure_board(isolated_repo, unused_port())                      # 自分が起こした板 (実の子 process)
+    a = L.Clients(state)
+    a.join()
+    a.mark(session)
+    stops = []
+    real_stop = a._stop_used
+    monkeypatch.setattr(a, "_stop_used", lambda board: stops.append(board) or real_stop(board))
+    with roster_lock_held(state):
+        a.leave(session, keep=False)
+        assert stops == []
+        assert session.process.poll() is None and L.board_responds(session.info)   # 板は動いたまま
+        assert client_files(isolated_repo) == [".lock", f"board-{session.info.pid}.json"]
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 1 and "名簿の錠が取れない" in err[0] and "python blemma.py --stop" in err[0], err
+
+
+def test_a_live_holders_roster_lock_is_never_broken_but_a_dead_holders_lock_is(isolated_repo, monkeypatch):
+    """古い錠の回収は経過時間だけで決めない = 錠に持ち主の pid を書き、生きている pid の錠は LOCK_STALE (60 秒) を
+    過ぎても奪わない (止まっているだけの持ち主の名簿の区間に割り込まない)。pid が死んだ錠 (錠の中で後始末なしに消えた
+    回) は、待たずに回収して進む。記録の無い錠の決まり (60 秒) は上の試験。実の持ち主 (錠を開いたまま) は、Windows では
+    OS も消させない (共有の決まり・実測) = 誰も開いていない錠の段が、pid の決まりそのものを見る。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    a = L.Clients(state)
+    monkeypatch.setattr(L, "LOCK_WAIT", 0.5)
+    old = time.time() - L.LOCK_STALE - 5
+    with roster_lock_held(state) as holder:
+        os.utime(lock, (old, old))
+        with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+            a.join()
+        assert a.me is None and json.loads(lock.read_text(encoding="utf-8"))["pid"] == holder.pid
+    assert not lock.exists()                                                    # 持ち主が外した
+    record = json.dumps({"pid": os.getpid(), "at": "2026-11-08T00:00:00+09:00"})
+    lock.write_text(record, encoding="utf-8")                                   # 生きている pid・誰も開いていない錠
+    os.utime(lock, (old, old))
+    with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+        a.join()
+    assert a.me is None and lock.read_text(encoding="utf-8") == record
+    lock.unlink()
+    monkeypatch.setattr(L, "LOCK_WAIT", 3.0)
+    with roster_lock_held(state, "die") as dead:
+        assert lock.exists() and not L.pid_alive(dead.pid)
+        started = time.monotonic()
+        a.join()
+        assert time.monotonic() - started < 2 and a.me is not None and a.me.exists() and not lock.exists()
 
 
 def test_hardened_streams_do_not_raise_on_a_console_that_cannot_write_japanese():
