@@ -1501,6 +1501,47 @@ def test_the_extended_wait_for_a_lock_has_a_cap(isolated_repo, monkeypatch):
     assert 4.5 < time.monotonic() - started < 10 and lock.exists()
 
 
+def test_a_reclaimer_does_not_remove_a_lock_made_after_it_judged_the_old_one(isolated_repo, monkeypatch):
+    """古い錠の回収は見てから消す = 判定で読んだ錠と同じ錠 (st_ino・st_mtime_ns・中身) の時だけ消す。判定 (pid の生死を
+    見る間) の後に、別の回が同じ古い錠を回収して新しい錠を作っていたら、それは消さずに待つ (UltraReview の件 3 = 遅い方が
+    速い方の新しい錠を消し、両方が守る区間に入れた)。別の回は、判定の pid_alive の差し替えで、その間に割り込ませる。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    dead = 2 ** 31 - 2                                          # 死んだ持ち主 (下の差し替えが「死んでいる」と答える)
+    lock.write_text(json.dumps({"pid": dead, "at": "2026-11-08T00:00:00+09:00"}), encoding="utf-8")
+    fresh = json.dumps({"pid": os.getpid(), "at": "2026-11-08T00:00:01+09:00"})
+    real_alive = L.pid_alive
+    swapped, seen, released = [], [], threading.Event()
+
+    def other_launcher():                                       # 新しい錠の持ち主 = 区間を終えて、自分の錠を外す
+        time.sleep(0.5)
+        seen.append(lock.read_text(encoding="utf-8") if lock.exists() else None)
+        released.set()                                          # 区間を終えた (ここから錠を外す)
+        for _ in range(500):
+            try:
+                lock.unlink(missing_ok=True)
+                return
+            except PermissionError:                             # Windows = 待ち手が錠を読む一瞬は消せない (_unlock と同じく待つ)
+                time.sleep(0.01)
+
+    def judged_then_swapped(pid):
+        if pid != dead:
+            return real_alive(pid)
+        if not swapped:                                         # この回の判定の間に、別の回が回収して作り直した
+            swapped.append(True)
+            lock.unlink()
+            lock.write_text(fresh, encoding="utf-8")
+            threading.Thread(target=other_launcher, daemon=True).start()
+        return False
+
+    monkeypatch.setattr(L, "pid_alive", judged_then_swapped)
+    monkeypatch.setattr(L, "LOCK_WAIT", 3.0)
+    with L.Clients(state)._lock() as held:
+        assert held and released.is_set()                      # 新しい錠が外れてから入った = 2 つの回が同時に入らない
+    assert seen == [fresh] and swapped == [True]                # 新しい錠は、持ち主が外すまで消されなかった
+
+
 def test_a_roster_folder_that_cannot_be_written_falls_back_to_the_old_way(isolated_repo, sessions, launchers,
                                                                           monkeypatch, capsys):
     """名簿の置き場 (board/state/clients) に書けない時 (前に sudo で起こして作られた dir・読み取り専用の checkout) は、錠を

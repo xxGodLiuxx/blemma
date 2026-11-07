@@ -543,7 +543,7 @@ class Clients:
         いる錠を回収できる時刻までは伸ばす) まで待ち、待ち切れたら取れなかった事 (False) を渡す = 呼び手は守る区間に入らない
         (9 巡目 = 錠なしで進むと、数え終えて止める直前の回の板を使い回せた)。錠を作れない置き場 (書けない dir・読み取り専用の
         checkout) の時は待たずに None を渡す = 呼び手は名簿を使わない今までの動きに戻る (UltraReview の件 1 = 前はこれも使用中
-        と見て 15 秒待ち、毎回止まった)。古い錠の回収は経過時間だけで決めない (_stale)。"""
+        と見て 15 秒待ち、毎回止まった)。古い錠の回収は経過時間だけで決めず (_stale)、見てから消す (_reclaim)。"""
         path = self.dir / ".lock"
         fd = None
         held: bool | None = False
@@ -560,14 +560,9 @@ class Clients:
                     # 在る錠と同じく待つ。ほか (POSIX の EACCES・Windows の書けない dir) は錠を作れない置き場 = 下の退化へ
                     if isinstance(error, PermissionError) and not (os.name == "nt" and os.path.lexists(path)):
                         raise
-                    wait = self._stale(path)
-                    if wait is not None and wait <= 0:
-                        try:
-                            path.unlink(missing_ok=True)
-                        except OSError:
-                            pass           # 別の回が開いている一瞬 (Windows) = 次の回で
-                        else:
-                            continue
+                    wait, mark = self._stale(path)
+                    if wait is not None and wait <= 0 and self._reclaim(path, mark):
+                        continue
                     # 待つのは LOCK_WAIT。見ている錠を回収できる時刻 (記録の無い錠は LOCK_STALE_NO_PID・Windows の生きている
                     # pid の錠は LOCK_STALE) までは伸ばす = 待ち切って止まった直後に回収できる錠で、起こし直しを繰り返させない
                     # (UltraReview の件 2)。上限は LOCK_STALE + 5 秒 (時計が戻った後の錠などで待ち続けない)
@@ -593,28 +588,53 @@ class Clients:
                 self._unlock(path, fd)
 
     @staticmethod
-    def _stale(path: Path) -> float | None:
-        """見ている錠を回収できるまでの秒 (0 以下 = 今・None = 古さでは回収しない)。持ち主の pid が書いてあれば、その生死で
-        決める = pid が死んだ錠は今。生きている pid の錠は、どれだけ古くても奪わない (止まっているだけの持ち主の名簿の区間に
-        割り込まない・外の目の 9 巡目)。ただし Windows は LOCK_STALE を過ぎた時 (下)。記録の無い錠 (作った直後でまだ書いて
-        いない・書けなかった・消せずに残った・前の版の錠) は LOCK_STALE_NO_PID を過ぎた時。読めない時は None。"""
+    def _stale(path: Path) -> tuple[float | None, tuple]:
+        """見ている錠を回収できるまでの秒 (0 以下 = 今・None = 古さでは回収しない) と、読んだ時の印 (st_ino・st_mtime_ns・
+        中身 = 消す直前に同じ錠かを確かめる・_reclaim)。持ち主の pid が書いてあれば、その生死で決める = pid が死んだ錠は今。
+        生きている pid の錠は、どれだけ古くても奪わない (止まっているだけの持ち主の名簿の区間に割り込まない・外の目の 9 巡目)。
+        ただし Windows は LOCK_STALE を過ぎた時 (下)。記録の無い錠 (作った直後でまだ書いていない・書けなかった・消せずに
+        残った・前の版の錠) は LOCK_STALE_NO_PID を過ぎた時。読めない時は None。"""
         try:
-            age = time.time() - path.stat().st_mtime
+            stat = path.stat()
             raw = path.read_bytes()
         except OSError:
-            return None
+            return None, ()
+        mark = (stat.st_ino, stat.st_mtime_ns, raw)
+        age = time.time() - stat.st_mtime
         try:
             pid = json.loads(raw.decode("utf-8")).get("pid")
         except (ValueError, AttributeError, RecursionError):
             pid = None
         if type(pid) is int and 0 < pid < 2 ** 31:
             if not pid_alive(pid):
-                return 0.0
+                return 0.0, mark
             # Windows = 持ち主が開いたままの錠は OS が消させない (共有の決まり) ので、生きている pid の錠でも LOCK_STALE を
             # 過ぎたら回収を試みる = kill された回の pid を別の process が使い回しても 1 分で外れる (生きている持ち主の錠は
             # 消せずに「在る錠」として待つ)。POSIX は pid の生死だけ = 消せてしまうので、古さでは奪わない
-            return LOCK_STALE - age if os.name == "nt" else None
-        return LOCK_STALE_NO_PID - age
+            return (LOCK_STALE - age if os.name == "nt" else None), mark
+        return LOCK_STALE_NO_PID - age, mark
+
+    @staticmethod
+    def _reclaim(path: Path, mark: tuple) -> bool:
+        """古い錠を見てから消す = 判定 (_stale) で読んだ錠と同じ錠 (印が合う) の時だけ、一意の名へ移してから消す。合わない時
+        (判定の後に別の回が回収して作り直した錠) は消さずに待つ (UltraReview の件 3 = 死んだ回の錠を 2 つの回が同時に古いと
+        見ると、遅い方が速い方の新しい錠を消し、両方が守る区間に入れた)。Windows で持ち主が開いたままの錠は移せない
+        (共有の決まり) = 待つ。錠の名が空いた時 (消せた・もう無い) は True。"""
+        aside = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.stale")
+        try:
+            stat = path.stat()
+            if (stat.st_ino, stat.st_mtime_ns, path.read_bytes()) != mark:
+                return False                   # 判定の後に、別の回が回収して作り直した錠 = 待つ
+            os.replace(path, aside)
+        except FileNotFoundError:
+            return True                        # 別の回が先に回収した = すぐ作り直してみる (O_EXCL が決める)
+        except OSError:
+            return False                       # 別の回が開いている一瞬 (Windows) = 次の回で
+        try:
+            aside.unlink()
+        except OSError:
+            pass                               # 移した古い錠 (錠の名は空いた・名簿の数えは client-*.json の名だけを見る)
+        return True
 
     @staticmethod
     def _unlock(path: Path, fd: int) -> None:
