@@ -81,6 +81,7 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 | 「Python 3.10 以上で実行してください」と出る | 古い Python で起こしています。`python3 --version` (Windows は `py --version`) で版を確かめ、3.10 以上で起こします |
 | 「ブラウザを開けません」と出る | BLEMMA は、その PC でブラウザを開ける環境で使います。SSH の先・画面の無い Linux・WSL では確かめていません |
 | 「--settings は -- の後ろに渡せません」と出る | BLEMMA は自分の設定を `--settings` で渡します。hooks などは `.claude/settings.json` に書きます |
+| 「この 1 行は今の出力先の文字コードで書けません」と出る | `--print-only` の 1 行を pipe や file へ向けた時 (`\| Set-Clipboard`・`> line.txt`) に、その文字コードで書けない字 (é など) がありました。向けずに console に表示して写します |
 | mac / Linux で、小窓でなく通常のタブで開いた | Python の tkinter が無く、画面の寸法が取れません。`python3 -c "import tkinter"` で確かめ、tk を入れる (配布元の手順で) か、`python3 blemma.py --window-position 1200,600` のように位置を渡すと小窓で開きます |
 | 小窓に ERR_UNSAFE_PORT と出る | その番号はブラウザが開きません (6000・6665〜6669・10080 など)。`--port 8766` のように別の番号で起こし直します |
 | 2 つ目の端末で起こしても、窓が増えない | 正常です。扇は 1 枚で、どの端末の札も同じ扇に出ます。扇が見当たらない時は、開いている板の頁を閉じてから起こし直します |

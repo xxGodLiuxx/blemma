@@ -54,13 +54,16 @@ PAGE_KEY_SHAPE = re.compile(r"[A-Za-z0-9_-]{1,24}")   # 誤りの文に名を出
 UNSET = object()                 # 旗を打っていない印 (--window-position の None は「右下」という読めた値)
 CLAUDE_MISSING = (
     # 第 2 の道は頁を開く板を手で起こす (--print-only は頁を開かないので、--keep-board で残した板には見る頁が無い)。
-    "claude が見つかりません。Claude Code が使える端末で、もう一度 python blemma.py を実行してください。"
-    "別の端末で Claude Code を起こす時は、python board/server.py で板を起こし (頁が開きます・Ctrl+C で止まります)、"
-    "Claude Code を起こす端末で python blemma.py --print-only を実行して、表示された 1 行を打ってください。\n"
-    "claude was not found. Run python blemma.py again in a terminal where Claude Code is available. "
+    "claude が見つかりません (claude が shell の alias だけで動く端末でも、こう出ます。その時は次の手順を使います)。"
+    "Claude Code が使える端末で、もう一度 python blemma.py を実行してください。"
+    "別の端末で Claude Code を起こす時は、python board/server.py で板を起こし (頁が開きます・Ctrl+C で止まります・"
+    "開くのは大きな板 = 扇にするなら住所の # より前に ?mode=small を足す)、"
+    "Claude Code を起こす端末で python blemma.py --print-only を実行して、(Windows では PowerShell で) 表示された 1 行を打ってください。\n"
+    "claude was not found (this also happens when claude is only a shell alias; use the steps below). "
+    "Run python blemma.py again in a terminal where Claude Code is available. "
     "To start Claude Code in another terminal, start the board with python board/server.py "
-    "(it opens the page; Ctrl+C stops it), then in the terminal for Claude Code, "
-    "run python blemma.py --print-only and run the printed line.")
+    "(it opens the large board; add ?mode=small before the # in the address for the fan; Ctrl+C stops it), then in the terminal for Claude Code, "
+    "run python blemma.py --print-only and run the printed line (PowerShell on Windows).")
 
 PAGE_OPEN = ("BLEMMA: 扇は既に開いています。この端末の確認も同じ扇に出ます "
              "(見当たらない時は、開いている板の頁を閉じてから起こし直してください) / "

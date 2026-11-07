@@ -297,7 +297,9 @@
 | elicitation の応答 | 道具の戻り (text) | `isError` |
 |---|---|---|
 | `accept` + `choice` = "1"〜"6" | `{"answer": "<選ばれた choices の文>", "index": <1 から>}` | false |
-| `accept` + `choice` = "other" | `{"answer": "<other_text>", "free_text": true}` | false |
+| `accept` + `choice` = "other" + 空白でない `other_text` | `{"answer": "<other_text>", "free_text": true}` | false |
+| `accept` + `choice` = "other" + `other_text` が空・空白だけ・無い | `decline` と同じ戻り (`{"answer": null, "declined": true}` + 「人はどれも選びませんでした…」) = 空の文を答えにしない (2 巡目 i25) | false |
+| `accept` + `choice` = "1"〜"6" + 空でない `other_text` (端末の form) | `{"answer": "<選ばれた choices の文>", "index": <1 から>, "note": "<other_text (前後の空白を除く)>"}` = 番号に添えた文は条件として守る | false |
 | `decline` | `{"answer": null, "declined": true}` + 「人はどれも選びませんでした。別の案を出すか、文で訊いてください」 | false |
 | `cancel` | `{"answer": null, "cancelled": true}` + 「人はこの問い合わせを閉じました。作業を止めて次の指示を待ってください」 | false |
 | client が elicitation を宣言していない | 「この環境では MCP の問いが出せません。AskUserQuestion か文で訊いてください」 | true |
@@ -316,10 +318,10 @@
 3. `tools/list` で上の schema。`tools/call` の中で server → client の要求 `elicitation/create` (自分の id) を送り、client の応答 (`action`・`content`) を待つ = stdin を読む thread が id で応答を振り分ける (待つ間に来る `ping` にも答える)。
 4. 2026-07-28 の版 (`InputRequiredResult` に入れて返し、client が `inputResponses` を付けて呼び直す = MRTR・裏取り §2.3【raw】) は作らない。2025-11-25 が通らなかった時も**MRTR へ自動で全面変更せず、ask_board を外して範囲を縮める** (§10.2)。
 
-**使い方の届け方** (11/6): `initialize` の返りの `instructions` に、ask_board の使い方の芯 (いつ使うか・選択肢の決まり・戻りの読み方・使わない時) を英語の短い文で載せる = Claude Code が MCP server の案内として読むので、何も入れなくても先回りの作法が載る (590 字ほど・道具を後から探す設定でも、起動の時に載るのは道具の名とこの文)。同梱の skill `skills/board/SKILL.md` は、repo の根に置いただけでは Claude Code のどの置き場にも当たらず読まれない (公式の置き場 = `~/.claude/skills/`・project の `.claude/skills/` など)。細かな作法まで載せたい人は `~/.claude/skills/board/` へ写す (README)。
+**使い方の届け方** (11/6): `initialize` の返りの `instructions` に、ask_board の使い方の芯 (いつ使うか・選択肢の決まり・戻りの読み方・使わない時) を英語の短い文で載せる = Claude Code が MCP server の案内として読むので、何も入れなくても先回りの作法が載る (650 字 (11/7 夜に note の 1 文を足して 646 字)ほど・道具を後から探す設定でも、起動の時に載るのは道具の名とこの文)。同梱の skill `skills/board/SKILL.md` は、repo の根に置いただけでは Claude Code のどの置き場にも当たらず読まれない (公式の置き場 = `~/.claude/skills/`・project の `.claude/skills/` など)。細かな作法まで載せたい人は `~/.claude/skills/board/` へ写す (README)。
 
 **同梱の skill** `skills/board/SKILL.md` (作法・v1 の判断): ①答えが 2〜6 個の選択肢に絞れる問いは `ask_board` で出す ②作業の区切り (commit の後・試験の後) で「次の一手」を 3 つ前後 ③選択肢は 40 字以内・互いに違う・必ず「ここで止める / 待つ」を 1 つ ④答えを推測で進めない (cancel なら止まる) ⑤Claude 自身の確かめ (2〜4 択) は `AskUserQuestion` でもよい・subagent の中からは `ask_board` (AskUserQuestion が無い) ⑥自由記述が要りそうな問いは、ありそうな答えを先に選択肢に入れてから `allow_free_text` (候補の釦を増やす = 端末へ戻る回を減らす)。CLAUDE.md へ誘導する 1 行の例 =「迷う所は ask_board か AskUserQuestion で 2〜6 択にして訊く」。
-- 11/4 の実装 (日本語 + 英語の要約): ③は「無ければ server が「ここで止める」を足す = 6 つの枠の 1 つを空けておく (自分の選択肢は 5 つまで)」。戻りの読み方の表を足した = `index` (n 番目を選んだ → その文のとおりに進む)・`free_text` (文を指示として読む)・`declined` (別の案か文で訊く)・`cancelled` (止めて待つ)・**時間切れの `isError` = 止めて次の指示を待つ (同じ問いを繰り返さない)**・それ以外の `isError` = 引数を直すか、AskUserQuestion か文で訊く。時間切れを「引数を直す」の行に入れない (外部のレビュー (別の LLM による反証) の所見)。
+- 11/4 の実装 (日本語 + 英語の要約): ③は「無ければ server が「ここで止める」を足す = 6 つの枠の 1 つを空けておく (自分の選択肢は 5 つまで)」。戻りの読み方の表を足した = `index` (n 番目を選んだ → その文のとおりに進む)・`note` (番号に添えた文 = 条件として守る・11/7 夜の 2 巡目 i25)・`free_text` (文を指示として読む)・`declined` (別の案か文で訊く)・`cancelled` (止めて待つ)・**時間切れの `isError` = 止めて次の指示を待つ (同じ問いを繰り返さない)**・それ以外の `isError` = 引数を直すか、AskUserQuestion か文で訊く。時間切れを「引数を直す」の行に入れない (外部のレビュー (別の LLM による反証) の所見)。
 
 **要る版**: Claude Code **v2.1.287 以降** (利用者が設定した stdio の MCP server に elicitation を宣言する版・裏取り §2.4【raw】)。v2.1.314 で確かめる → v2.1.318 で確かめた (§10.3 の 3)。
 
@@ -626,7 +628,7 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 | 小型の表示では、札の到着を読み上げない・設定を閉じた後の焦点が頁の頭へ行く | 読み上げの「押す」は受ける (§4.2)・扇の取り消しには読み上げ用の名がある | 読み上げを使う人の通り道は、提出の後に実機で確かめる |
 | 同じ板の窓が 2 枚ある間は、固定と透過が効かない | どの窓が頼んだ頁か決められない (戻す向きの頼みだけは全部に当てる・§4.4) | 窓は 1 枚で使う (起こし方は、見る頁が在る板に 2 枚目を開かない・§3.2) |
 | 起こし方の名簿に、窓ごと閉じた端末の登録が残る事がある | その番号を別の process が使い回すと「まだ使っている」と数え、板が止まらずに残る (安全側) | `python blemma.py --stop` で止める |
-| `--print-only` が表示する 1 行は、Windows では PowerShell 用 | cmd.exe と Git Bash ではそのまま打てない。Git Bash では日本語の文が化ける事がある | PowerShell で打つ |
+| `--print-only` が表示する 1 行は、Windows では PowerShell 用 | cmd.exe と Git Bash ではそのまま打てない。Git Bash では日本語の文が化ける事がある。書けない字 (é など) を含む出力先へ向けた時は、理由を出して止まる (2 巡目 i29) | PowerShell で打つ |
 | mac / Linux・WSL・SSH の先・画面の無い環境 | 手元で試した OS は Windows だけ。mac / Linux は、画面の寸法が取れない時 (tkinter が無い時) に既定のブラウザのタブで開く | 提出の後に実機で確かめる |
 | 板が後始末なしに消えた後、同じ PC の別の利用者の process が同じ port を先に取ると、hook はそれを板と見なす (11/7 の公開の点検 BL-PY-01・作り手の裁定 #220 B) | 起動の記録 (`run.json`) が残ったまま。hook は札の本文をその相手へ渡し、相手が「許可」と返せば、人が押さないまま許可を返す (写しで再現)。同じユーザーの process は元から鍵を読めるので、害が増えるのは別の利用者だけ | 複数の人が同時に使う機械では使わない。板が強制終了した後は `board/state/run.json` を消してから起こす |
 | 同じユーザーで動く他のプログラムは、`board/state/run.json` の token を読める (11/7 の公開の点検 BL-PY-07) | 置き場の許可 (§3.2) は他のユーザーへの守り。同じユーザーの process は、Claude Code 自身を含め、token を読んで `/answer` を送れる | 板が見張る相手と同じユーザーの process は信じる前提で使う (README に明記) |
