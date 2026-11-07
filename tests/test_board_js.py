@@ -3168,6 +3168,57 @@ console.log(JSON.stringify(out));
     assert out == {"small": want, "large": want}, out
 
 
+def test_a_click_and_a_number_do_not_make_one_double_press(tmp_path, clock):
+    """扇の 2 回押しの 1 回目と 2 回目は、同じ入り方 (click 同士・同じ数字同士) の時だけ決める。click で選んだ
+    「次から訊かない」を、迷い込んだ数字 1 つで決めない。数字で選んだ物を click 1 回でも決めない (外の目の 6 巡目の再現 =
+    click と数字が同じ「選んだ」の控えを使い、click の後の数字 1 つで allow_always を送った)。"""
+    two = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("git status") + _rule("npm test")))
+    out = page(tmp_path, r"""
+function armed(c) { return c.doc().querySelectorAll(".armed").map(function (b) { return b.dataset.key; }); }
+const out = {};
+let c = await P.boot({ query: "?mode=small&lang=ja" });
+c.show(TWO); await c.run(500);
+await c.click(c.btn("sugg:0"));                    /* click で選ぶ (1 回目) */
+await c.run(200);
+await c.key("2", "Digit2");                        /* 端末へ向けたつもりの数字 = 決めない (数字の 1 回目として選び直す) */
+out.clickThenDigit = { sent: c.answers().length, armed: armed(c) };
+await c.key("2", "Digit2");
+out.clickThenDigitThen = choices(c);
+c = await P.boot({ query: "?mode=small&lang=ja" });
+c.show(TWO); await c.run(500);
+await c.key("2", "Digit2");                        /* 数字で選ぶ (1 回目) */
+await c.run(200);
+await c.click(c.btn("sugg:0"));                    /* click 1 回 = 決めない (click の 1 回目として選び直す) */
+out.digitThenClick = { sent: c.answers().length, armed: armed(c) };
+await c.run(200);
+await c.click(c.btn("sugg:0"));
+out.digitThenClickThen = choices(c);
+console.log(JSON.stringify(out));
+""", TWO=two)
+    always0 = [{"type": "allow_always", "suggestion": 0}]
+    assert out == {"clickThenDigit": {"sent": 0, "armed": ["sugg:0"]}, "clickThenDigitThen": always0,
+                   "digitThenClick": {"sent": 0, "armed": ["sugg:0"]}, "digitThenClickThen": always0}, out
+
+
+def test_a_resuming_scan_keeps_the_quiet_after_the_window_got_the_focus(tmp_path, clock):
+    """pointer が止まって走査が戻る時も、窓が焦点を得た後の静かな 1 こまは短くしない (外の目の 6 巡目の再現 = 焦点の
+    0.5 秒後に pointer の止まりで走査が戻り、0.4 秒の鍵の間が終わった後に許可が光った)。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+function lit(c) { return c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; })[0] || null; }
+const c = await P.boot({ query: "?mode=small&lang=ja&scan=1.5" });
+c.show(A); await c.run(3000);
+c.pointer(5, 5);                                   /* 窓の中で pointer が動いた = 走査は 1.5 秒止まる */
+await c.run(1000);
+c.win.listeners.fire("focus", {});                 /* 動きの 1 秒後に窓が焦点を得た = 静かな間は焦点から 1.5 秒 */
+await c.run(700);                                  /* 焦点の 0.7 秒後 (pointer の止まりで走査が戻るのは 0.5 秒後) */
+const early = lit(c);
+await c.run(900);                                  /* 焦点の 1.6 秒後 */
+console.log(JSON.stringify({ early: early, later: lit(c) }));
+""", A=a)
+    assert out == {"early": None, "later": "allow_once"}, out
+
+
 def test_the_window_getting_the_focus_does_not_relight_the_allow_or_count_keys_at_once(tmp_path, clock):
     """窓が鍵の焦点を得た直後 (別の窓を閉じた時に OS が扇へ焦点を移す・人が扇を click する) は、走査を頭 (許可) からすぐには
     光らせず、静かな 1 こまを置いてから回す。鍵とスイッチの押しは 0.4 秒数えず、その間は頁に印 (body.settling) を付ける

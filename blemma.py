@@ -622,7 +622,8 @@ def _which(name: str) -> str | None:
         if os.path.splitext(name)[1].upper() not in {e.upper() for e in exts}:
             tails = exts
     for folder in os.environ.get("PATH", "").split(os.pathsep):
-        folder = folder.strip().strip('"')
+        if os.name == "nt":            # Windows の PATH の欄は前後の空白と引用符を外して読む (POSIX では名の一部になりうる = そのまま)
+            folder = folder.strip().strip('"')
         if not folder or not os.path.isabs(folder):
             continue
         for tail in tails:

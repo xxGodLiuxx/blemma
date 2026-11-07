@@ -268,6 +268,21 @@ def test_a_deeply_nested_body_is_refused_without_breaking_the_handler(live, caps
     assert srv.request("GET", "/pending")[0] == 200          # 板はそのまま答える
 
 
+def test_the_body_is_parsed_only_after_the_token_passes(live, monkeypatch):
+    """本文の JSON を解くのは、鍵が通った後だけ = 鍵の無い要求では 1 度も解かない (外の目の 6 巡目 = 返りの形だけを見る
+    試験では、解く順を鍵の前へ戻す後戻りを見張れなかった)。"""
+    calls = []
+    real = S.Handler._parse_json
+    monkeypatch.setattr(S.Handler, "_parse_json", staticmethod(lambda raw: calls.append(raw) or real(raw)))
+    srv = live()
+    body = {"kind": "permission", "from": {"cwd": "repo"}, "payload": dict(PERM)}
+    assert srv.request("POST", "/ask", body, token=None)[0] == 401
+    assert srv.request("POST", "/ask", body, token="wrong")[0] == 401
+    assert calls == []
+    assert srv.request("POST", "/ask", body)[0] == 200
+    assert len(calls) == 1
+
+
 def test_hook_that_dies_is_disconnected_quickly(live):
     """/wait を抱えている間に hook が死んでも、抱える秒を待たずに接続の終了へ (§3.7 (a))。"""
     srv = live(replace(FAST, wait_hold=10.0, disconnect=0.3))

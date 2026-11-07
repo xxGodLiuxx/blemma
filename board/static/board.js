@@ -1242,8 +1242,10 @@
          2 回押しの 2 回目が新しい札の羽根を選び、人が見てから押す click は 1 回で決まってしまう。名指しの鍵や滞留で
          札の中を進めた直後も同じ (0.4 秒をまたぐ 2 回の click が、見ていない画面の羽根を決めない) */
       if (at - S.genAt < SETTLE_MS || at - (S.stepAt || -1e9) < SETTLE_MS) return;
-      var step = C.armStep(S.armKey ? { key: S.armKey, at: S.armAt } : null, b.dataset.key, at, ARM_MS);
-      if (!step.confirm) { armChoice(b, at); return; }
+      /* 1 回目と 2 回目は同じ入り方 (click 同士) の時だけ決める = 数字で選んだ羽根を click 1 回で、click で選んだ
+         羽根を迷い込んだ数字 1 つで決めない (外の目の 6 巡目・恒久の許可の 2 回押しの穴) */
+      var step = C.armStep(S.armKey && S.armBy === "click" ? { key: S.armKey, at: S.armAt } : null, b.dataset.key, at, ARM_MS);
+      if (!step.confirm) { armChoice(b, at, "click"); return; }
       disarm();
     }
     press(b.dataset.key, how);
@@ -1290,7 +1292,9 @@
        * pointer が止まっているか窓の外なら回る (スイッチの人・OS の鍵盤を見ている時)。 */
       var moving = dwelling || now - (S.pointerAt || -1e9) < 1500;
       if (moving) S.scanPaused = true;
-      else if (S.scanPaused) { S.scanPaused = false; S.scan.restart(Math.max(now, S.genAt + scanQuiet() || 0)); }
+      /* 止まっていた走査が戻る時も、替わった後と焦点を得た後の静かな間は短くしない (外の目の 6 巡目 = 焦点の 0.5 秒後に
+         pointer の止まりで戻り、許可が早く光った) */
+      else if (S.scanPaused) { S.scanPaused = false; S.scan.restart(Math.max(now, S.genAt + scanQuiet(), (S.focusAt || -1e9) + scanQuiet())); }
       if (card && card.state === "deciding") {
         var u = $("undo-btn");                               /* 猶予のうち = 走査を止め、次の押下 = 取り消す */
         target = u.hidden || now - S.genAt < settleFor("undo") ? null : u;   /* 出たばかりの間は光らせない = 押せる時から光る (press と同じ間) */
@@ -1480,11 +1484,12 @@
 
   /* 扇の選択肢 = 1 回目の click は選ぶだけ。同じ羽根をもう 1 回押すと決まる (ダブルクリックもこの形) */
   var ARM_MS = 1500;
-  function armChoice(b, now) {
+  function armChoice(b, now, by) {
     disarm();
     S.armKey = b.dataset.key;
     S.armBtn = b;
     S.armAt = now;
+    S.armBy = by;                     /* 選んだ入り方 (click / digit) = 2 回目は同じ入り方の時だけ決める */
     b.classList.add("armed");
     spotlight(b);
     var t = $("fan-script-1");
@@ -1502,9 +1507,9 @@
     var at = performance.now(), card = S.card, b = S.btns[key];
     if (!card || S.overlay || S.answering || card.state !== "shown" || !b || b.disabled) return false;
     if (at - S.genAt < SETTLE_MS || at - (S.focusAt || -1e9) < SETTLE_MS) return false;
-    var step = C.armStep(S.armKey ? { key: S.armKey, at: S.armAt } : null, key, at, ARM_MS);
+    var step = C.armStep(S.armKey && S.armBy === "digit" ? { key: S.armKey, at: S.armAt } : null, key, at, ARM_MS);
     if (step.confirm) { disarm(); return true; }
-    armChoice(b, at);
+    armChoice(b, at, "digit");
     S.notice = L().digit_again;
     S.noticeUntil = at + ARM_MS;
     updateSide(at);
@@ -1515,6 +1520,7 @@
     if (S.armBtn) S.armBtn.classList.remove("armed");
     S.armKey = null;
     S.armBtn = null;
+    S.armBy = null;
   }
 
   function copyPage(dir) {
