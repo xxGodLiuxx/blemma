@@ -699,6 +699,32 @@ def test_claude_exit_code_and_caller_working_directory(isolated_repo, sessions, 
     assert capsys.readouterr() == ("", "")
 
 
+def test_children_do_not_inherit_the_callers_cwd(isolated_repo, sessions, monkeypatch, tmp_path):
+    """Claude Code は起こした端末の作業フォルダーで動く (上の試験) が、板と小窓のブラウザはそれを cwd に継がない
+    (2 巡目 i31)。Windows では cwd にしている process が居る間、そのフォルダーの改名・削除が「使用中」で失敗する
+    (--keep-board で残した板が、最初に起こしたフォルダーを掴み続けた)。"""
+    caller = tmp_path / "作業 フォルダー"
+    caller.mkdir()
+    monkeypatch.chdir(caller)
+    original = L.subprocess.Popen
+    started = []
+
+    def record(*args, **kwargs):
+        started.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(L.subprocess, "Popen", record)
+    session = L.ensure_board(isolated_repo, unused_port())
+    assert session.process is not None and len(started) == 1
+    assert started[0].get("cwd") == str(isolated_repo.resolve())
+    opened = []
+    monkeypatch.setattr(L.subprocess, "Popen", lambda command, **kwargs: opened.append(kwargs))
+    monkeypatch.setattr(L, "find_app_browser", lambda: "chrome")
+    monkeypatch.setattr(L, "work_area", lambda: (0, 0, 1920, 1080))
+    L.open_board(L.RunInfo(18770, "test-placeholder", 123), "small", (640, 720), None)
+    assert len(opened) == 1 and opened[0].get("cwd") == str(L.ROOT)
+
+
 def test_config_write_failure_stops_before_claude(isolated_repo, sessions, monkeypatch, capsys):
     monkeypatch.setattr(L, "ROOT", isolated_repo)
     monkeypatch.setattr(L, "find_claude", lambda: "claude")

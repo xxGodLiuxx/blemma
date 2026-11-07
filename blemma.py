@@ -364,9 +364,11 @@ def ensure_board(root: Path, port: int, timeout: float = START_TIMEOUT) -> Board
             return session
         _check_start_deadline(deadline)
         launched = time.time() - 1.0  # run.json がこの時刻より後なら、自分が起こした板 (pid が転送役で合わない時)
+        # cwd は置き場 = 起こした端末の作業フォルダーを継がない (板は全部の路を自分の置き場から組む。Windows では cwd に
+        # している process が居る間、そのフォルダーの改名・削除が「使用中」で失敗する = --keep-board の板が掴み続けた)。
         session.process = subprocess.Popen(
             [python_executable(), "-I", str(root / "board" / "server.py"), "--no-browser", "--port", str(port)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(root),
             **background_options())
         while True:
             _check_start_deadline(deadline)
@@ -752,7 +754,8 @@ def open_board(info: RunInfo, mode: str, size: tuple[int, int],
                           f"--window-position={position[0]},{position[1]}", f"--user-data-dir={profile}",
                           "--no-first-run", "--no-default-browser-check"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, **background_options())
+                         stderr=subprocess.DEVNULL, cwd=str(ROOT),     # 板と同じく作業フォルダーを継がない
+                         **background_options())
     elif not webbrowser.open(url):
         raise LaunchError("ブラウザを開けません / Could not open the board browser")
 
