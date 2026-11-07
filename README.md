@@ -130,7 +130,7 @@ Claude Code は仕事の途中で何度も確認を求めます。確認は端�
 - tkinter を入れられない時は `python3 blemma.py --window-position X,Y` (例 `1200,600`) で位置を渡すと、Chrome / Edge の小窓で開きます。
 - 提出版で直さずに残した制限は [`docs/design.md` §5.7](docs/design.md#57-知っていて残した制限) に並べました。
 - Windows の「常に手前」は `POST /window` → `board/window_win.py` → 標準ライブラリの `ctypes` で既存の小窓を固定します。触るのはその板の小窓 1 枚だけです (既定でないポートの板は、窓の名にポート番号が付きます)。対象の窓が見つからない時・固定に失敗した時と他の OS では、対応ブラウザの Document Picture-in-Picture を使います。
-- 11/7 の自動試験の記録は 597 本・skip 0。実ブラウザの試験も含みます。代用品に差し替えている経路と実機での確認範囲は [`docs/design.md` §7.3](docs/design.md#73-試験と検収) に記載しています。
+- 11/7 の自動試験の記録は 644 本・skip 0。実ブラウザの試験も含みます。代用品に差し替えている経路と実機での確認範囲は [`docs/design.md` §7.3](docs/design.md#73-試験と検収) に記載しています。
 
 ## この後
 
