@@ -685,6 +685,34 @@ async function closeCard(id) {
   assert.equal(still.state,'shown','A button the column moves under a resting pointer is not pressed, not even "don\'t ask again": '+JSON.stringify(still.choice));
   await mouse({x:5,y:5});
   await closeCard(wired);
+  // Resting the pointer on "▼ more" pages by itself (after 0.35 s, then every 1.5 s, and it stops at the end). With dwell on,
+  // the dwell on "more" must not page a second time on top of that: the text would jump on (two pages 0.65 s apart) or, at
+  // the end, go back to the top while the person is still reading.
+  await call('Emulation.setDeviceMetricsOverride',{width:624,height:688,deviceScaleFactor:1,mobile:false});
+  for (const d of [1,2]) {
+    await open('mode=small&lang=ja&dwell='+d);
+    for (const lines of [80,10]) {
+      const text=Array.from({length:lines},(_,i)=>'echo line '+(i+1)).join('\n');
+      const paged=(await api('/ask',{kind:'permission',from:{cwd:'repo'},payload:{head:'Bash',text:'run the script',blocks:[{label:'command',text,mono:true}]}})).id;
+      await until(`!document.querySelector('#more').hidden && ${READY}`);
+      await sleep(900);
+      await mouse({x:5,y:5});
+      await evaluate(`(() => { const c=document.querySelector('#copy'); window.__pages=[];
+        if (window.__pager) c.removeEventListener('scroll',window.__pager);   // One listener per page, card after card.
+        window.__pager=()=>window.__pages.push([Math.round(performance.now()),c.scrollTop]);
+        c.addEventListener('scroll',window.__pager,{passive:true}); })()`);
+      await mouse(await point('#more'));
+      await sleep(4300);
+      const pages=await evaluate(`window.__pages`);
+      await mouse({x:5,y:5});
+      const gaps=pages.slice(1).map((p,i)=>p[0]-pages[i][0]);
+      assert(pages.length>=1 && pages[0][1]>0,'Resting on "more" pages the text: '+JSON.stringify(pages));
+      if (lines===80) assert(pages.length>=2,'A long text keeps paging while the pointer rests on "more": '+JSON.stringify(pages));
+      assert(gaps.every(g=>g>=1400),'Dwell '+d+': "more" pages at most every 1.5 s, not twice in a row: '+JSON.stringify(pages));
+      assert(pages.every(p=>p[1]>0),'Dwell '+d+': resting on "more" never sends the text back to the top: '+JSON.stringify(pages));
+      await closeCard(paged);
+    }
+  }
   assert.deepEqual(errors,[]);
   console.log('browser checks passed'); ws.close();
 })().catch(error=>{
