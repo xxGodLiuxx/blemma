@@ -136,6 +136,7 @@ GIT_RULE = {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "g
             "behavior": "allow", "destination": "localSettings"}
 DIRS = {"type": "addDirectories", "directories": ["/home/u/demo-repo"], "destination": "session"}
 BYPASS = {"type": "setMode", "mode": "bypassPermissions", "destination": "session"}
+AUTO = {"type": "setMode", "mode": "auto", "destination": "session"}
 EDIT = perm("Edit", {"file_path": "/home/u/demo-repo/README.md", "old_string": "行01: りんご",
                      "new_string": "行01: 林檎", "replace_all": False}, [ACCEPT_EDITS])
 BASH = perm("Bash", {"command": 'git commit -m "誤字を直す"', "description": "Commit the fix"}, [GIT_RULE])
@@ -187,13 +188,19 @@ def test_perm_set_mode_suggestion(board):
 
 
 def test_perm_offers_two_known_suggestions_without_bypass(board):
-    """板に出すのは公式の 6 種だけ・bypassPermissions へ移す物は除く・2 件まで。番号はこの列で引く。"""
+    """板に出すのは公式の 6 種だけ・bypassPermissions と auto へ移す物は除く (一押しで以後の確認が消える・分類器に任される =
+    1 巡目 #26)・2 件まで。番号はこの列で引く。板の答えが番号で来ても、その 2 つは書かない。"""
+    import permission as PERM
+
     third = dict(GIT_RULE, destination="userSettings")
     board.answer({"type": "allow_always", "suggestion": 1})
-    data = perm("Bash", {"command": "git commit -m x"}, [BYPASS, "junk", {"type": "unknown"}, DIRS, GIT_RULE, third])
+    data = perm("Bash", {"command": "git commit -m x"},
+                [BYPASS, AUTO, "junk", {"type": "unknown"}, DIRS, GIT_RULE, third])
     out = one_json(run("permission.py", data, board.run_file))
     assert board.payload["suggestions"] == [DIRS, GIT_RULE]
     assert out["hookSpecificOutput"]["decision"]["updatedPermissions"] == [GIT_RULE]
+    for skipped in (BYPASS, AUTO):
+        assert PERM.decide({"type": "allow_always", "suggestion": 0}, [skipped]) is None, skipped["mode"]
 
 
 @pytest.mark.parametrize("j", [0, 1, 2])

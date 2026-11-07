@@ -116,10 +116,10 @@
 
 「次から訊かない」の字 (v1.1 の判断・保存先の種 = 裏取り §1.5【断片】):
 - 規則を足す suggestion (`addRules`) = 「次から訊かない: Bash(git commit …) — <保存期間>」。保存期間の字 = `session`「このセッションの間」/ `localSettings`「この project・この機械で恒久」/ `projectSettings`「この project の共有の設定で恒久 (commit されうる)」/ `userSettings`「全部の project で恒久」。
-- モードを替える suggestion (`setMode`) = 別の字「モードを替える: 編集を訊かない (acceptEdits) — このセッションの間」(規則を 1 つ足す釦と同じ字にしない)。**`bypassPermissions` へ移す物は釦にしない** (一押しで確認が全部消える物は板で出さない)。
+- モードを替える suggestion (`setMode`) = 別の字「モードを替える: 編集を訊かない (acceptEdits) — このセッションの間」(規則を 1 つ足す釦と同じ字にしない)。**`bypassPermissions`・`auto` へ移す物は釦にしない** (一押しで以後の確認が全部消える物・分類器に任される物は板で出さない)。
 - `replaceRules`・`removeRules`・`addDirectories`・`removeDirectories` = 中身を逐語で出す (例「このフォルダも許す: <路>」)。複数あれば 2 件まで (3 件目からは端末で)。
 - #91216【報告】= suggestion が端末の行と一致しない事がある → 板は suggestion の中身そのものを見せ、それをそのまま写す。
-- 板に出す列は hook が絞る (11/4) = 公式の 6 種だけ・`bypassPermissions` へ移す物を除き・先頭から 2 件。板の答えの番号はこの列で引き、その要素を `updatedPermissions` へ逐語で写す。
+- 板に出す列は hook が絞る (11/4) = 公式の 6 種だけ・`bypassPermissions`・`auto` へ移す物を除き・先頭から 2 件。板の答えの番号はこの列で引き、その要素を `updatedPermissions` へ逐語で写す。
 
 **板に出さない物** (script が無出力で返す・v1.1 の判断):
 - `tool_name` が `ExitPlanMode` = allow が効かない回帰が open で 3 件 (§5.5)。計画の承認は端末で。
@@ -582,7 +582,7 @@ Claude Code (hook を起こす・stdin に問いの JSON) → hook (python・`PO
 - 頁がどこにも開いていない時は札を受けない (見る人の判定・§3.4 = hook は無出力で端末へ・待ちと表示の札は expired・決めた札は猶予を完走)。
 - 「常に手前」は利用者が開く Document Picture-in-Picture (§4.4)。非対応なら釦を隠し、開けなければ「常に手前を開けませんでした」と出す。OS 固有の最前面の保証は足さない。
 - 端末で先に許可の側を答えた権限の札は、hook が止められず遅れた板の答えは効かない = 人が「端末で答える」で閉じる・`--perm-wait` を縮める助言 (§3.7 (b))。
-- 札は 1 件ずつ・出どころを頭に・Bash の command は省かない・「次から訊かない」は対象と保存期間を見せ、モードの切り替えは別の字・`bypassPermissions` へ移す suggestion は出さない (§2.1)。
+- 札は 1 件ずつ・出どころを頭に・Bash の command は省かない・「次から訊かない」は対象と保存期間を見せ、モードの切り替えは別の字・`bypassPermissions`・`auto` へ移す suggestion は出さない (§2.1)。
 - 取り消しは hook へ返す前・4 つの入力とも・表示の世代が変わったら滞留と選択を解く (§3.6・§4.2)。
 - 記録は選択と時刻と数だけ・BLEMMA は外のサービスへ自動では送らない (§3.8)。
 - 計画の承認 (ExitPlanMode)・plan mode の権限・URL mode の問い・描けない schema・除外の表の道具は板に出さない (§2.1・§2.3)。
@@ -937,7 +937,7 @@ v1.2 = 締切が 11/8 20:00 (参加者ガイド・10/31) なので v1.1 の 8 �
 ### 11.2 v1 と v1.1 で書き手が決めた事 (実装で覆してよい・覆したらこの file を直す)
 - 釦 = 許可 (今回)・次から訊かない (対象と保存期間・モードの切り替えは別の字)・拒否 (定型 3)・固定の位置の釦 (口ごとの字と意味・§4.3)・端末で答える (96px 以上)。
 - 板は選択式の問いだけ・自由記述と入力の直しは端末へ (候補の釦と最小の打鍵の道で補う・§4.3)。
-- 板に出さない物 = ExitPlanMode・plan mode の権限・URL mode・描けない schema・`bypassPermissions` へ移す suggestion・除外の表の道具。
+- 板に出さない物 = ExitPlanMode・plan mode の権限・URL mode・描けない schema・`bypassPermissions`・`auto` へ移す suggestion・除外の表の道具。
 - server の口・choice は番号だけ・`seq` で古い画面を断る・token の見出し・Host の照合・待ち 20 件 (§3.3)。→ 11/4 = choice は種と番号の object・MCP の問いの値は client が組む・`seq` は札の `view_seq` (§3.3)。
 - 期限と数 (§3.4)・札の状態と終わり 5 つの排他 (§3.5)・優先の順 (§3.6)・`/resolve` は 1 対 1 の鍵がある時だけ (§3.7)。→ 11/4 = 鍵が無く `/resolve` は作らない = 終わりは 4 つ (§10.3)。
 - 表示の世代で滞留と選択を解く・1 鍵の取り消し (§4.2)。

@@ -5,7 +5,7 @@
 stdin の問い (道具と入力・`permission_suggestions`) を板の札にし、人が板で選んだ答えを公式の JSON に
 組んで stdout へ 1 個だけ書く。
 
-- 釦 = 許可 (今回) / 次から訊かない (suggestion ごと・2 件まで・bypassPermissions へ移す物は出さない) /
+- 釦 = 許可 (今回) / 次から訊かない (suggestion ごと・2 件まで・bypassPermissions・auto へ移す物は出さない) /
   拒否 (定型 3 つ) / 作業を止める (固定の位置) / 端末で答える。
 - 返す JSON = `hookSpecificOutput.decision` に `allow` / `allow` + `updatedPermissions` (選んだ suggestion を
   入力から逐語で写す) / `deny` + `message` / `deny` + `message` + `interrupt: true`。
@@ -157,11 +157,12 @@ def body_of(tool_name: str, ti: dict, data: dict) -> Tuple[str, List[dict]]:
 
 
 def _to_bypass(s: Any) -> bool:
-    return isinstance(s, dict) and s.get("type") == "setMode" and s.get("mode") == "bypassPermissions"
+    """一押しで以後の確認が消える (bypassPermissions)・分類器に任される (auto) モードへ移す物 = 板で出さない (§2.1)。"""
+    return isinstance(s, dict) and s.get("type") == "setMode" and s.get("mode") in ("bypassPermissions", "auto")
 
 
 def offered(suggestions: Any) -> List[dict]:
-    """板に出す suggestion = 公式の 6 種だけ・bypassPermissions へ移す物は除く・先頭から 2 件まで。
+    """板に出す suggestion = 公式の 6 種だけ・bypassPermissions・auto へ移す物は除く・先頭から 2 件まで。
 
     要素は入力のまま (逐語)。板の答えの番号はこの列の番号 = この列から `updatedPermissions` へ写す。
     """

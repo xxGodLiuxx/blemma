@@ -739,3 +739,17 @@ def test_page_and_hook_mark_the_same_hidden_characters(tmp_path):
     assert [(case, g, w) for case, g, w in zip(HIDDEN_CASES, got, want) if g != w] == []
     assert len(got) == len(want) == 17
 
+
+@needs_node
+def test_visible_suggestions_drop_bypass_and_auto(tmp_path):
+    """頁も「次から訊かない」に bypassPermissions と auto へ移す物を出さない (hook の offered と同じ・1 巡目 #26)。
+    先頭から 2 件まで・番号は元の列のまま。"""
+    sugg = [{"type": "setMode", "mode": "bypassPermissions", "destination": "session"},
+            {"type": "setMode", "mode": "auto", "destination": "session"},
+            {"type": "setMode", "mode": "acceptEdits", "destination": "session"},
+            {"type": "addDirectories", "directories": ["/home/u/demo-repo"], "destination": "session"},
+            {"type": "addRules", "rules": [{"toolName": "Bash"}], "behavior": "allow", "destination": "session"}]
+    out = core_js(tmp_path, "console.log(JSON.stringify(core.visibleSuggestions(DATA).map(function (v) { return v.index; })));",
+                  sugg)
+    assert out == [2, 3]
+

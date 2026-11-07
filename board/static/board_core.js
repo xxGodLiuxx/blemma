@@ -337,14 +337,14 @@
     return I18N[lang].reasons.slice();
   }
 
-  /* 「次から訊かない」に出す suggestion = 先頭から 2 件まで・bypassPermissions へ移す物は出さない (§2.1) */
+  /* 「次から訊かない」に出す suggestion = 先頭から 2 件まで・bypassPermissions・auto へ移す物は出さない (§2.1) */
   function visibleSuggestions(list) {
     var out = [];
     if (!Array.isArray(list)) return out;
     for (var i = 0; i < list.length && out.length < 2; i++) {
       var s = list[i];
       if (!s || typeof s !== "object") continue;
-      if (s.type === "setMode" && s.mode === "bypassPermissions") continue;
+      if (s.type === "setMode" && (s.mode === "bypassPermissions" || s.mode === "auto")) continue;
       out.push({ index: i, s: s });
     }
     return out;
