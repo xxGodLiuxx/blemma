@@ -20,7 +20,7 @@
     lastX: -1, lastY: -1, over: null, pointerType: "mouse", lastInput: "",
     held: {}, deadlineAt: null, undoAt: null,
     lightUntil: 0, lightKey: "", lastSeen: "", endText: "", endUntil: 0,
-    notice: "", noticeUntil: 0, problem: "", offline: false,
+    notice: "", noticeUntil: 0, noticeKind: null, problem: "", offline: false,
     abort: null, kicked: false, retry: 0, stopped: false, overlay: null, sideAt: 0, ac: null,
     health: new C.Health(3), stoppedAt: null, fontFit: 1
   };
@@ -288,9 +288,24 @@
     S.scanList = Array.prototype.filter.call(
       viewDocument.querySelectorAll("#opts .btn, #fixed-zone .btn, #term-zone .btn"),
       function (b) { return !b.disabled; });
+    /* 札が替わった・札の中で次の画面へ進んだ = 送りの枠 (小型の和紙 #copy・大きな板の #card・幅の狭い大きな板では頁そのもの) を
+       頭へ戻す = 前の札の送り位置のまま描かない (替わった札の頭 = 何の確認かが隠れたまま羽根が押せる)。取り消しで同じ画面へ
+       戻った時と、印を付けただけ・配色や設定の描き直しは位置を保つ (読んでいた所へ戻る) = 鍵は S.drawnScreen と別に持つ
+       (取り消しの枝は S.drawnScreen を消すので、それを使うと取り消しでも頭へ戻る)。中身を書き込んだ後に戻す */
+    if (screen !== S.scrollScreen) {
+      S.scrollScreen = screen;
+      $("copy").scrollTop = 0;
+      $("card").scrollTop = 0;
+      var se = viewDocument.scrollingElement;
+      if (se) se.scrollTop = 0;
+    }
     renderFan(m);
+    /* 光の印と滞留の縁を外してから手放す = 作り直す釦は木ごと消えるが、常設の釦 (「▼ 続き」・取り消す) は残る。null にする
+       だけだと、外す側 (bumpGen・frame) が空振りし、次の札で動かない偽の光と本物の光が 2 つ点く (光が「▼ 続き」に居る時に
+       札が替わると、それを待っていた人の 1 押しが、本物の光 = 先頭の許可に当たる)・次の猶予の「取り消す」が満ちかけて見える */
+    if (S.scanEl) S.scanEl.classList.remove("scan");
     S.scanEl = null;
-    S.fillEl = null;
+    setFill(null, 0);
     if (sameScreen && focusedKey && S.btns[focusedKey] && !S.btns[focusedKey].disabled) {
       focusOn(S.btns[focusedKey]);
     }
@@ -898,6 +913,7 @@
   function showNotice(t) {
     S.notice = t;
     S.noticeUntil = performance.now() + 5000;
+    S.noticeKind = null;              /* 別の知らせ = 数字の案内の印を外す (disarm では消さない) */
   }
 
   function onNewLight() {
@@ -1075,7 +1091,11 @@
         if (r.status === 401) {
           S.problem = L().bad_token;
         } else {
-          showNotice(L().stale);
+          /* 「画面が古くなっていました。もう一度選んでください」は、選び直せば通る時だけ (409 の stale・400・分からない返り)。
+             期限と同時の押し (expired)・終わった札 (ended)・頭に居ない札 (not_current)・ほかの頁が先に答えた札 (not_shown) では
+             言わず、取り直した表示と終わりの文に任せる (doUndo と同じ形・次の札の上に前の札への文を重ねない) */
+          var err = r.status === 409 && r.data ? r.data.error : null;
+          if (!(r.status === 409 && err && err !== "stale")) showNotice(L().stale);
           kick();
         }
       }, function () {
@@ -1516,11 +1536,15 @@
     armChoice(b, at, "digit");
     S.notice = L().digit_again;
     S.noticeUntil = at + ARM_MS;
+    S.noticeKind = "digit_again";     /* 選んだ物と一緒に消す印 (disarm)・言葉を替えた後も効く */
     updateSide(at);
     return false;
   }
 
+  /* 選んだ印を解く = 決まった (2 回目)・選び直し・描き直し (猶予の写し・新しい札・設定)。数字の案内も一緒に消す = 答えが
+     決まった後の猶予の帯の上に「同じ数字をもう 1 回」を残さない */
   function disarm() {
+    if (S.noticeKind === "digit_again") { S.notice = ""; S.noticeUntil = 0; S.noticeKind = null; }
     if (S.armBtn) S.armBtn.classList.remove("armed");
     S.armKey = null;
     S.armBtn = null;

@@ -92,6 +92,22 @@ out.gap = { back: d.update("allow_once", 1500), rest: frames(d, "allow_once", 15
 /* 途切れずに留まれば 1 秒で 1 回だけ押す (見続けても 2 回押さない) */
 d = new core.Dwell(1000, 150);
 out.steady = frames(d, "allow_once", 0, 3000).fired;
+
+/* 守り (block) は釦なしの 1 こまの揺れでは解けない (羽根の縁に休む視線が帯へ 1 こま揺れた) = 入り直していない釦を押さない */
+d = new core.Dwell(1000, 150);
+d.block("allow_once"); d.update("allow_once", 0); d.update(null, 16);
+out.edge = frames(d, "allow_once", 32, 1200).fired;
+
+/* 釦なしが grace を超えて続いた = 外へ出た = 守りを解く。入り直してから 1 秒で押す */
+d = new core.Dwell(1000, 150);
+d.block("allow_once"); d.update("allow_once", 0);
+frames(d, null, 16, 208);
+out.leftLong = frames(d, "allow_once", 224, 1400).fired;
+
+/* 別の釦に入った = すぐ解く (その釦は入ってから 1 秒で押す) */
+d = new core.Dwell(1000, 150);
+d.block("allow_once");
+out.other = frames(d, "deny", 0, 1100).fired;
 console.log(JSON.stringify(out));
 """
 
@@ -126,8 +142,27 @@ def test_dwell_steady_fires_once(dwell_cases):
     assert len(dwell_cases["steady"]) == 1 and 1000 <= dwell_cases["steady"][0] < 1020
 
 
+def test_dwell_block_survives_a_one_frame_slip_off_the_button(dwell_cases):
+    """入り直すまで数えない守り (block) は、釦なしの 1 こま (羽根の縁に休む視線が書の帯・地紙へ揺れた) では解けない =
+    数える側の揺れの許し (150 ms) と揃える。直す前は 1 こまで解け、入り直していない羽根を 1 秒後に押した ([1040]・2 巡目 i19)。"""
+    assert dwell_cases["edge"] == []
+
+
+def test_dwell_block_lifts_after_being_off_for_longer_than_grace(dwell_cases):
+    """釦なしが 150 ms を超えて続いた = 外へ出た = 守りを解く。入り直してから 1 秒で押す。"""
+    assert dwell_cases["leftLong"] and dwell_cases["leftLong"][0] >= 224 + 1000
+
+
+def test_dwell_block_lifts_at_once_on_another_button(dwell_cases):
+    """守りの釦から別の釦へ入った = すぐ解く (別の釦は入ってから 1 秒で押す)。"""
+    assert dwell_cases["other"] and 1000 <= dwell_cases["other"][0] < 1020
+
+
 def test_release_dwell_blocks_the_button_under_the_pointer(tmp_path):
-    """頁が隠れた・焦点を失った (releaseDwell) = 0.9 秒の滞留を捨て、同じ釦は一度外へ出て入り直すまで数えない。"""
+    """頁が隠れた・焦点を失った (releaseDwell) = 0.9 秒の滞留を捨て、同じ釦は一度外へ出て入り直すまで数えない。
+    外へ出たと見るのは、釦の無い所に 150 ms (揺れの許し) より長く居た時 (か、別の釦に入った時)。11/7 に期待を安全の向きへ
+    書き換えた = 前は釦なしの 2 こま (16 ms) で守りが解け、入り直したと見ていた。縁の揺れ 1 こまで、見ていない釦を
+    押さないため (2 巡目 i19)。"""
     out = node(tmp_path, r"""
 const t = loadPage(function () { throw new Error("通信しない"); });
 t.S.dwell = new core.Dwell(1000, 150);
@@ -135,13 +170,13 @@ t.S.over = "allow_once";
 const before = frames(t.S.dwell, "allow_once", 0, 896);
 t.releaseDwell();
 const stay = frames(t.S.dwell, "allow_once", 912, 3000);
-frames(t.S.dwell, null, 3016, 3032);
-const again = frames(t.S.dwell, "allow_once", 3048, 4100);
+frames(t.S.dwell, null, 3016, 3200);                 /* 釦の外に 150 ms より長く居る */
+const again = frames(t.S.dwell, "allow_once", 3216, 4300);
 console.log(JSON.stringify({ before: before.fired, stay: stay.fired, stayLast: stay.last, again: again.fired }));
 """)
     assert out["before"] == [] and out["stay"] == []
     assert out["stayLast"] == {"target": None, "progress": 0, "fire": False}
-    assert out["again"] and out["again"][0] >= 3048 + 1000
+    assert out["again"] and out["again"][0] >= 3216 + 1000
 
 
 def test_required_multi_with_min_picks_0_can_send_no_marks(tmp_path):
@@ -1577,7 +1612,9 @@ setTimeout(function () {
 
 def test_dwell_never_fires_while_a_button_is_held(tmp_path, clock):
     """見つめて押す設定でも、釦を押したまま (文字の選択・ドラッグ) 羽根の上で止まっただけでは答えが出ない。
-    離した後も、羽根へ入り直すまで数えない。押していなければ、今までどおり 1 秒で押す。"""
+    離した後も、羽根へ入り直すまで数えない。押していなければ、今までどおり 1 秒で押す。
+    入り直したと見るのは、釦の無い所に 150 ms (揺れの許し) より長く居てから戻った時。11/7 に期待を安全の向きへ書き換えた =
+    前は釦なしの 3 こま (32 ms) で「外へ出た」と見ていた。縁の揺れで、見ていない羽根を押さないため (2 巡目 i19)。"""
     _, card = _board(clock)
     out = node(tmp_path, (PAGE_SETUP + r"""
 let now = 0;
@@ -1599,9 +1636,9 @@ t.S.down = true;                                       /* 押したまま羽根�
 counts.held = frames(0, 1500);
 t.S.down = false;                                      /* 離して、そのまま留まる = 入り直していない */
 counts.released = frames(1516, 3000);
-t.S.over = null; frames(3016, 3048);                   /* 一度外へ出る */
+t.S.over = null; frames(3016, 3200);                   /* 一度外へ出る (150 ms より長く) */
 t.S.over = "allow_once";
-counts.reentered = frames(3064, 4200);                 /* 入り直して 1 秒 = 押す */
+counts.reentered = frames(3216, 4400);                 /* 入り直して 1 秒 = 押す */
 setTimeout(function () { console.log(JSON.stringify(Object.assign(counts, { by: sent.map(function (s) { return s.body.by; }) }))); }, 20);
 """).replace("__CARD__", json.dumps(card)))
     assert out == {"held": 0, "released": 0, "reentered": 1, "by": ["dwell"]}
@@ -3106,7 +3143,8 @@ def test_a_number_key_takes_two_presses_only_for_dont_ask_again(tmp_path, clock)
     (札 #216 B)。1 回目は選ぶだけ (釦に選んだ印・大きな板は上の帯に案内)。扇に鍵の焦点が在るまま端末を見て打った数字が、
     扇の番号で恒久の規則を書かない (頁の点検 F2 の再現 = 選択肢 2 件の札で「3」が 1 回で allow_always を送った)。
     1.5 秒を過ぎた 2 回目と、別の数字を挟んだ後は選び直し。今回の許可は 1 回のまま。札が出た直後・窓が焦点を得た直後の
-    0.4 秒の数字は、選ぶ 1 回目にも数えない。"""
+    0.4 秒の数字は、選ぶ 1 回目にも数えない。答えが決まった後 (同じ数字の 2 打目・別の数字の名指し) は「同じ数字を
+    もう 1 回」の案内を残さない (2 巡目 i20 = 猶予の帯の上に最長 1.5 秒残った)。"""
     two = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("git status") + _rule("npm test")))
     out = page(tmp_path, r"""
 function armed(c) { return c.doc().querySelectorAll(".armed").map(function (b) { return b.dataset.key; }); }
@@ -3121,6 +3159,15 @@ for (const mode of ["small", "large"]) {
   await c.run(300);
   await c.key("3", "Digit3");                      /* 0.3 秒後の同じ数字 = 決まる */
   r.second = choices(c);
+  c.show(deciding(TWO, { type: "allow_always", suggestion: 1 })); await c.run(300);
+  r.secondStatus = c.$("status").textContent;      /* 決まった後に案内を残さない */
+  c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(TWO); await c.run(500);
+  await c.key("3", "Digit3");                      /* 選ぶだけ = 案内が出る */
+  await c.key("1", "Digit1");                      /* 許可 (今回) を名指し = 送られる */
+  r.named = choices(c);
+  c.show(deciding(TWO, { type: "allow_once" })); await c.run(300);
+  r.afterDecide = c.$("status").textContent;       /* 別の数字で決まった後も案内を残さない */
   c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
   c.show(TWO); await c.run(500);
   await c.key("2", "Digit2");
@@ -3160,7 +3207,8 @@ console.log(JSON.stringify(out));
     always0 = [{"type": "allow_always", "suggestion": 0}]
     always1 = [{"type": "allow_always", "suggestion": 1}]
     want = {"keys": ["allow_once", "sugg:0", "sugg:1", "deny"],
-            "first": {"sent": 0, "armed": ["sugg:1"], "notice": True}, "second": always1,
+            "first": {"sent": 0, "armed": ["sugg:1"], "notice": True}, "second": always1, "secondStatus": "",
+            "named": [{"type": "allow_once"}], "afterDecide": "",
             "lapsed": {"sent": 0, "armed": ["sugg:0"]}, "switched": {"sent": 0, "armed": ["sugg:1"]}, "switchedThen": always1,
             "once": [{"type": "allow_once"}],
             "fresh": {"sent": 0, "armed": ["sugg:0"]}, "freshThen": always0,
@@ -3467,3 +3515,196 @@ setTimeout(function () {
 }, 20);
 """)
     assert out == {"busy": False, "sent": 2}
+
+
+def test_scan_mark_on_more_does_not_survive_a_card_change(tmp_path, clock):
+    """長い札 A で走査の光が「▼ 続き」(常設の釦・走査の列の末尾) に来た瞬間に札 B が来る (A の時間切れ・端末や別の頁の
+    答え) と、描き直しは光の印 (.scan) を外さずに手放していた = 「▼ 続き」は光ったまま残り、静かな間の後に本物の光が
+    先頭 (許可) から回る (2 巡目の反証の再現 = 700 ms 後の .scan は ["more", "allow_once"])。「▼ 続き」を待っていた人の
+    1 押しは本物の光 = 許可に当たる。描き直しは印を外してから手放す = 静かな間は光が無く、その後は allow_once だけ。"""
+    a = _card(clock)
+    b = _card(clock)
+    out = page(tmp_path, r"""
+function lit(c) { return c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; }); }
+const c = await P.boot({ query: "?mode=small&lang=ja&scan=0.5" });
+c.$("copy").scrollHeight = 900; c.$("copy").clientHeight = 180;   /* 長い本文 = 「▼ 続き」が走査の列の末尾に入る */
+c.show(A);
+await c.run(600);
+let waited = 0;
+while (waited < 10000 && c.S.scanEl !== c.$("more")) { await c.run(16); waited += 16; }
+const r = { ids: A.id !== B.id, onMore: c.S.scanEl === c.$("more"), before: lit(c) };
+c.show(B);                                           /* 光が「▼ 続き」に居る瞬間に、別の長い札 */
+r.moreShown = !c.$("more").hidden;
+await c.run(100);
+r.at100 = lit(c);                                    /* 静かな間 (0.5 秒) の内 */
+await c.run(600);
+r.at700 = lit(c);
+let most = r.at700.length;
+for (let t = 700; t < 3000; t += 16) { await c.run(16); most = Math.max(most, lit(c).length); }
+r.most = most;                                       /* 走査が列を 1 周する間に、同時に点いた光の数 */
+console.log(JSON.stringify(r));
+""", A=a, B=b)
+    assert out["ids"] and out["onMore"] and out["before"] == ["more"] and out["moreShown"], out
+    assert out["at100"] == [] and out["at700"] == ["allow_once"], out
+    assert out["most"] == 1, out
+
+
+def test_undo_fill_does_not_carry_to_the_next_grace(tmp_path, clock):
+    """取り消しを途中まで見つめた (1 秒の滞留の半分) まま猶予が終わり次の札へ替わると、「取り消す」(常設の釦) の縁の満ち
+    (--p) が残り、次の猶予の「取り消す」が最初から半分満ちて見えた (2 巡目の反証の再現 = 0.48 のまま)。描き直しは縁を 0 へ
+    戻してから手放す (大きな板・扇の両方)。"""
+    a = _card(clock)
+    b = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const mode of ["large", "small"]) {
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja&dwell=1" });
+  c.doc().layout = function (e) {
+    if (e.id === "undo-btn") return { left: 0, top: 0, width: 600, height: 120, z: 31 };
+    if (e.id === "undo-zone") return { left: 0, top: 0, width: 600, height: 120, z: 30 };
+    return null;
+  };
+  const away = function () { c.pointer(400, 400); };
+  const onUndo = function () { c.pointer(50, 50); };
+  c.show(A);
+  await c.run(600, away);
+  await c.key("1", "Digit1");                        /* 許可 (今回) を送る */
+  c.show(deciding(A));                               /* 猶予の内 = 取り消しが出る */
+  await c.run(600, away);
+  await c.run(500, onUndo);                          /* 取り消しを 0.5 秒見つめる (1 秒の滞留の半分) */
+  const r = { pMid: c.$("undo-btn").style["--p"] };
+  c.show(B, ended(A, c.me()));                       /* 猶予が終わり、次の札 B */
+  await c.run(600, away);
+  r.pHidden = c.$("undo-btn").style["--p"];
+  await c.key("1", "Digit1");                        /* B に答える */
+  c.show(deciding(B));                               /* 次の猶予 */
+  await c.run(20, away);
+  r.pNext = c.$("undo-btn").style["--p"];
+  r.zoneShown = !c.$("undo-zone").hidden;
+  r.sent = choices(c).map(function (x) { return x.type; });
+  out[mode] = r;
+}
+console.log(JSON.stringify(out));
+""", A=a, B=b)
+    for mode in ("large", "small"):
+        r = out[mode]
+        assert 0.3 < float(r["pMid"]) < 1, out                  # 前提 = 取り消しの縁が途中まで満ちた (押してはいない)
+        assert r["pHidden"] == "0" and r["pNext"] == "0", out
+        assert r["zoneShown"] and r["sent"] == ["allow_once", "allow_once"], out
+
+
+def test_undo_scan_mark_does_not_survive_a_screen_change(tmp_path, clock):
+    """猶予の内に走査の光が「取り消す」(常設の釦) に点いた後、別の頁が取り消して選ぶ画面へ戻ると、隠れた「取り消す」に光の
+    印が残り、次の猶予では押せる (0.4 秒) より前から光って見えた (2 巡目の反証の再現 = 戻った画面の .scan は
+    ["allow_once", "undo"]・次の猶予の 20 ms 後に光る)。押しは間で落ちるので安全側だが、表示と状態が食い違う。
+    描き直しは印を外してから手放す。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+const c = await P.boot({ query: "?mode=small&lang=ja&scan=0.5" });
+c.show(A);
+await c.run(600);
+await c.key("1", "Digit1");                          /* 許可 (今回) を送る */
+c.show(deciding(A));
+let w = 0;
+while (w < 3000 && !c.$("undo-btn").classList.contains("scan")) { await c.run(8); w += 8; }
+const r = { undoLit: c.$("undo-btn").classList.contains("scan") };
+c.show(reshown(A));                                  /* 別の頁が取り消した = 選ぶ画面へ戻る */
+await c.run(600);
+r.shownLit = c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; });
+r.undoMarkWhileHidden = c.$("undo-btn").classList.contains("scan");
+await c.key("1", "Digit1");                          /* もう一度答える */
+c.show(deciding(Object.assign({}, A, { view_seq: A.view_seq + 1 })));
+await c.run(20);
+r.undoLitAt20 = c.$("undo-btn").classList.contains("scan");   /* 押せる (0.4 秒) より前に光って見えるか */
+await c.key(" ", "Space");                           /* その間のスイッチ = 取り消しにならない (安全側) */
+r.posts = c.posts();
+console.log(JSON.stringify(r));
+""", A=a)
+    assert out["undoLit"], out                                     # 前提 = 光が「取り消す」に来た
+    assert out["shownLit"] == ["allow_once"] and out["undoMarkWhileHidden"] is False, out
+    assert out["undoLitAt20"] is False and out["posts"] == ["/answer", "/answer"], out
+
+
+def test_scroll_position_resets_for_a_new_card_but_not_for_undo(tmp_path, clock):
+    """長い札 A を末尾まで読んだ後に画面が替わる (次の札・札なしを挟んだ次の札・2 問の札の次の設問) と、送りの枠は A の送り
+    位置のまま描かれ、替わった札の頭 (何の確認か) が隠れたまま羽根が押せた・「▲ 先頭へ」が出たまま (2 巡目の反証)。
+    画面が替わった時だけ頭へ戻す = 小型の和紙 (#copy)・大きな板の札の枠 (#card)。答えた (猶予)・取り消して同じ画面へ戻った・
+    印を付けただけの描き直しは、読んでいた位置を保つ。"""
+    a = _card(clock)
+    b = _card(clock)
+    multi = _card(clock, "question", MULTI_SELECT)
+    q = _card(clock, "question", TWO_QUESTIONS)
+    out = page(tmp_path, r"""
+async function long(mode, box) {                     /* 長い本文の頁 (送りの枠 = box・末尾 = 720) */
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.$(box).scrollHeight = 900; c.$(box).clientHeight = 180;
+  return c;
+}
+const out = {};
+let c = await long("small", "copy");
+c.show(A); await c.run(500);
+c.$("copy").scrollTop = 720;                         /* A を末尾まで読んだ */
+await c.key("1", "Digit1");                          /* 許可 (今回) = 猶予 (同じ画面の描き直し) */
+c.show(deciding(A)); await c.run(100);
+out.deciding = c.$("copy").scrollTop;
+c.show(reshown(A)); await c.run(500);                /* 取り消した = 同じ画面へ戻る */
+out.undone = c.$("copy").scrollTop;
+c.show(B); await c.run(100);                         /* 次の札 */
+out.next = { top: c.$("copy").scrollTop, more: c.$("more").textContent };
+c = await long("small", "copy");
+c.show(A); await c.run(500);
+c.$("copy").scrollTop = 720;
+c.show(null); await c.run(100);                      /* 札なし (空きを挟む) */
+c.show(B); await c.run(100);
+out.afterIdle = c.$("copy").scrollTop;
+c = await long("small", "copy");
+c.show(MULTI); await c.run(500);
+c.$("copy").scrollTop = 720;
+await c.key("1", "Digit1");                          /* 印を付けるだけ = 同じ画面の描き直し */
+out.marked = { top: c.$("copy").scrollTop, pressed: c.btn("opt:0").getAttribute("aria-pressed") };
+c = await long("small", "copy");
+c.show(Q); await c.run(500);
+c.$("copy").scrollTop = 720;
+await c.key("1", "Digit1");                          /* 1 問目に答えた = 次の設問 */
+out.nextQuestion = { top: c.$("copy").scrollTop, question: c.$("question").textContent.indexOf("次の問い") >= 0 };
+c = await long("large", "card");
+c.show(A); await c.run(500);
+c.$("card").scrollTop = 720;
+c.show(B); await c.run(100);
+out.large = c.$("card").scrollTop;
+console.log(JSON.stringify(out));
+""", A=a, B=b, MULTI=multi, Q=q)
+    assert out["deciding"] == 720 and out["undone"] == 720 and out["marked"] == {"top": 720, "pressed": "true"}, out
+    assert out["next"] == {"top": 0, "more": "▼ 続き (↓)"}, out
+    assert out["afterIdle"] == 0 and out["large"] == 0, out
+    assert out["nextQuestion"] == {"top": 0, "question": True}, out
+
+
+def test_answer_409_other_than_stale_does_not_say_choose_again(tmp_path, clock):
+    """/answer の 409 を全部「画面が古くなっていました。もう一度選んでください」で出していた = 期限と同時の押し (expired)・
+    終わった札 (ended)・頭に居ない札 (not_current)・ほかの頁が先に答えた札 (not_shown) でも「選び直せ」と出て、終わりの文
+    (時間切れ) を 5 秒隠し、次の札の上にも重なった (2 巡目 i21)。選び直せば通る時 (stale) だけ今の文を出し、ほかは黙って
+    写しを取り直す (取り直した表示と終わりの文に任せる・取り消しの 409 と同じ形)。"""
+    a = _card(clock)
+    b = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const error of ["expired", "ended", "not_current", "not_shown", "stale"]) {
+  const c = await P.boot({ query: "?mode=small&lang=ja", reply: function (p) {
+    return p === "/answer" ? { status: 409, data: { error: error } } : null; } });
+  c.show(A); await c.run(500);
+  await c.key("1", "Digit1");                        /* 許可 (今回) = 板が 409 で断る */
+  const r = { sent: c.answers().length, kicked: c.S.seq === -1 };
+  c.show(null, { last: { id: A.id, kind: "permission", end: "expired", from_deciding: false, ago: 0, answered_by: null } });
+  await c.run(100);
+  r.idle = c.$("status").textContent;                /* 札が終わった後の行 */
+  c.show(B); await c.run(100);
+  r.next = c.$("status").textContent;                /* 次の札の上の行 */
+  out[error] = r;
+}
+console.log(JSON.stringify(out));
+""", A=a, B=b)
+    for error in ("expired", "ended", "not_current", "not_shown"):
+        assert out[error] == {"sent": 1, "kicked": True, "idle": "時間切れ。端末で答えてください", "next": ""}, out
+    assert out["stale"]["sent"] == 1 and out["stale"]["kicked"] is True, out
+    assert out["stale"]["idle"] == "画面が古くなっていました。もう一度選んでください", out
