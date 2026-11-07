@@ -3803,3 +3803,79 @@ r.sent = choices(c); r.reasons = !!c.btn("back");
 console.log(JSON.stringify(r));
 """, PERM=perm)
     assert out == {"at5": ["deny"], "n": 4, "more": True, "n2": 5, "after": ["deny"], "sent": [], "reasons": True}, out
+
+
+MCP_OPTIONAL_MULTI = {"head": "srv", "text": "どれを付けますか",
+                      "fields": [{"name": "tags", "title": "札", "multi": True, "required": False,
+                                  "options": [{"label": "a", "value": "a"}, {"label": "b", "value": "b"}]}]}
+
+
+def test_marks_survive_the_theme_the_settings_and_the_pip_window(tmp_path, clock):
+    """複数選択の印は、配色の ☀ / ☾ (鍵と click・大きな板も)・設定の変更・「常に手前」の窓 (PiP) へ移る・戻るの描き直しで消えない
+    (最終デバッグ 1 巡目 #27 = 強いた描き直しが印を消し、印 0 個でも「次へ」が押せる MCP の任意の複数選択では、配色を替えた後の
+    「次へ」→「送る」で空の答えが送れた)。対照 = 新しい札では消える (§4.2 ①)。"""
+    q, q2 = _card(clock, "question", MULTI_SELECT), _card(clock, "question", MULTI_SELECT)
+    e = _card(clock, "elicitation", MCP_OPTIONAL_MULTI)
+    out = page(tmp_path, r"""
+function marks(c) {
+  return { marks: c.S.ui.marks.slice(), pressed: ["opt:0", "opt:1"].map(function (k) { return c.btn(k).getAttribute("aria-pressed"); }) };
+}
+async function marked(card, query, more) {          /* 札を出して opt:0・opt:1 に印 */
+  const c = await P.boot(Object.assign({ query: query }, more || {}));
+  c.show(card);
+  await c.run(500);
+  await c.click(c.btn("opt:0"));
+  await c.click(c.btn("opt:1"));
+  await c.run(50);
+  return c;
+}
+const out = {};
+let c = await marked(Q, "?mode=small&lang=ja");
+await c.key("Tab", "Tab");
+c.$("theme-btn").focus();
+await c.key("Enter", "Enter");                       /* 配色を鍵で */
+await c.run(50);
+out.themeKey = marks(c);
+c = await marked(Q, "?mode=small&lang=ja");
+await c.click(c.$("theme-btn"));                     /* 配色を click で */
+await c.run(50);
+out.themeClick = marks(c);
+c = await marked(Q, "?mode=large&lang=ja");
+await c.click(c.$("theme-btn"));                     /* 大きな板の配色 */
+await c.run(50);
+out.themeLarge = marks(c);
+c = await marked(Q, "?mode=small&lang=ja");
+await c.click(c.$("gear-btn"));
+await c.run(500);
+const trail = c.$("panel-body").querySelectorAll("select").filter(function (s) { return s.name === "trail"; })[0];
+trail.value = "on";
+trail.listeners.fire("change", { target: trail });   /* 設定の変更 (pointer の点) */
+await c.run(50);
+out.settings = marks(c);
+c = await marked(Q, "?mode=small&lang=ja", { pip: true });
+await c.click(c.$("pip-btn"));                       /* 「常に手前」= 窓が見つからず PiP の窓へ移る */
+await c.run(50);
+out.pip = Object.assign({ moved: c.vwin() !== c.win }, marks(c));
+await c.run(600);
+await c.click(c.$("pip-btn"));                       /* 「元の窓へ」 */
+await c.run(50);
+out.back = Object.assign({ home: c.vwin() === c.win }, marks(c));
+c.show(Q2);                                          /* 対照 = 新しい札 */
+await c.run(50);
+out.newCard = marks(c);
+const m = await marked(E, "?mode=small&lang=ja");    /* MCP の任意の複数選択 = 印 0 個でも「次へ」が押せる */
+await m.click(m.$("theme-btn"));
+await m.run(500);
+await m.click(m.btn("next"));
+await m.run(500);
+const summary = m.$("summary").textContent;
+await m.click(m.btn("send"));
+out.mcp = { summary: summary, sent: choices(m) };
+console.log(JSON.stringify(out));
+""", Q=q, Q2=q2, E=e)
+    kept = {"marks": [0, 1], "pressed": ["true", "true"]}
+    assert out["themeKey"] == kept and out["themeClick"] == kept and out["themeLarge"] == kept, out
+    assert out["settings"] == kept, out
+    assert out["pip"] == dict(kept, moved=True) and out["back"] == dict(kept, home=True), out
+    assert out["newCard"] == {"marks": [], "pressed": ["false", "false"]}, out
+    assert out["mcp"] == {"summary": "札: a, b", "sent": [{"type": "accept", "picks": [[0, 1]]}]}, out
