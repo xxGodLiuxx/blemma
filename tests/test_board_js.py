@@ -1513,7 +1513,7 @@ const t = loadPage(function (path, opt) { sent.push(JSON.parse(opt.body).id); re
 show(t);
 const el = { hidden: true, style: {}, classList: { add: function () {}, remove: function () {}, toggle: function () {} }, dataset: {}, appendChild: function () {},
              insertBefore: function () {}, replaceChildren: function () {}, setAttribute: function () {}, querySelector: function () { return null; },
-             querySelectorAll: function () { return []; } };
+             querySelectorAll: function () { return []; }, getBoundingClientRect: function () { return { top: 0, left: 0, width: 0, height: 0 }; } };
 el.parentNode = el;
 t.selectWindow({ document: { hidden: false, body: el, documentElement: el, activeElement: el, elementFromPoint: function () { return null; },
                              getElementById: function () { return el; }, createElement: function () { return Object.assign({}, el, { dataset: {}, style: {} }); },
@@ -3248,6 +3248,86 @@ console.log(JSON.stringify(out));
                    "digitThenClick": {"sent": 0, "armed": ["sugg:0"]}, "digitThenClickThen": always0}, out
 
 
+def test_enter_or_space_on_the_key_focus_takes_two_presses_only_for_dont_ask_again(tmp_path, clock):
+    """焦点の上の Enter / Space で「次から訊かない」(settings に恒久で書く許可) を押す時も、数字と同じく 1.5 秒の内に
+    もう 1 回押して決める (最終デバッグ 1 巡目 #19 の再現 = 扇に焦点を持たせた後の、端末の「No」の癖の ↓↓Enter が、
+    扇では「次から訊かない」に当たり、1 押しで送った)。1 回目は選ぶだけ (選んだ印と案内)・1.5 秒を過ぎた 2 回目は
+    選び直し・決まった後は案内を残さない。2 回目は同じ入り方 (焦点の上の鍵) の時だけ決める = click で選んだ羽根を
+    Enter 1 回で、鍵で選んだ羽根を数字や click 1 回で決めない。今回の許可は焦点の Enter 1 回のまま。大きな板で Tab から
+    置いた焦点の Enter も同じ。"""
+    one = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=_rule("git status")))
+    out = page(tmp_path, r"""
+function armed(c) { return c.doc().querySelectorAll(".armed").map(function (b) { return b.dataset.key; }); }
+function told(c) { return c.$("status").textContent.indexOf("同じキー") >= 0; }
+async function reach(c, nav) {                     /* 鍵の焦点を 3 番目の羽根 (次から訊かない) へ */
+  if (nav === "Tab") { await c.key("Tab", "Tab"); c.btn("sugg:0").focus(); }
+  else { await c.key(nav, nav); await c.key(nav, nav); }
+}
+async function fresh(mode) {
+  const c = await P.boot({ query: "?mode=" + mode + "&lang=ja" });
+  c.show(ONE); await c.run(500);
+  return c;
+}
+const out = {};
+for (const [name, mode, nav, key, code] of [["rightEnter", "small", "ArrowRight", "Enter", "Enter"],
+    ["downEnter", "small", "ArrowDown", "Enter", "Enter"], ["rightSpace", "small", "ArrowRight", " ", "Space"],
+    ["tabEnter", "large", "Tab", "Enter", "Enter"]]) {
+  const r = {};
+  let c = await fresh(mode);
+  await reach(c, nav);
+  r.focus = c.active();
+  await c.key(key, code);                          /* 1 回目 = 選ぶだけ */
+  r.first = { sent: c.answers().length, armed: armed(c), told: told(c) };
+  await c.run(500);
+  await c.key(key, code);                          /* 0.5 秒後の 2 回目 = 決まる */
+  r.second = choices(c);
+  c.show(deciding(ONE, { type: "allow_always", suggestion: 0 })); await c.run(300);
+  r.after = c.$("status").textContent;
+  c = await fresh(mode);
+  await reach(c, nav);
+  await c.key(key, code);
+  await c.run(1600);                               /* 1.5 秒を過ぎた 2 回目 = 選び直し */
+  await c.key(key, code);
+  r.lapsed = { sent: c.answers().length, armed: armed(c) };
+  out[name] = r;
+}
+for (const gap of [100, 600]) {
+  const c = await fresh("small");
+  await c.click(c.btn("sugg:0"));                  /* click で選ぶ (羽根に焦点も来る) */
+  await c.run(gap);
+  await c.key("Enter", "Enter");                   /* click の 2 回目にしない = 鍵の 1 回目として選び直す */
+  out["click" + gap] = { sent: c.answers().length, armed: armed(c), by: c.S.armBy };
+}
+let c = await fresh("small");
+await c.key("ArrowRight", "ArrowRight");           /* 焦点は 2 番目の羽根 (許可 今回) */
+await c.key("Enter", "Enter");
+out.once = choices(c);
+c = await fresh("small");
+await c.key("2", "Digit2");                        /* 数字の 1 回目 (前からの形) */
+out.digit = { sent: c.answers().length, armed: armed(c), by: c.S.armBy };
+c = await fresh("small");
+await reach(c, "ArrowRight");
+await c.key("Enter", "Enter");                     /* 鍵で選ぶ */
+await c.key("2", "Digit2");                        /* 数字 1 つでは決めない (数字の 1 回目として選び直す) */
+out.keyThenDigit = { sent: c.answers().length, armed: armed(c), by: c.S.armBy };
+c = await fresh("small");
+await reach(c, "ArrowRight");
+await c.key("Enter", "Enter");
+await c.run(200);
+await c.click(c.btn("sugg:0"));                    /* click 1 回でも決めない (click の 1 回目として選び直す) */
+out.keyThenClick = { sent: c.answers().length, armed: armed(c), by: c.S.armBy };
+console.log(JSON.stringify(out));
+""", ONE=one)
+    always = [{"type": "allow_always", "suggestion": 0}]
+    want = {"focus": "sugg:0", "first": {"sent": 0, "armed": ["sugg:0"], "told": True}, "second": always, "after": "",
+            "lapsed": {"sent": 0, "armed": ["sugg:0"]}}
+    picked = {"sent": 0, "armed": ["sugg:0"]}
+    assert out == {"rightEnter": want, "downEnter": want, "rightSpace": want, "tabEnter": want,
+                   "click100": dict(picked, by="key"), "click600": dict(picked, by="key"),
+                   "once": [{"type": "allow_once"}], "digit": dict(picked, by="digit"),
+                   "keyThenDigit": dict(picked, by="digit"), "keyThenClick": dict(picked, by="click")}, out
+
+
 def test_a_resuming_scan_keeps_the_quiet_after_the_window_got_the_focus(tmp_path, clock):
     """pointer が止まって走査が戻る時も、窓が焦点を得た後の静かな 1 こまは短くしない (外の目の 6 巡目の再現 = 焦点の
     0.5 秒後に pointer の止まりで走査が戻り、0.4 秒の鍵の間が終わった後に許可が光った)。"""
@@ -3348,6 +3428,70 @@ console.log(JSON.stringify(out));
     want["large:click"] = allow
     want["waiting"] = {"mark": True, "markAfter": False}
     assert out == want, out
+
+
+def test_a_key_held_when_the_window_lost_the_focus_is_let_go_when_it_comes_back(tmp_path, clock):
+    """押したままの鍵の印 (S.held) は、窓が焦点を取り戻した時に捨てる (最終デバッグ 1 巡目 #10・#33 の再現 = 鍵を押したまま
+    窓が焦点を失うと、離した知らせ (keyup) は別の窓へ行き、戻った後の最初の 1 押し (取り消しを含む) が黙って捨てられた)。
+    mac の ⌘ と組んだ鍵 (⌘ を押している間は離した知らせが来ない) には、初めから押したままの印を立てない。対照 = 押したまま
+    繰り返す鍵 (repeat) は焦点が戻った後も数えない・焦点を失わない間の、離していない鍵の 2 打目は今までどおり数えない。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+function down(c, key, code, more) {               /* keydown だけ (離した知らせは届かない) */
+  return c.event("keydown", Object.assign({ key: key, code: code, repeat: false, ctrlKey: false, altKey: false, metaKey: false,
+                                            target: c.doc().activeElement }, more || {}));
+}
+function lit(c) { return c.doc().querySelectorAll(".scan").map(function (b) { return b.dataset.key; })[0] || null; }
+async function untilLit(c, key) { for (let i = 0; i < 400 && lit(c) !== key; i++) await c.run(16); return lit(c); }
+function away(c) { c.win.listeners.fire("blur", {}); }
+function back(c) { c.win.listeners.fire("focus", {}); }
+const out = {};
+let c = await P.boot({ query: "?mode=small&lang=ja&scan=1" });
+await c.run(500);
+down(c, " ", "Space");                             /* 待ちの扇で押したまま、窓が焦点を失う */
+away(c); await c.run(200); back(c); await c.run(500);
+c.show(A);
+out.waitingLit = await untilLit(c, "allow_once");
+await c.key(" ", "Space");                         /* 戻った後の 1 押し = 光った許可を押す */
+out.waiting = choices(c);
+c = await P.boot({ query: "?mode=small&lang=ja&scan=1" });
+c.show(A);
+out.answerLit = await untilLit(c, "allow_once");
+down(c, " ", "Space");                             /* 答えて、離さないまま窓が焦点を失う */
+out.answered = choices(c);
+c.show(deciding(A, { type: "allow_once" }));
+away(c); await c.run(100); back(c);
+out.undoLit = await untilLit(c, "undo");
+await c.key(" ", "Space");                         /* 猶予の内の取り消しの 1 押し */
+out.undo = c.posts();
+c = await P.boot({ query: "?mode=small&lang=ja" });
+c.show(A); await c.run(500);
+down(c, "1", "Digit1", { metaKey: true });         /* ⌘+1 (離した知らせは来ない) */
+await c.run(300);
+await c.key("1", "Digit1");                        /* 素の 1 = 1 押し目で押せる */
+out.meta = choices(c);
+c = await P.boot({ query: "?mode=small&lang=ja&scan=1" });
+c.show(A);
+await untilLit(c, "allow_once");
+away(c); await c.run(100); back(c);
+out.repeatLit = await untilLit(c, "allow_once");
+down(c, " ", "Space", { repeat: true });           /* 押したまま繰り返す鍵 = 焦点が戻った後も数えない */
+out.repeat = c.answers().length;
+c = await P.boot({ query: "?mode=small&lang=ja&scan=1" });
+c.show(A);
+await untilLit(c, "allow_once");
+down(c, " ", "Space");
+c.show(deciding(A, { type: "allow_once" }));
+out.heldLit = await untilLit(c, "undo");
+down(c, " ", "Space");                             /* 焦点を失っていない = 離していない鍵の 2 打目は数えない */
+out.held = c.posts();
+console.log(JSON.stringify(out));
+""", A=a)
+    once = [{"type": "allow_once"}]
+    assert out == {"waitingLit": "allow_once", "waiting": once,
+                   "answerLit": "allow_once", "answered": once, "undoLit": "undo", "undo": ["/answer", "/undo"],
+                   "meta": once, "repeatLit": "allow_once", "repeat": 0,
+                   "heldLit": "undo", "held": ["/answer"]}, out
 
 
 def test_the_close_button_of_the_settings_answers_enter_and_space(tmp_path, clock):
@@ -3464,6 +3608,50 @@ for (const end of ["pointerup", "pointercancel"]) {
 console.log(JSON.stringify(out));
 """, A=a)
     assert out == {"pointerup": {"resting": 0, "reentered": 1}, "pointercancel": {"resting": 0, "reentered": 1}}
+
+
+def test_letting_go_of_a_window_drag_on_a_blade_does_not_press_it_by_dwell(tmp_path, clock):
+    """扇の背景を掴んで運び (窓のドラッグ)、羽根の上で離しても、その羽根は入り直すまで滞留で押さない (最終デバッグ 1 巡目の
+    追加の 1 件の再現 = 運んでいる間の pointer の知らせは窓を運ぶだけで、頁は pointer の下の釦を数えていない (押し始めの
+    背景のまま)。離した時の守りが下の羽根に掛からず、次の 1 動き (捕まえが解けた後の羽根への pointerover・離した後の
+    1 px の揺れ) から 0.3 秒で押された)。離した知らせは捕まえた背景へ届く (target は背景) = 位置から引き直す。羽根の縁の
+    1 px 外で離し、揺れで 1 px 入った時も、離した後に最初に届いた pointer の下の羽根は守る。一度外へ出て入り直すと押せる。"""
+    a = _card(clock)
+    out = page(tmp_path, r"""
+const out = {};
+for (const how of ["over", "move", "edge"]) {
+  const c = await P.boot({ query: "?mode=small&lang=ja&dwell=0.3" });
+  const back = c.$("fan-scroll");
+  const at = how === "edge" ? 199 : 250;                      /* edge = 羽根の 1 px 外 (背景) で離す */
+  c.doc().layout = function (e) {
+    if (e === back) return { left: 0, top: 0, width: 640, height: 330, z: 0 };
+    if (e.dataset.key === "allow_once" && e.parentNode && e.parentNode.id === "fan") return { left: 200, top: 100, width: 100, height: 100, z: 1 };
+    return null;
+  };
+  c.show(A);
+  await c.run(600);
+  c.pointer(50, 300);                                         /* 扇の背景 */
+  await c.run(200);
+  c.pointer(50, 300, { type: "pointerdown", buttons: 1 });    /* 掴む = 窓のドラッグ */
+  await c.run(50);
+  c.pointer(at, 150, { buttons: 1, target: back });           /* 運ぶ (知らせは捕まえた背景へ) */
+  await c.run(50);
+  c.pointer(at, 150, { type: "pointerup", target: back });    /* 羽根の上 (edge は 1 px 外) で離す */
+  c.event("lostpointercapture", { target: back });
+  out[how + "Drag"] = !!c.S.drag;
+  if (how === "over") c.pointer(250, 150, { type: "pointerover" });   /* 捕まえが解けた後の、羽根への知らせ */
+  else { await c.run(20); c.pointer(at + (how === "edge" ? 2 : 1), 150); }   /* 離した後の揺れ (edge は 1 px 羽根の中へ) */
+  await c.run(1000);
+  out[how] = c.answers().length;
+  c.pointer(50, 300); await c.run(300);                       /* 一度外へ出て */
+  c.pointer(250, 150); await c.run(500);                      /* 入り直すと押せる */
+  out[how + "Again"] = choices(c);
+}
+console.log(JSON.stringify(out));
+""", A=a)
+    once = [{"type": "allow_once"}]
+    assert out == {"overDrag": False, "over": 0, "overAgain": once, "moveDrag": False, "move": 0, "moveAgain": once,
+                   "edgeDrag": False, "edge": 0, "edgeAgain": once}, out
 
 
 def test_moving_to_pip_while_presses_settle_clears_the_mark_on_the_first_page(tmp_path, clock):

@@ -236,6 +236,7 @@
     var screen = card ? [card.id, S.ui.step, S.ui.sub || ""].join("|") : "";
     var sameScreen = screen === S.drawnScreen;
     S.drawnScreen = screen;
+    S.layoutTops = null;              /* 描き直した = 押せる的の位置は次の updateSide で測り直す (替わった札は bumpGen が守る) */
     viewDocument.documentElement.lang = lang;
     $("kind").textContent = card ? T["kind_" + card.kind] : "";
     if (S.mode === "small" && card && card.kind === "elicitation" && card.payload.head === "blemma") {
@@ -858,6 +859,23 @@
       $("card").classList.remove("blink");
     }
     updateUndo(now);
+    /* 札を出している間に、上の帯 (待ち N 件)・状態の行 (繋がりません・知らせ・数字の案内) の出入りで押せる的が縦にずれた =
+       置いたままの pointer の下の釦が入れ替わる (小型の 7 択の列が「待ち 1 件」で 22px 下がり、上端に置いた pointer が上の
+       釦に載った・大きな板は繋ぎ直しで列が戻り、隙間の pointer が「次から訊かない」に載った・最終デバッグ 1 巡目 #4)。
+       送られた時と同じ守り (scrolled = 0.6 秒数えず、その後に届いた pointer の下の釦は入り直すまで数えない・線 3)。
+       比べるのは縦の位置だけ (横の変化と残りの秒の字では守らない)。札が替わった時は render が前の値を捨て、bumpGen が守る */
+    var tops = card && card.state === "shown" ? pressableTops() : null, was = S.layoutTops;
+    S.layoutTops = tops;
+    if (tops && was && tops.some(function (t, i) { return t !== null && was[i] !== null && Math.abs(t - was[i]) >= 0.5; })) scrolled();
+  }
+
+  /* 押せる的の入れ物の縦の位置 = 扇は扇の枠 (羽根・補助の釦・取り消しの帯)、それ以外は釦の列 (止・戻の釦はその下に続く)。
+     小型の「▼ 続き」は、見えている時だけ比べる (null = 隠れている。出入りそのものは何も動かさない)。扇の和紙そのものは
+     比べない (横向きの扇では、和紙だけが下がっても羽根は動かない = 見ている羽根の滞留を捨てない) */
+  function pressableTops() {
+    var more = $("more");
+    return [$(S.fan ? "fan-scroll" : "opts").getBoundingClientRect().top,
+            S.mode === "small" && !more.hidden ? more.getBoundingClientRect().top : null];
   }
 
   /* 板が止まったと見る時刻 (止まっていなければ null)。1 回の通信の失敗では決めない =
@@ -985,6 +1003,10 @@
        許可に当たらない。ここは名指しの鍵 (数字) も数えない (数字が届いた先が、打った人の見ていた窓とは限らない)。
        click と触る押しは数える (焦点の無い窓を click した最初の押しを捨てない)。取り消しも数える (安全の側) */
     if ((by === "key" || by === "switch") && key !== "undo" && performance.now() - (S.focusAt || -1e9) < SETTLE_MS) return;
+    /* pointer を「▼ 続き」に載せている間の送りは hoverMore の 1 本だけ (0.35 秒後に 1 画面・その後は 1.5 秒ごと・末尾で
+       止まる)。滞留が満ちても送らない = 載せている間に 2 本で送って画面が飛ぶ・末尾から頭へ戻るのを防ぐ (最終デバッグ 1 巡目
+       #22)。満ちた滞留は入り直すまで数えない (Dwell の守り) = 二度は撃たない。鍵・スイッチ・click の「▼ 続き」は今までどおり */
+    if (key === "more" && by === "dwell" && S.overMore) return;
     if (key === "more") {                                  /* 和紙の続きを 1 画面分送る。最後まで読んだら先頭へ */
       copyPage(1);
       S.moreNext = performance.now() + 1500;
@@ -1187,7 +1209,9 @@
       if (sw) e.preventDefault();
       return;
     }
-    S.held[code] = true;
+    /* ⌘・Ctrl・Alt と組んだ鍵には、押したままの印を立てない = mac は ⌘ を押している間、ほかの鍵の離した知らせを送らない
+       (印が残ると、後の素の 1 押しが黙って捨てられる・最終デバッグ 1 巡目 #33)。組んだ鍵は札を押さない (下の行) */
+    if (!(e.ctrlKey || e.altKey || e.metaKey)) S.held[code] = true;
     S.lastInput = "key";
     if (S.overlay) {
       /* 板の中の選択や入力の Enter / Space には触らない。焦点が「閉じる」に在る時だけ、Enter / Space で閉じる
@@ -1241,12 +1265,16 @@
       /* 数字 = 行き先を名指しする押し。「次から訊かない」(恒久の許可) だけは、同じ数字を 1.5 秒の内にもう 1 回押して決める
          (1 回目は選ぶだけ・札 #216 B) = 扇に鍵の焦点が在るまま端末を見て打った数字が、扇の番号で恒久の規則を書かない
          (端末の選択肢の番号と扇の番号は揃わない)。今回の許可・拒否・止める・端末で答えるは 1 回のまま */
-      if (k) { e.preventDefault(); if (k.indexOf("sugg:") !== 0 || armDigit(k)) press(k, "key", true); }
+      if (k) { e.preventDefault(); if (k.indexOf("sugg:") !== 0 || armTwice(k, "digit")) press(k, "key", true); }
       return;
     }
     if ((e.key === "Enter" || e.key === " ") && active && active.dataset.dwell) {
       e.preventDefault();
-      press(active.dataset.key, "key");
+      /* 焦点の上の Enter / Space も、「次から訊かない」だけは同じ入り方の 2 回で決める (数字と同じ・1 回目は選ぶだけ) =
+         扇に鍵の焦点を持たせたまま、端末の癖で打った ↓↓Enter (端末では「No」・扇では「次から訊かない」に当たる) が、恒久の
+         規則を書かない (最終デバッグ 1 巡目 #19)。大きな板で Tab から置いた焦点も同じ。今回の許可・拒否・止・戻は 1 回のまま */
+      var fk = active.dataset.key;
+      if (fk.indexOf("sugg:") !== 0 || armTwice(fk, "key")) press(fk, "key");
     }
   }
 
@@ -1396,6 +1424,10 @@
      ない)。その間は頁に印を付ける (外の道具と試験が「もう押せる」を読み違えない)。焦点の出入りの瞬間の古い滞留は捨てる */
   function windowFocused() {
     var now = performance.now();
+    /* 焦点を失っている間に離した鍵の知らせ (keyup) は、別の窓へ行って届かない = 押したままの印は、焦点が戻った時に捨てる
+       (残ると、戻った後の最初の 1 押し・取り消しが黙って捨てられる・最終デバッグ 1 巡目 #10)。焦点を失う時 (letGo) には
+       捨てない = PiP の窓へ移る間の保持は残す。押したまま繰り返す鍵は repeat の印で、焦点が戻った後も数えない */
+    S.held = {};
     releaseDwell();
     S.focusAt = now;
     S.scan.restart(now + scanQuiet());
@@ -1416,7 +1448,7 @@
     /* 押した・離したその場で滞留を解く (こま単位の見張りだけだと、1 こまの内に押して離す速い click や、押したまま羽根へ来て
        同じこまで離した時に「入り直すまで数えない」が掛からない) */
     d.addEventListener("pointerdown", active(function (e) { S.pointerType = e.pointerType || "mouse"; S.down = true; releaseDwell(); }), { passive: true, capture: true });
-    d.addEventListener("pointerup", active(function () { S.down = false; releaseDwell(); }), { passive: true, capture: true });
+    d.addEventListener("pointerup", active(function (e) { S.down = false; if (S.drag) dragReleased(e); releaseDwell(); }), { passive: true, capture: true });
     d.addEventListener("pointercancel", active(function () { S.down = false; releaseDwell(); }), { passive: true, capture: true });
     d.addEventListener("scroll", active(onScroll), { passive: true, capture: true });
     d.documentElement.addEventListener("pointerleave", active(function () { S.over = null; S.overMore = false; S.lastX = -1; S.scrollRest = 0; }));
@@ -1524,7 +1556,7 @@
     S.armKey = b.dataset.key;
     S.armBtn = b;
     S.armAt = now;
-    S.armBy = by;                     /* 選んだ入り方 (click / digit) = 2 回目は同じ入り方の時だけ決める */
+    S.armBy = by;                     /* 選んだ入り方 (click / digit / key) = 2 回目は同じ入り方の時だけ決める */
     b.classList.add("armed");
     spotlight(b);
     var t = $("fan-script-1");
@@ -1534,28 +1566,32 @@
     }
   }
 
-  /* 数字で「次から訊かない」を押した = 1 回目は選ぶだけ (羽根・釦に選んだ印・案内の文)、同じ数字の 2 回目 (1.5 秒の内) で
-     決める。間に描き直し (新しい札・状態の変化・設定) が入ると選び直し (renderFan の disarm)。押しを数えない間 (表示が
-     替わった直後・窓が焦点を得た直後) の数字は、選ぶ 1 回目にも数えない (press と同じ間・扇の 1 回目の click と同じ考え)。
-     戻り値 = 決める押しか (true の時だけ press へ渡す) */
-  function armDigit(key) {
+  /* 数字か、焦点の上の Enter / Space で「次から訊かない」を押した = 1 回目は選ぶだけ (羽根・釦に選んだ印・案内の文)、
+     同じ入り方の 2 回目 (1.5 秒の内) で決める (how = "digit" は同じ数字・"key" は焦点の上の鍵 = 数字で選んだ物を Enter で、
+     Enter で選んだ物を数字や click で決めない)。間に描き直し (新しい札・状態の変化・設定) が入ると選び直し (renderFan の
+     disarm)。押しを数えない間 (表示が替わった直後・窓が焦点を得た直後) の押しは、選ぶ 1 回目にも数えない (press と同じ間・
+     扇の 1 回目の click と同じ考え)。焦点の上の鍵は、名指しで札の中を進めた直後の間も数えない (press と同じ・名指しの数字は
+     数える)。戻り値 = 決める押しか (true の時だけ press へ渡す) */
+  function armTwice(key, how) {
     var at = performance.now(), card = S.card, b = S.btns[key];
     if (!card || S.overlay || S.answering || card.state !== "shown" || !b || b.disabled) return false;
     if (at - S.genAt < SETTLE_MS || at - (S.focusAt || -1e9) < SETTLE_MS) return false;
-    var step = C.armStep(S.armKey && S.armBy === "digit" ? { key: S.armKey, at: S.armAt } : null, key, at, ARM_MS);
+    if (how === "key" && at - (S.stepAt || -1e9) < SETTLE_MS) return false;
+    var step = C.armStep(S.armKey && S.armBy === how ? { key: S.armKey, at: S.armAt } : null, key, at, ARM_MS);
     if (step.confirm) { disarm(); return true; }
-    armChoice(b, at, "digit");
-    S.notice = L().digit_again;
+    armChoice(b, at, how);
+    var kind = how === "digit" ? "digit_again" : "key_again";
+    S.notice = L()[kind];
     S.noticeUntil = at + ARM_MS;
-    S.noticeKind = "digit_again";     /* 選んだ物と一緒に消す印 (disarm)・言葉を替えた後も効く */
+    S.noticeKind = kind;              /* 選んだ物と一緒に消す印 (disarm)・言葉を替えた後も効く */
     updateSide(at);
     return false;
   }
 
-  /* 選んだ印を解く = 決まった (2 回目)・選び直し・描き直し (猶予の写し・新しい札・設定)。数字の案内も一緒に消す = 答えが
-     決まった後の猶予の帯の上に「同じ数字をもう 1 回」を残さない */
+  /* 選んだ印を解く = 決まった (2 回目)・選び直し・描き直し (猶予の写し・新しい札・設定)。数字と鍵の案内も一緒に消す = 答えが
+     決まった後の猶予の帯の上に「同じ数字 (キー) をもう 1 回」を残さない */
   function disarm() {
-    if (S.noticeKind === "digit_again") { S.notice = ""; S.noticeUntil = 0; S.noticeKind = null; }
+    if (S.noticeKind === "digit_again" || S.noticeKind === "key_again") { S.notice = ""; S.noticeUntil = 0; S.noticeKind = null; }
     if (S.armBtn) S.armBtn.classList.remove("armed");
     S.armKey = null;
     S.armBtn = null;
@@ -1633,6 +1669,18 @@
     var d = S.drag;
     S.drag = null;
     if (d && d.moved) keepSize(d, 0);                         /* 離す時に、掴んだ時の大きさへ揃える */
+  }
+
+  /* 背景を掴んで運んでいる間の pointer の知らせは窓を運ぶだけ (onPointer は dragTo へ回る) = 頁は pointer の位置と下の釦を、
+     押し始めの背景のまま持っている。離した所の下の釦は、入り直すまで数えない = 背景を掴んで羽根の上で離しただけで、次の
+     1 動き (捕まえが解けた後の羽根への pointerover・離した後の揺れ) の滞留が押さない (線 3・押したまま羽根の上で止まった
+     時の守りと同じ)。離した知らせは捕まえた背景へ届く (target は背景) = 位置から引き直し、離した後に最初に届いた pointer の
+     下の釦も守る (縁の外で離して揺れで入った時)。この後の releaseDwell が守りを掛ける */
+  function dragReleased(e) {
+    S.lastX = e.clientX;
+    S.lastY = e.clientY;
+    S.over = keyAtPointer();
+    S.firstPointer = true;
   }
 
   /* 和紙の文章が切れている時だけ「▼ 続き」を見せる */
