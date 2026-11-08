@@ -1502,9 +1502,9 @@ def test_the_extended_wait_for_a_lock_has_a_cap(isolated_repo, monkeypatch):
 
 
 def test_a_reclaimer_does_not_remove_a_lock_made_after_it_judged_the_old_one(isolated_repo, monkeypatch):
-    """古い錠の回収は見てから消す = 判定で読んだ錠と同じ錠 (st_ino・st_mtime_ns・中身) の時だけ消す。判定 (pid の生死を
-    見る間) の後に、別の回が同じ古い錠を回収して新しい錠を作っていたら、それは消さずに待つ (UltraReview の件 3 = 遅い方が
-    速い方の新しい錠を消し、両方が守る区間に入れた)。別の回は、判定の pid_alive の差し替えで、その間に割り込ませる。"""
+    """古い錠の回収は、判定で読んだ錠と同じ錠 (st_ino・st_mtime_ns・中身) の時だけ消す。判定 (pid の生死を見る間) の後に、
+    別の回が同じ古い錠を回収して新しい錠を作っていたら、それは消さずに (移した時は元の名へ戻して) 待つ (UltraReview の件 3
+    = 遅い方が速い方の新しい錠を消し、両方が守る区間に入れた)。別の回は、判定の pid_alive の差し替えで、その間に割り込ませる。"""
     state = isolated_repo / "board" / "state"
     lock = state / "clients" / ".lock"
     lock.parent.mkdir(parents=True)
@@ -1542,6 +1542,52 @@ def test_a_reclaimer_does_not_remove_a_lock_made_after_it_judged_the_old_one(iso
     assert seen == [fresh] and swapped == [True]                # 新しい錠は、持ち主が外すまで消されなかった
 
 
+def test_a_reclaimer_moves_the_old_lock_aside_before_it_checks_it(isolated_repo, monkeypatch):
+    """古い錠の回収は移してから見る = まず一意の名へ移し (移しは原子的 = 移せた回だけがその錠を見る)、移した物が判定で
+    読んだ錠と同じ時だけ消す。判定の後・移しの前に、別の回が同じ古い錠を回収して新しい錠を作っていたら、それを移して
+    しまっても上書きせずに元の名へ戻す (UltraReview の 2 回目の件 3 = 見てから消すと、照合が通った後・移しの前に作り直された
+    新しい錠を消し、両方が守る区間に入れた。POSIX には持ち主の開いた fd が移しを止める決まりが無い)。別の回は、移しの
+    差し替えで、照合と移しの間に割り込ませる。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    dead = 2 ** 31 - 2                                          # 死んだ持ち主 (下の差し替えが「死んでいる」と答える)
+    lock.write_text(json.dumps({"pid": dead, "at": "2026-11-08T00:00:00+09:00"}), encoding="utf-8")
+    fresh = json.dumps({"pid": os.getpid(), "at": "2026-11-08T00:00:01+09:00"})
+    real_alive, real_replace, swapped = L.pid_alive, os.replace, []
+    monkeypatch.setattr(L, "pid_alive", lambda pid: pid != dead and real_alive(pid))
+    wait, mark = L.Clients._stale(lock)
+    assert wait == 0                                            # 死んだ持ち主の錠 = 今すぐ回収できる
+
+    def another_reclaimed_first(source, target, *args, **kwargs):
+        if Path(source) == lock and not swapped:                # 判定の後・移しの前に、別の回が回収して作り直した
+            swapped.append(True)
+            lock.unlink()
+            lock.write_text(fresh, encoding="utf-8")
+        return real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(L.os, "replace", another_reclaimed_first)
+    assert L.Clients._reclaim(lock, mark) is False              # 判定で読んだ錠ではなかった = 待つ
+    assert swapped == [True] and lock.read_text(encoding="utf-8") == fresh   # 新しい錠は元の名に戻っている
+    assert client_files(isolated_repo) == [".lock"]             # 移した名も残らない
+
+
+def test_unlocking_removes_the_lock_only_when_it_is_ones_own(isolated_repo):
+    """錠を外す時は、その名に今在る錠が自分の錠 (同じ dev と inode) の時だけ消す = 自分の錠が別の回に回収された後に、その回が
+    作り直した錠を消さない (UltraReview の 2 回目の件 3 = 前は名で消したので、回収された後に外すと別の回の錠を消せた)。
+    自分の fd の記録は今までどおり先に空にする。自分の錠は、別の file (other) を開いた fd で作る。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    record = json.dumps({"pid": os.getpid() + 1, "at": "2026-11-08T00:00:00+09:00"})
+    lock.write_text(record, encoding="utf-8")                   # 別の回が今その名で持っている錠
+    other = lock.with_name("other")
+    other.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    L.Clients._unlock(lock, os.open(other, os.O_RDWR))         # 自分の錠だった file の fd
+    assert lock.read_text(encoding="utf-8") == record           # 別の回の錠は中身ごと残る
+    assert other.stat().st_size == 0                            # 自分の記録は空にした
+
+
 def test_a_roster_folder_that_cannot_be_written_falls_back_to_the_old_way(isolated_repo, sessions, launchers,
                                                                           monkeypatch, capsys):
     """名簿の置き場 (board/state/clients) に書けない時 (前に sudo で起こして作られた dir・読み取り専用の checkout) は、錠を
@@ -1572,6 +1618,73 @@ def test_a_roster_folder_that_cannot_be_written_falls_back_to_the_old_way(isolat
     assert not L.board_responds(info, timeout=0.05) and sessions[0].process.poll() is not None   # 自分の板は止める
     err = capsys.readouterr().err.splitlines()
     assert err == [L.ROSTER_OFF] * 3, err
+
+
+def unmovable_old_lock(state, monkeypatch, probe_allowed):
+    """今すぐ回収できる古い錠 (記録 (pid) の無いまま LOCK_STALE_NO_PID を過ぎた錠) を置き、回収の移し (os.replace) を断る。
+    probe_allowed = 置き場に試しの file (.probe.*) を作れるか (False = 書けない置き場)。試しの file を作りに来た名の list を
+    返す。死んだ pid の錠にしないのは、待ちの延長が「回収できる時刻 = 今」に張り付き、LOCK_WAIT でなく LOCK_STALE + 5 秒
+    まで待つため (記録の無い古い錠は回収できる時刻が過去 = LOCK_WAIT で切れる = 直しを外した写しも速く落ちる)。"""
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b"")
+    old = time.time() - L.LOCK_STALE_NO_PID - 1
+    os.utime(lock, (old, old))
+    real_open, real_replace, probes = os.open, os.replace, []
+
+    def refused_replace(source, target, *args, **kwargs):
+        if Path(source) == lock:
+            raise PermissionError(errno.EACCES, "Permission denied", str(source))
+        return real_replace(source, target, *args, **kwargs)
+
+    def probing_open(path, flags, *args, **kwargs):
+        if Path(path).name.startswith(".probe"):
+            probes.append(path)
+            if not probe_allowed:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(L.os, "replace", refused_replace)
+    monkeypatch.setattr(L.os, "open", probing_open)
+    monkeypatch.setattr(L, "LOCK_WAIT", 1.0)
+    return probes
+
+
+def test_an_old_lock_in_a_folder_that_cannot_be_written_falls_back_to_the_old_way(isolated_repo, monkeypatch, capsys):
+    """書けない置き場 (別の口座や sudo で作られた dir・読み取り専用の file system・sticky の dir) に、回収できる古い錠 (死んだ
+    回の錠・記録の無いまま古くなった錠) が残っていても、待たずに名簿を使わない今までの動きに戻る (UltraReview の 2 回目の
+    件 1 = 錠の作成は在る錠で断られ (EEXIST)、回収の移しの断り (EACCES・EPERM・EROFS) を Windows の一瞬の共有違反と同じく
+    待ち、待ち切って毎回「名簿の錠が取れません」で止まった)。Windows は置き場に試しの file を作って見分ける (作れない =
+    書けない置き場)。POSIX の移しの断りは、そのまま書けない置き場。錠は残ったまま・試しの file も移した名も残さない。"""
+    state = isolated_repo / "board" / "state"
+    probes = unmovable_old_lock(state, monkeypatch, probe_allowed=False)
+    a = L.Clients(state)
+    started = time.monotonic()
+    a.join()
+    assert time.monotonic() - started < 2 and not a.ok and a.me is None
+    assert bool(probes) == (os.name == "nt")                    # 試しの file は Windows だけ (POSIX には共有違反が無い)
+    assert client_files(isolated_repo) == [".lock"]             # 錠は消せずに残る・試しの file も移した名も無い
+    assert capsys.readouterr().err.splitlines() == [L.ROSTER_OFF]
+
+
+def test_an_old_lock_that_cannot_be_moved_in_a_writable_folder_is_waited_for_on_windows(isolated_repo, monkeypatch,
+                                                                                         capsys):
+    """Windows で回収の移しが断られても、置き場に試しの file を作れる時は書けない置き場ではない (別の回が錠を開いたまま =
+    共有の決まり) = 名簿を使わない動きに落ちず、在る錠と同じく待つ (待ち切れたら「名簿の錠が取れません」)。POSIX には共有
+    の決まりが無い = 移しの断り (EACCES・EPERM) は書けない置き場 (上の試験と同じ退化)。どちらも試しの file は残さない。"""
+    state = isolated_repo / "board" / "state"
+    probes = unmovable_old_lock(state, monkeypatch, probe_allowed=True)
+    a = L.Clients(state)
+    if os.name == "nt":
+        with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+            a.join()
+        assert a.ok and a.me is None and probes                 # 試しの file は作れた = 書ける置き場 = 待った
+        assert L.ROSTER_OFF not in capsys.readouterr().err
+    else:
+        a.join()
+        assert not a.ok and a.me is None and not probes
+        assert capsys.readouterr().err.splitlines() == [L.ROSTER_OFF]
+    assert client_files(isolated_repo) == [".lock"]             # 試しの file は消した
 
 
 def test_a_lock_whose_pid_cannot_be_written_is_released_and_the_roster_is_not_used(isolated_repo, monkeypatch, capsys):
@@ -1682,3 +1795,35 @@ def test_hardened_streams_do_not_raise_on_a_console_that_cannot_write_japanese()
     L.harden_streams(stream, object())                                   # 2 つ目 = reconfigure の無い物も通る
     print("BLEMMA: 板 / board", file=stream, flush=True)
     assert raw.getvalue() == b"BLEMMA: ? / board\n" and stream.encoding == "cp1252"
+
+
+def test_every_annotation_in_the_launcher_resolves(monkeypatch):
+    """注釈の名は全部読める = `from __future__ import annotations` で注釈は文字列のまま残るので、import し忘れた名は呼ぶ時
+    ではなく、注釈を読む時 (typing.get_type_hints・型の道具) に初めて NameError になる (UltraReview の 2 回目の件 5 =
+    harden_streams の Any)。module の関数と、class とその method を全部読む。この file の autouse の差し替え
+    (subprocess.Popen を関数に) は先に外す = BoardSession の `subprocess.Popen | None` を素の module と同じく読む。"""
+    import inspect
+    import typing
+    monkeypatch.undo()                                          # この試験は何も起こさない (注釈を読むだけ)
+    failures, checked = {}, []
+
+    def resolve(name, value):
+        try:
+            typing.get_type_hints(value)
+            checked.append(name)
+        except Exception as error:                              # 名と理由を集めて、全部を 1 度に出す
+            failures[name] = repr(error)
+
+    for name, value in list(vars(L).items()):
+        if getattr(value, "__module__", None) != L.__name__:
+            continue                                            # import した物 (quote・dataclass・_DeadlineConnection など)
+        if inspect.isfunction(value):
+            resolve(name, value)
+        elif inspect.isclass(value):
+            resolve(name, value)
+            for attr, member in vars(value).items():
+                function = getattr(member, "__func__", member)  # staticmethod・classmethod
+                if inspect.isfunction(function):
+                    resolve(f"{name}.{attr}", function)
+    assert failures == {}
+    assert "harden_streams" in checked and "Clients._reclaim" in checked and "RunInfo" in checked
