@@ -793,6 +793,29 @@ def test_page_and_hook_share_the_variation_selector_bases(tmp_path):
 
 
 @needs_node
+def test_the_fallback_net_keeps_surrogate_pairs_and_marks_lone_halves(tmp_path):
+    """後ろ読みの無い古い JS の処理系 (Safari 16.4 より前) で組む予備の網 (u 旗なし = 字は UTF-16 の片割れ 1 つずつ) は、
+    正しい対 (絵文字・CJK 拡張 B 以降の漢字) をそのまま描き、孤立した片割れだけを ⟨U+XXXX⟩ にする (UltraReview 3 回目の
+    件 ② = 前は対の片割れ 2 つに当たり、絵文字が ⟨U+D83D⟩⟨U+DE00⟩ の 2 つの印になった)。予備は前の字を見られないので
+    U+FE0F・U+E0100 の 1 字は拾わない (U+FE00〜FE0D は拾う)。本物の網 (u 旗) は同じ入力で今までどおり = 対はそのまま・
+    U+E0100 は 2 code unit の 1 字でも印にする (予備の素通しを長さだけで決めない)。"""
+    rows = [  # (入力, 予備の網, 本物の網)
+        ("\U0001F600a\U00020000", "\U0001F600a\U00020000", "\U0001F600a\U00020000"),  # 絵文字 + a + 拡張 B の漢字
+        (chr(0xD83D), "⟨U+D83D⟩", "⟨U+D83D⟩"),                                        # 孤立した上位
+        (chr(0xDC00), "⟨U+DC00⟩", "⟨U+DC00⟩"),                                        # 孤立した下位
+        ("x" + chr(0xD83D) + "\U0001F600", "x⟨U+D83D⟩\U0001F600", "x⟨U+D83D⟩\U0001F600"),  # 孤立した上位の後の対
+        ("a\U0000200Bb", "a⟨U+200B⟩b", "a⟨U+200B⟩b"),
+        ("\U0000FE00", "⟨U+FE00⟩", "⟨U+FE00⟩"),                                       # 前の字に依らず印
+        ("\U0000FE0F", "\U0000FE0F", "⟨U+FE0F⟩"),                                     # 予備は前の字を見られない
+        ("\U000E0100", "\U000E0100", "⟨U+E0100⟩"),                                    # 予備は前の字を見られない
+    ]
+    got = core_js(tmp_path, "console.log(JSON.stringify({legacy: DATA.map(function (s) { return core.visibleTextLegacy(s); }),"
+                            " real: DATA.map(function (s) { return core.visibleText(s); })}));", [r[0] for r in rows])
+    assert got["legacy"] == [r[1] for r in rows]
+    assert got["real"] == [r[2] for r in rows]
+
+
+@needs_node
 def test_visible_suggestions_drop_bypass_and_auto(tmp_path):
     """頁も「次から訊かない」に bypassPermissions と auto へ移す物を出さない (hook の offered と同じ・1 巡目 #26)。
     先頭から 2 件まで・番号は元の列のまま。"""
