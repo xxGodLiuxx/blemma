@@ -544,7 +544,7 @@ class Clients:
         (9 巡目 = 錠なしで進むと、数え終えて止める直前の回の板を使い回せた)。錠を作れない置き場 (書けない dir・読み取り専用の
         checkout) の時と、そこに残った回収できる古い錠を消せない時 (_reclaim が None) は、待たずに None を渡す = 呼び手は名簿を
         使わない今までの動きに戻る (UltraReview の件 1 と 2 回目の件 1 = 前はこれも使用中と見て待ち切り、毎回止まった)。古い錠の
-        回収は経過時間だけで決めず (_stale)、見てから消す (_reclaim)。"""
+        回収は経過時間だけで決めず (_stale)、移してから見る (_reclaim)。"""
         path = self.dir / ".lock"
         fd = None
         held: bool | None = False
@@ -634,26 +634,21 @@ class Clients:
 
     @staticmethod
     def _reclaim(path: Path, mark: tuple) -> bool | None:
-        """古い錠を見てから消す = 判定 (_stale) で読んだ錠と同じ錠 (印が合う) の時だけ、一意の名へ移してから消す。合わない時
-        (判定の後に別の回が回収して作り直した錠) は消さずに待つ (UltraReview の件 3 = 死んだ回の錠を 2 つの回が同時に古いと
-        見ると、遅い方が速い方の新しい錠を消し、両方が守る区間に入れた)。錠の名が空いた時 (消せた・もう無い) は True。
-        移せない時は、待つ (False) か、この置き場では錠を消せない (None = 書けない置き場・呼び手は名簿を使わない動きへ) かを
-        見分ける (UltraReview の 2 回目の件 1 = 前はどちらも待ち、書けない置き場では毎回止まった)。Windows は持ち主が開いた
-        ままの錠も移せない (共有の決まり) ので、置き場に試しの file を作れたら待つ。POSIX の断り (EACCES・EPERM = 他人の
-        dir・sticky の dir) と、そのほかの失敗 (読み取り専用の file system の EROFS など) は None。"""
+        """古い錠を移してから見る = まず一意の名へ移し (移しは原子的 = 同じ古い錠を 2 つの回が回収しに来ても、移せるのは
+        1 つ)、移した物が判定 (_stale) で読んだ錠と同じ (印が合う) 時だけ消して True。合わない時 (判定の後に別の回が回収して
+        作り直した新しい錠を移してしまった) は、上書きしない link で元の名へ戻して False = 同じ inode なので、持ち主の fd も
+        _unlock の照合もそのまま効く (UltraReview の件 3 = 判定の後に作り直された錠を消し、両方が守る区間に入れた・2 回目の
+        件 3 = 見てから消しても、照合と移しの間に作り直された錠を消せた。POSIX には持ち主の開いた fd が移しを止める決まりが
+        無い)。錠の名が空いていた時 (別の回が先に回収した) は True。移せない時は、待つ (False) か、この置き場では錠を消せない
+        (None = 書けない置き場・呼び手は名簿を使わない動きへ) かを見分ける (2 回目の件 1 = 前はどちらも待ち、書けない置き場では
+        毎回止まった)。Windows は持ち主が開いたままの錠も移せない (共有の決まり) ので、置き場に試しの file を作れたら待つ。
+        POSIX の断り (EACCES・EPERM = 他人の dir・sticky の dir) と、そのほかの失敗 (読み取り専用の file system の EROFS
+        など) は None。"""
         aside = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.stale")
-        try:
-            stat = path.stat()
-            if (stat.st_ino, stat.st_mtime_ns, path.read_bytes()) != mark:
-                return False                   # 判定の後に、別の回が回収して作り直した錠 = 待つ
-        except FileNotFoundError:
-            return True                        # 別の回が先に回収した = すぐ作り直してみる (O_EXCL が決める)
-        except OSError:
-            return False                       # 別の回が開いている一瞬 (Windows) = 次の回で
         try:
             os.replace(path, aside)
         except FileNotFoundError:
-            return True
+            return True                        # 別の回が先に回収した = すぐ作り直してみる (O_EXCL が決める)
         except PermissionError:
             if os.name != "nt":
                 return None                    # POSIX には共有の決まりが無い = 他人の dir・sticky の dir の消せない錠
@@ -671,27 +666,58 @@ class Clients:
         except OSError:
             return None                        # 読み取り専用の file system (EROFS) など = この置き場では錠を消せない
         try:
+            stat = aside.stat()
+            same = (stat.st_ino, stat.st_mtime_ns, aside.read_bytes()) == mark
+        except OSError:
+            same = False                       # 読めない = 判定で読んだ錠と言えない = 戻す
+        if not same:
+            # 判定の後に別の回が回収して作り直した錠を移した = 元の名へ戻す (上書きしない link = その一瞬に別の回が作った
+            # 錠を消さない)
+            try:
+                os.link(aside, path)
+            except FileExistsError:
+                pass                           # その一瞬に、さらに別の回が錠を作った (3 つの回が同時)
+            except OSError:
+                if not os.path.lexists(path):  # link の使えない file system = 名が空いている時だけ、移して戻す
+                    try:
+                        os.replace(aside, path)
+                    except OSError:
+                        pass
+        try:
             aside.unlink()
         except OSError:
-            pass                               # 移した古い錠 (錠の名は空いた・名簿の数えは client-*.json の名だけを見る)
-        return True
+            pass                               # 移した古い錠・戻した錠の 2 つ目の名 (名簿の数えは client-*.json の名だけを見る)
+        return same
 
     @staticmethod
     def _unlock(path: Path, fd: int) -> None:
         # 記録を先に空にする = 消せずに残った錠も、記録の無い錠として LOCK_STALE_NO_PID で回収される (空にしないと、生きて
         # いるこの process の pid のまま残り、回の終わりまで、POSIX では回収されず、Windows でも LOCK_STALE まで待たせる)。
+        # 消すのは、その名に今在る錠が自分の錠 (同じ dev と inode) の時だけ = 自分の錠が別の回に回収された後に、その回が
+        # 作り直した錠を消さない (UltraReview の 2 回目の件 3)。自分の錠と見分けられない時 (fstat の失敗) も消さない
+        # (空にした錠は、記録の無い錠として LOCK_STALE_NO_PID で回収される)。
         try:
             os.ftruncate(fd, 0)
         except OSError:
             pass
         try:
+            mine = os.fstat(fd)
+        except OSError:
+            mine = None
+        try:
             os.close(fd)
         except OSError:
             pass
+        if mine is None:
+            return
         for _ in range(20):
             try:
-                path.unlink(missing_ok=True)
-                return
+                stat = path.stat()
+                if (stat.st_dev, stat.st_ino) == (mine.st_dev, mine.st_ino):
+                    path.unlink()
+                return                     # 消した・別の回の錠が今その名に在る (消さない)
+            except FileNotFoundError:
+                return                     # 消す物が無い (別の回が回収した)
             except PermissionError:        # Windows = 別の回が錠の記録を読んでいる一瞬 (_write の置き換えと同じ扱い)
                 time.sleep(0.05)
             except OSError:

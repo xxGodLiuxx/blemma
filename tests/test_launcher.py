@@ -1502,9 +1502,9 @@ def test_the_extended_wait_for_a_lock_has_a_cap(isolated_repo, monkeypatch):
 
 
 def test_a_reclaimer_does_not_remove_a_lock_made_after_it_judged_the_old_one(isolated_repo, monkeypatch):
-    """古い錠の回収は見てから消す = 判定で読んだ錠と同じ錠 (st_ino・st_mtime_ns・中身) の時だけ消す。判定 (pid の生死を
-    見る間) の後に、別の回が同じ古い錠を回収して新しい錠を作っていたら、それは消さずに待つ (UltraReview の件 3 = 遅い方が
-    速い方の新しい錠を消し、両方が守る区間に入れた)。別の回は、判定の pid_alive の差し替えで、その間に割り込ませる。"""
+    """古い錠の回収は、判定で読んだ錠と同じ錠 (st_ino・st_mtime_ns・中身) の時だけ消す。判定 (pid の生死を見る間) の後に、
+    別の回が同じ古い錠を回収して新しい錠を作っていたら、それは消さずに (移した時は元の名へ戻して) 待つ (UltraReview の件 3
+    = 遅い方が速い方の新しい錠を消し、両方が守る区間に入れた)。別の回は、判定の pid_alive の差し替えで、その間に割り込ませる。"""
     state = isolated_repo / "board" / "state"
     lock = state / "clients" / ".lock"
     lock.parent.mkdir(parents=True)
@@ -1540,6 +1540,52 @@ def test_a_reclaimer_does_not_remove_a_lock_made_after_it_judged_the_old_one(iso
     with L.Clients(state)._lock() as held:
         assert held and released.is_set()                      # 新しい錠が外れてから入った = 2 つの回が同時に入らない
     assert seen == [fresh] and swapped == [True]                # 新しい錠は、持ち主が外すまで消されなかった
+
+
+def test_a_reclaimer_moves_the_old_lock_aside_before_it_checks_it(isolated_repo, monkeypatch):
+    """古い錠の回収は移してから見る = まず一意の名へ移し (移しは原子的 = 移せた回だけがその錠を見る)、移した物が判定で
+    読んだ錠と同じ時だけ消す。判定の後・移しの前に、別の回が同じ古い錠を回収して新しい錠を作っていたら、それを移して
+    しまっても上書きせずに元の名へ戻す (UltraReview の 2 回目の件 3 = 見てから消すと、照合が通った後・移しの前に作り直された
+    新しい錠を消し、両方が守る区間に入れた。POSIX には持ち主の開いた fd が移しを止める決まりが無い)。別の回は、移しの
+    差し替えで、照合と移しの間に割り込ませる。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    dead = 2 ** 31 - 2                                          # 死んだ持ち主 (下の差し替えが「死んでいる」と答える)
+    lock.write_text(json.dumps({"pid": dead, "at": "2026-11-08T00:00:00+09:00"}), encoding="utf-8")
+    fresh = json.dumps({"pid": os.getpid(), "at": "2026-11-08T00:00:01+09:00"})
+    real_alive, real_replace, swapped = L.pid_alive, os.replace, []
+    monkeypatch.setattr(L, "pid_alive", lambda pid: pid != dead and real_alive(pid))
+    wait, mark = L.Clients._stale(lock)
+    assert wait == 0                                            # 死んだ持ち主の錠 = 今すぐ回収できる
+
+    def another_reclaimed_first(source, target, *args, **kwargs):
+        if Path(source) == lock and not swapped:                # 判定の後・移しの前に、別の回が回収して作り直した
+            swapped.append(True)
+            lock.unlink()
+            lock.write_text(fresh, encoding="utf-8")
+        return real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(L.os, "replace", another_reclaimed_first)
+    assert L.Clients._reclaim(lock, mark) is False              # 判定で読んだ錠ではなかった = 待つ
+    assert swapped == [True] and lock.read_text(encoding="utf-8") == fresh   # 新しい錠は元の名に戻っている
+    assert client_files(isolated_repo) == [".lock"]             # 移した名も残らない
+
+
+def test_unlocking_removes_the_lock_only_when_it_is_ones_own(isolated_repo):
+    """錠を外す時は、その名に今在る錠が自分の錠 (同じ dev と inode) の時だけ消す = 自分の錠が別の回に回収された後に、その回が
+    作り直した錠を消さない (UltraReview の 2 回目の件 3 = 前は名で消したので、回収された後に外すと別の回の錠を消せた)。
+    自分の fd の記録は今までどおり先に空にする。自分の錠は、別の file (other) を開いた fd で作る。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    record = json.dumps({"pid": os.getpid() + 1, "at": "2026-11-08T00:00:00+09:00"})
+    lock.write_text(record, encoding="utf-8")                   # 別の回が今その名で持っている錠
+    other = lock.with_name("other")
+    other.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    L.Clients._unlock(lock, os.open(other, os.O_RDWR))         # 自分の錠だった file の fd
+    assert lock.read_text(encoding="utf-8") == record           # 別の回の錠は中身ごと残る
+    assert other.stat().st_size == 0                            # 自分の記録は空にした
 
 
 def test_a_roster_folder_that_cannot_be_written_falls_back_to_the_old_way(isolated_repo, sessions, launchers,
