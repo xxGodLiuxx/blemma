@@ -1574,6 +1574,73 @@ def test_a_roster_folder_that_cannot_be_written_falls_back_to_the_old_way(isolat
     assert err == [L.ROSTER_OFF] * 3, err
 
 
+def unmovable_old_lock(state, monkeypatch, probe_allowed):
+    """今すぐ回収できる古い錠 (記録 (pid) の無いまま LOCK_STALE_NO_PID を過ぎた錠) を置き、回収の移し (os.replace) を断る。
+    probe_allowed = 置き場に試しの file (.probe.*) を作れるか (False = 書けない置き場)。試しの file を作りに来た名の list を
+    返す。死んだ pid の錠にしないのは、待ちの延長が「回収できる時刻 = 今」に張り付き、LOCK_WAIT でなく LOCK_STALE + 5 秒
+    まで待つため (記録の無い古い錠は回収できる時刻が過去 = LOCK_WAIT で切れる = 直しを外した写しも速く落ちる)。"""
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b"")
+    old = time.time() - L.LOCK_STALE_NO_PID - 1
+    os.utime(lock, (old, old))
+    real_open, real_replace, probes = os.open, os.replace, []
+
+    def refused_replace(source, target, *args, **kwargs):
+        if Path(source) == lock:
+            raise PermissionError(errno.EACCES, "Permission denied", str(source))
+        return real_replace(source, target, *args, **kwargs)
+
+    def probing_open(path, flags, *args, **kwargs):
+        if Path(path).name.startswith(".probe"):
+            probes.append(path)
+            if not probe_allowed:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(L.os, "replace", refused_replace)
+    monkeypatch.setattr(L.os, "open", probing_open)
+    monkeypatch.setattr(L, "LOCK_WAIT", 1.0)
+    return probes
+
+
+def test_an_old_lock_in_a_folder_that_cannot_be_written_falls_back_to_the_old_way(isolated_repo, monkeypatch, capsys):
+    """書けない置き場 (別の口座や sudo で作られた dir・読み取り専用の file system・sticky の dir) に、回収できる古い錠 (死んだ
+    回の錠・記録の無いまま古くなった錠) が残っていても、待たずに名簿を使わない今までの動きに戻る (UltraReview の 2 回目の
+    件 1 = 錠の作成は在る錠で断られ (EEXIST)、回収の移しの断り (EACCES・EPERM・EROFS) を Windows の一瞬の共有違反と同じく
+    待ち、待ち切って毎回「名簿の錠が取れません」で止まった)。Windows は置き場に試しの file を作って見分ける (作れない =
+    書けない置き場)。POSIX の移しの断りは、そのまま書けない置き場。錠は残ったまま・試しの file も移した名も残さない。"""
+    state = isolated_repo / "board" / "state"
+    probes = unmovable_old_lock(state, monkeypatch, probe_allowed=False)
+    a = L.Clients(state)
+    started = time.monotonic()
+    a.join()
+    assert time.monotonic() - started < 2 and not a.ok and a.me is None
+    assert bool(probes) == (os.name == "nt")                    # 試しの file は Windows だけ (POSIX には共有違反が無い)
+    assert client_files(isolated_repo) == [".lock"]             # 錠は消せずに残る・試しの file も移した名も無い
+    assert capsys.readouterr().err.splitlines() == [L.ROSTER_OFF]
+
+
+def test_an_old_lock_that_cannot_be_moved_in_a_writable_folder_is_waited_for_on_windows(isolated_repo, monkeypatch,
+                                                                                         capsys):
+    """Windows で回収の移しが断られても、置き場に試しの file を作れる時は書けない置き場ではない (別の回が錠を開いたまま =
+    共有の決まり) = 名簿を使わない動きに落ちず、在る錠と同じく待つ (待ち切れたら「名簿の錠が取れません」)。POSIX には共有
+    の決まりが無い = 移しの断り (EACCES・EPERM) は書けない置き場 (上の試験と同じ退化)。どちらも試しの file は残さない。"""
+    state = isolated_repo / "board" / "state"
+    probes = unmovable_old_lock(state, monkeypatch, probe_allowed=True)
+    a = L.Clients(state)
+    if os.name == "nt":
+        with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+            a.join()
+        assert a.ok and a.me is None and probes                 # 試しの file は作れた = 書ける置き場 = 待った
+        assert L.ROSTER_OFF not in capsys.readouterr().err
+    else:
+        a.join()
+        assert not a.ok and a.me is None and not probes
+        assert capsys.readouterr().err.splitlines() == [L.ROSTER_OFF]
+    assert client_files(isolated_repo) == [".lock"]             # 試しの file は消した
+
+
 def test_a_lock_whose_pid_cannot_be_written_is_released_and_the_roster_is_not_used(isolated_repo, monkeypatch, capsys):
     """錠は作れたが持ち主の pid を書けない時 (disk が一杯・file system の気まぐれ) は、記録の無い錠のまま名簿の区間に
     入らない = 錠を外して、名簿を使わない動きに退化する (記録の無い錠はほかの回が LOCK_STALE_NO_PID = 5 秒で回収できる
