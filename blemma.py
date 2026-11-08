@@ -608,8 +608,9 @@ class Clients:
 
     @staticmethod
     def _stale(path: Path) -> tuple[float | None, tuple]:
-        """見ている錠を回収できるまでの秒 (0 以下 = 今・None = 古さでは回収しない) と、読んだ時の印 (st_ino・st_mtime_ns・
-        中身 = 消す直前に同じ錠かを確かめる・_reclaim)。持ち主の pid が書いてあれば、その生死で決める = pid が死んだ錠は今。
+        """見ている錠を回収できるまでの秒 (0 以下 = 今・None = 古さでは回収しない) と、読んだ時の印 (更新の時刻・大きさ・
+        中身 = 消す直前に同じ錠かを確かめる・_reclaim。st_ino は FAT / exFAT で長い名へ移すと変わるので使わない・
+        UltraReview の 3 回目)。持ち主の pid が書いてあれば、その生死で決める = pid が死んだ錠は今。
         生きている pid の錠は、どれだけ古くても奪わない (止まっているだけの持ち主の名簿の区間に割り込まない・外の目の 9 巡目)。
         ただし Windows は LOCK_STALE を過ぎた時 (下)。記録の無い錠 (作った直後でまだ書いていない・書けなかった・消せずに
         残った・前の版の錠) は LOCK_STALE_NO_PID を過ぎた時。読めない時は None。"""
@@ -618,7 +619,7 @@ class Clients:
             raw = path.read_bytes()
         except OSError:
             return None, ()
-        mark = (stat.st_ino, stat.st_mtime_ns, raw)
+        mark = (stat.st_mtime_ns, stat.st_size, raw)
         age = time.time() - stat.st_mtime
         try:
             pid = json.loads(raw.decode("utf-8")).get("pid")
@@ -636,7 +637,9 @@ class Clients:
     @staticmethod
     def _reclaim(path: Path, mark: tuple) -> bool | None:
         """古い錠を移してから見る = まず一意の名へ移し (移しは原子的 = 同じ古い錠を 2 つの回が回収しに来ても、移せるのは
-        1 つ)、移した物が判定 (_stale) で読んだ錠と同じ (印が合う) 時だけ消して True。合わない時 (判定の後に別の回が回収して
+        1 つ)、移した物が判定 (_stale) で読んだ錠と同じ (印 = 更新の時刻・大きさ・中身が合う) 時だけ消して True。st_ino は
+        照らさない = FAT / exFAT では長い名へ移すと変わり、古い錠をいつも「違う」と見て戻し、回収できなかった (UltraReview の
+        3 回目)。判定の後に作り直された新しい錠は、中身 (pid と時刻) と更新の時刻が違う。合わない時 (判定の後に別の回が回収して
         作り直した新しい錠を移してしまった) は、上書きしない link で元の名へ戻して False = 同じ inode なので、持ち主の fd も
         _unlock の照合もそのまま効く (UltraReview の件 3 = 判定の後に作り直された錠を消し、両方が守る区間に入れた・2 回目の
         件 3 = 見てから消しても、照合と移しの間に作り直された錠を消せた。POSIX には持ち主の開いた fd が移しを止める決まりが
@@ -668,7 +671,7 @@ class Clients:
             return None                        # 読み取り専用の file system (EROFS) など = この置き場では錠を消せない
         try:
             stat = aside.stat()
-            same = (stat.st_ino, stat.st_mtime_ns, aside.read_bytes()) == mark
+            same = (stat.st_mtime_ns, stat.st_size, aside.read_bytes()) == mark
         except OSError:
             same = False                       # 読めない = 判定で読んだ錠と言えない = 戻す
         if not same:
