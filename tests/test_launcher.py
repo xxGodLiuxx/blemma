@@ -1795,3 +1795,35 @@ def test_hardened_streams_do_not_raise_on_a_console_that_cannot_write_japanese()
     L.harden_streams(stream, object())                                   # 2 つ目 = reconfigure の無い物も通る
     print("BLEMMA: 板 / board", file=stream, flush=True)
     assert raw.getvalue() == b"BLEMMA: ? / board\n" and stream.encoding == "cp1252"
+
+
+def test_every_annotation_in_the_launcher_resolves(monkeypatch):
+    """注釈の名は全部読める = `from __future__ import annotations` で注釈は文字列のまま残るので、import し忘れた名は呼ぶ時
+    ではなく、注釈を読む時 (typing.get_type_hints・型の道具) に初めて NameError になる (UltraReview の 2 回目の件 5 =
+    harden_streams の Any)。module の関数と、class とその method を全部読む。この file の autouse の差し替え
+    (subprocess.Popen を関数に) は先に外す = BoardSession の `subprocess.Popen | None` を素の module と同じく読む。"""
+    import inspect
+    import typing
+    monkeypatch.undo()                                          # この試験は何も起こさない (注釈を読むだけ)
+    failures, checked = {}, []
+
+    def resolve(name, value):
+        try:
+            typing.get_type_hints(value)
+            checked.append(name)
+        except Exception as error:                              # 名と理由を集めて、全部を 1 度に出す
+            failures[name] = repr(error)
+
+    for name, value in list(vars(L).items()):
+        if getattr(value, "__module__", None) != L.__name__:
+            continue                                            # import した物 (quote・dataclass・_DeadlineConnection など)
+        if inspect.isfunction(value):
+            resolve(name, value)
+        elif inspect.isclass(value):
+            resolve(name, value)
+            for attr, member in vars(value).items():
+                function = getattr(member, "__func__", member)  # staticmethod・classmethod
+                if inspect.isfunction(function):
+                    resolve(f"{name}.{attr}", function)
+    assert failures == {}
+    assert "harden_streams" in checked and "Clients._reclaim" in checked and "RunInfo" in checked

@@ -30,6 +30,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote, parse_qsl, urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # -I・-P・PYTHONSAFEPATH=1 でも隣の hooks を読む
