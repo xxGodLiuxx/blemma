@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1502,7 +1503,7 @@ def test_the_extended_wait_for_a_lock_has_a_cap(isolated_repo, monkeypatch):
 
 
 def test_a_reclaimer_does_not_remove_a_lock_made_after_it_judged_the_old_one(isolated_repo, monkeypatch):
-    """古い錠の回収は、判定で読んだ錠と同じ錠 (st_ino・st_mtime_ns・中身) の時だけ消す。判定 (pid の生死を見る間) の後に、
+    """古い錠の回収は、判定で読んだ錠と同じ錠 (更新の時刻・大きさ・中身) の時だけ消す。判定 (pid の生死を見る間) の後に、
     別の回が同じ古い錠を回収して新しい錠を作っていたら、それは消さずに (移した時は元の名へ戻して) 待つ (UltraReview の件 3
     = 遅い方が速い方の新しい錠を消し、両方が守る区間に入れた)。別の回は、判定の pid_alive の差し替えで、その間に割り込ませる。"""
     state = isolated_repo / "board" / "state"
@@ -1570,6 +1571,41 @@ def test_a_reclaimer_moves_the_old_lock_aside_before_it_checks_it(isolated_repo,
     assert L.Clients._reclaim(lock, mark) is False              # 判定で読んだ錠ではなかった = 待つ
     assert swapped == [True] and lock.read_text(encoding="utf-8") == fresh   # 新しい錠は元の名に戻っている
     assert client_files(isolated_repo) == [".lock"]             # 移した名も残らない
+
+
+def test_an_old_lock_is_reclaimed_where_moving_it_aside_changes_its_file_id(isolated_repo, monkeypatch):
+    """古い錠の回収の照合 (移した物が判定で読んだ錠と同じか) は、更新の時刻・大きさ・中身で見て、st_ino は見ない = Windows の
+    FAT / exFAT (USB の置き場など) では、file ID が directory の entry の位置から作られ、長い名へ移すと変わる (Microsoft の
+    文書) ので、st_ino で照らすと移した古い錠がいつも「違う錠」になり、元の名へ戻して待ち続けた = 死んだ回の古い錠を回収
+    できずに「名簿の錠が取れません」で止まった (UltraReview の 3 回目)。判定の後に作り直された新しい錠は、中身 (pid と時刻)
+    と更新の時刻で見分ける (上の 2 本)。FAT の振る舞いは、移した名 (.stale) の stat の st_ino だけをずらす差し替えで作る。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    dead = 2 ** 31 - 2                                          # 死んだ持ち主 (下の差し替えが「死んでいる」と答える)
+    record = json.dumps({"pid": dead, "at": "2026-11-08T00:00:00+09:00"})
+    lock.write_text(record, encoding="utf-8")
+    real_alive, real_stat = L.pid_alive, Path.stat
+    monkeypatch.setattr(L, "pid_alive", lambda pid: pid != dead and real_alive(pid))
+
+    def renumbered_when_moved(self, *, follow_symlinks=True):   # FAT = 長い名へ移すと file ID (st_ino) が変わる
+        found = real_stat(self, follow_symlinks=follow_symlinks)
+        if not self.name.endswith(".stale"):
+            return found
+        return types.SimpleNamespace(st_ino=found.st_ino + 1, st_mtime_ns=found.st_mtime_ns, st_mtime=found.st_mtime,
+                                     st_size=found.st_size, st_dev=found.st_dev, st_mode=found.st_mode)
+
+    monkeypatch.setattr(Path, "stat", renumbered_when_moved)
+    wait, mark = L.Clients._stale(lock)
+    assert wait == 0                                            # 死んだ持ち主の錠 = 今すぐ回収できる
+    assert L.Clients._reclaim(lock, mark) is True               # 移した物は判定で読んだ錠 = 消す (戻して待たない)
+    assert client_files(isolated_repo) == []                    # 元の名も移した名も残らない
+    lock.write_text(record, encoding="utf-8")                   # 錠の取り方の通しでも、待たずに回収して入る
+    monkeypatch.setattr(L, "LOCK_WAIT", 1.0)
+    started = time.monotonic()
+    with L.Clients(state)._lock() as held:
+        assert held and time.monotonic() - started < 2
+    assert client_files(isolated_repo) == []
 
 
 def test_unlocking_removes_the_lock_only_when_it_is_ones_own(isolated_repo):
