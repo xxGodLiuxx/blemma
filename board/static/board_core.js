@@ -82,7 +82,7 @@
       in_dwell: "gaze", in_key: "key", in_switch: "switch", in_touch: "touch", in_click: "click",
       per_card: "seconds per card", reset: "Reset counts",
       phone: "Open on a phone", close: "Close",
-      more: "▼ More (↓)", more_top: "▲ Back to top (↓)", copy: "Copy", copied: "Copied", copy_failed: "Could not copy", change: "Change", double_hint: "Click again to confirm", digit_again: "Press the same number again to confirm (Don't ask again)", key_again: "Press the same key again to confirm (Don't ask again)",
+      more: "▼ More (↓)", more_top: "▲ Back to top (↓)", copy: "Copy", copied: "Copied", copy_failed: "Could not copy", change: "Change", double_hint: "Once more to confirm", digit_again: "Press the same number again to confirm (Don't ask again)", key_again: "Press the same key again to confirm (Don't ask again)",
       set_click: "Confirm with", click_double: "Two clicks", click_single: "One click",
       phone_help: "Reach 127.0.0.1 from the phone through your own forwarding (e.g. USB Android: adb reverse tcp:{port} tcp:{port}). " +
         "If you open it under a name other than 127.0.0.1 / localhost, start the server with --allow-host <name>. " +
@@ -396,34 +396,54 @@
      は常に・U+FE0E と FE0F は EMOJI_BASES の字の後でない時と、KEYCAP_BASES の字の後で次が U+20E3 でない時・U+E0100〜E01EF は
      IDEOGRAPH_BASES の字の後でない時・改行とタブは残す)。権限の札の本文は hook で、質問と MCP の札の字と「次から訊かない」の文は
      頁がここで直す (表示だけ = 返す答えは番号のまま) */
-  var HIDDEN_RE = (function () {
+  var HIDDEN_LEGACY = false;           /* 下の HIDDEN_RE を予備の網で組んだか (古い JS の処理系) */
+  function buildHiddenRe(legacy) {
     var cls = function (ranges) {      /* 表 → 後ろ読みの字の類 (\u{...} の逃がしで組む = source に字を書かない・u 旗) */
       return "[" + ranges.map(function (r) {
         return "\\u{" + r[0].toString(16) + "}-\\u{" + r[1].toString(16) + "}";
       }).join("") + "]";
     };
-    try {
+    if (!legacy) {
       return new RegExp("[\\p{Cc}\\p{Cf}\\p{Cs}\\p{Zl}\\p{Zp}\\u034F\\u115F\\u1160\\u3164\\uFFA0\\u2800\\uFE00-\\uFE0D]|" +
                         "(?<!" + cls(EMOJI_BASES) + ")[\\uFE0E\\uFE0F]|(?<=" + cls(KEYCAP_BASES) + ")[\\uFE0E\\uFE0F](?!\\u20E3)|" +
                         "(?<!" + cls(IDEOGRAPH_BASES) + ")[\\u{E0100}-\\u{E01EF}]", "gu");
-    } catch (e) {            /* 古い JS の処理系 = 主な見えない字の範囲だけ (番号で組む = source に見えない字を書かない)。
-                                U+FE00〜FE0D は前の字に依らず印なので拾う。U+FE0E / FE0F と U+E0100〜 は前の字を見られない
-                                (後ろ読みが無い) ので、この予備では拾わない */
-      var ranges = [[0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x34f, 0x34f], [0x61c, 0x61c], [0x115f, 0x1160],
-                    [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f],
-                    [0x2800, 0x2800], [0x3164, 0x3164], [0xfe00, 0xfe0d], [0xfeff, 0xfeff], [0xffa0, 0xffa0],
-                    [0xfff9, 0xfffb], [0xd800, 0xdfff]];
-      var esc = function (n) { var h = n.toString(16); while (h.length < 4) h = "0" + h; return "\\" + "u" + h; };
-      return new RegExp("[" + ranges.map(function (r) { return esc(r[0]) + "-" + esc(r[1]); }).join("") + "]", "g");
+    }
+    /* 予備 = 後ろ読みの無い古い JS の処理系の網 = 主な見えない字の範囲だけ (番号で組む = source に見えない字を書かない)。
+       U+FE00〜FE0D は前の字に依らず印なので拾う。U+FE0E / FE0F と U+E0100〜 は前の字を見られない (後ろ読みが無い) ので、
+       この予備では拾わない。u 旗が無い = 字は UTF-16 の片割れ 1 つずつ = 正しい対 (絵文字・CJK 拡張 B 以降の漢字) は先の
+       枝が 2 つ組で拾って visibleText が素通しにし、孤立した片割れだけを後ろの類 (D800〜DFFF) で印にする (UltraReview
+       3 回目の件 ② = 前は対を片割れ 2 つの印に割った)。対で書く見えない字 (タグの字 U+E0000〜 など) も、この予備では拾わない */
+    var ranges = [[0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x34f, 0x34f], [0x61c, 0x61c], [0x115f, 0x1160],
+                  [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f],
+                  [0x2800, 0x2800], [0x3164, 0x3164], [0xfe00, 0xfe0d], [0xfeff, 0xfeff], [0xffa0, 0xffa0],
+                  [0xfff9, 0xfffb], [0xd800, 0xdfff]];
+    var esc = function (n) { var h = n.toString(16); while (h.length < 4) h = "0" + h; return "\\" + "u" + h; };
+    var span = function (r) { return esc(r[0]) + "-" + esc(r[1]); };
+    return new RegExp("[" + span([0xd800, 0xdbff]) + "][" + span([0xdc00, 0xdfff]) + "]|[" + ranges.map(span).join("") + "]", "g");
+  }
+  var HIDDEN_RE = (function () {
+    try {
+      return buildHiddenRe(false);
+    } catch (e) {            /* 後ろ読みや \p{…} を知らない古い JS の処理系 (Safari 16.4 より前) = 予備の網 */
+      HIDDEN_LEGACY = true;
+      return buildHiddenRe(true);
     }
   })();
-  function visibleText(s) {
-    return String(s).replace(HIDDEN_RE, function (ch) {
+  var LEGACY_RE = buildHiddenRe(true);   /* 予備の網を今の処理系でも確かめる口 (visibleTextLegacy・試験が使う) */
+  /* re・legacy は予備の網を名指しする時だけ (省略 = 上で組んだ網)。予備の網で 2 字の当たり = 正しい対 = 素通し。本物の網
+     (u 旗) では U+E0100〜 などの 1 字も長さ 2 なので、長さだけで素通しにしない */
+  function visibleText(s, re, legacy) {
+    if (re === undefined) { re = HIDDEN_RE; legacy = HIDDEN_LEGACY; }
+    return String(s).replace(re, function (ch) {
       if (ch === "\n" || ch === "\t") return ch;
+      if (legacy && ch.length === 2) return ch;
       var hex = ch.codePointAt(0).toString(16).toUpperCase();
       while (hex.length < 4) hex = "0" + hex;
       return "⟨U+" + hex + "⟩";
     });
+  }
+  function visibleTextLegacy(s) {
+    return visibleText(s, LEGACY_RE, true);
   }
 
   function suggestionLabel(s, lang) {
@@ -916,7 +936,7 @@
     I18N: I18N, INPUTS: INPUTS, FIXED: FIXED, fmt: fmt, tx: tx, pickLang: pickLang,
     parseDwell: parseDwell, parseScan: parseScan, mmss: mmss, Dwell: Dwell, Scan: Scan,
     reasonsOf: reasonsOf, visibleSuggestions: visibleSuggestions, suggestionLabel: suggestionLabel, visibleText: visibleText,
-    EMOJI_BASES: EMOJI_BASES, IDEOGRAPH_BASES: IDEOGRAPH_BASES,
+    visibleTextLegacy: visibleTextLegacy, EMOJI_BASES: EMOJI_BASES, IDEOGRAPH_BASES: IDEOGRAPH_BASES,
     steps: steps, needConfirm: needConfirm, newUi: newUi, uiAfterUndo: uiAfterUndo,
     fanEligible: fanEligible, fanLayout: fanLayout, fanMark: fanMark, fanScript: fanScript, scrollDirection: scrollDirection, actionDescription: actionDescription,
     priorityState: priorityState, diffRange: diffRange,

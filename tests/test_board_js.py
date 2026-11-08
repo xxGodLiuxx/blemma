@@ -3371,6 +3371,41 @@ console.log(JSON.stringify(out));
     assert out == want, out
 
 
+def test_the_fan_band_hint_does_not_say_click_after_a_number_or_a_key(tmp_path, clock):
+    """扇の書の帯の「もう 1 回」の文は、入り方 (click・数字・焦点の上のキー) に依らない (UltraReview 3 回目の件 ③ = 英語の帯は
+    数字やキーの 1 回目の後も "Click again to confirm" で、状態の行の "Press the same number again…" と食い違い、文に従った
+    click では決まらず 3 押し目が要った)。英語の扇で「次から訊かない」を 1 回押した後、帯の 2 行目は I18N.en.double_hint
+    で、状態の行は数字なら digit_again・キーなら key_again。規則は行き先の無い短い物 = 羽根の文が帯の 1 行目に収まって
+    2 行目が空く (行き先つきの文は 2 行に割れ、帯に案内は出ない)。"""
+    short = _card(clock, payload=dict(PERM_PAYLOAD, suggestions=[
+        {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "ls"}], "behavior": "allow"}]))
+    out = page(tmp_path, r"""
+const out = {};
+for (const how of ["digit", "key", "click"]) {
+  const c = await P.boot({ query: "?mode=small&lang=en" });
+  c.show(SHORT); await c.run(500);
+  if (how === "digit") await c.key("2", "Digit2");                /* 数字の 1 回目 */
+  if (how === "key") {                                             /* 鍵の焦点を「次から訊かない」へ → Enter の 1 回目 */
+    await c.key("ArrowRight", "ArrowRight"); await c.key("ArrowRight", "ArrowRight");
+    await c.key("Enter", "Enter");
+  }
+  if (how === "click") await c.click(c.btn("sugg:0"));            /* click の 1 回目 */
+  const en = c.core.I18N.en;
+  out[how] = { sent: c.answers().length, armed: c.S.armKey, by: c.S.armBy, label: c.$("fan-script-0").textContent,
+               band: c.$("fan-script-1").textContent, hint: en.double_hint, status: c.$("status").textContent,
+               again: how === "click" ? null : en[how + "_again"] };
+}
+console.log(JSON.stringify(out));
+""", SHORT=short)
+    for how in ("digit", "key", "click"):
+        r = out[how]
+        assert "Click" not in r["band"], (how, r)
+        assert r["band"] == r["hint"] == "Once more to confirm", (how, r)
+        assert (r["sent"], r["armed"], r["by"], r["label"]) == (0, "sugg:0", how, "Don't ask again: Bash(ls)"), (how, r)
+    assert out["digit"]["status"] == out["digit"]["again"] == "Press the same number again to confirm (Don't ask again)"
+    assert out["key"]["status"] == out["key"]["again"] == "Press the same key again to confirm (Don't ask again)"
+
+
 def test_a_resuming_scan_keeps_the_quiet_after_the_window_got_the_focus(tmp_path, clock):
     """pointer が止まって走査が戻る時も、窓が焦点を得た後の静かな 1 こまは短くしない (外の目の 6 巡目の再現 = 焦点の
     0.5 秒後に pointer の止まりで走査が戻り、0.4 秒の鍵の間が終わった後に許可が光った)。"""
