@@ -387,11 +387,15 @@
     [0xFA21, 0xFA21], [0xFA23, 0xFA24], [0xFA27, 0xFA29], [0x20000, 0x2A6DF], [0x2A700, 0x2B73F], [0x2B740, 0x2B81F],
     [0x2B820, 0x2CEAF], [0x2CEB0, 0x2EBEF], [0x2EBF0, 0x2EE5F], [0x30000, 0x3134F], [0x31350, 0x323AF]
   ];
+  /* キーキャップの土台 (# * 0〜9) = EMOJI_BASES に入るが、この字の後の U+FE0E / FE0F は次がキーキャップの印 U+20E3 の時だけ正当
+     (2 + U+FE0F + >f が札で 2>f に見えないように・hooks/permission.py の _KEYCAP_BASES と同じ字) */
+  var KEYCAP_BASES = [[0x23, 0x23], [0x2A, 0x2A], [0x30, 0x39]];
 
   /* 見えない字 (制御の字・書字方向の字・幅ゼロの字など) を ⟨U+XXXX⟩ にして見せる。hooks/permission.py の visible と同じ網
      (種 Cc・Cf・Cs・Zl・Zp + 種では拾えない 6 字 (U+034F・U+115F・U+1160・U+3164・U+FFA0・U+2800) + 異体字セレクタ = U+FE00〜FE0D
-     は常に・U+FE0E と FE0F は EMOJI_BASES の字の後でない時・U+E0100〜E01EF は IDEOGRAPH_BASES の字の後でない時・改行とタブは
-     残す)。権限の札の本文は hook で、質問と MCP の札の字と「次から訊かない」の文は頁がここで直す (表示だけ = 返す答えは番号のまま) */
+     は常に・U+FE0E と FE0F は EMOJI_BASES の字の後でない時と、KEYCAP_BASES の字の後で次が U+20E3 でない時・U+E0100〜E01EF は
+     IDEOGRAPH_BASES の字の後でない時・改行とタブは残す)。権限の札の本文は hook で、質問と MCP の札の字と「次から訊かない」の文は
+     頁がここで直す (表示だけ = 返す答えは番号のまま) */
   var HIDDEN_RE = (function () {
     var cls = function (ranges) {      /* 表 → 後ろ読みの字の類 (\u{...} の逃がしで組む = source に字を書かない・u 旗) */
       return "[" + ranges.map(function (r) {
@@ -400,14 +404,15 @@
     };
     try {
       return new RegExp("[\\p{Cc}\\p{Cf}\\p{Cs}\\p{Zl}\\p{Zp}\\u034F\\u115F\\u1160\\u3164\\uFFA0\\u2800\\uFE00-\\uFE0D]|" +
-                        "(?<!" + cls(EMOJI_BASES) + ")[\\uFE0E\\uFE0F]|(?<!" + cls(IDEOGRAPH_BASES) + ")[\\u{E0100}-\\u{E01EF}]",
-                        "gu");
+                        "(?<!" + cls(EMOJI_BASES) + ")[\\uFE0E\\uFE0F]|(?<=" + cls(KEYCAP_BASES) + ")[\\uFE0E\\uFE0F](?!\\u20E3)|" +
+                        "(?<!" + cls(IDEOGRAPH_BASES) + ")[\\u{E0100}-\\u{E01EF}]", "gu");
     } catch (e) {            /* 古い JS の処理系 = 主な見えない字の範囲だけ (番号で組む = source に見えない字を書かない)。
-                                異体字セレクタは前の字を見られない (後ろ読みが無い) ので、この予備では拾わない */
+                                U+FE00〜FE0D は前の字に依らず印なので拾う。U+FE0E / FE0F と U+E0100〜 は前の字を見られない
+                                (後ろ読みが無い) ので、この予備では拾わない */
       var ranges = [[0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x34f, 0x34f], [0x61c, 0x61c], [0x115f, 0x1160],
                     [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f],
-                    [0x2800, 0x2800], [0x3164, 0x3164], [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff9, 0xfffb],
-                    [0xd800, 0xdfff]];
+                    [0x2800, 0x2800], [0x3164, 0x3164], [0xfe00, 0xfe0d], [0xfeff, 0xfeff], [0xffa0, 0xffa0],
+                    [0xfff9, 0xfffb], [0xd800, 0xdfff]];
       var esc = function (n) { var h = n.toString(16); while (h.length < 4) h = "0" + h; return "\\" + "u" + h; };
       return new RegExp("[" + ranges.map(function (r) { return esc(r[0]) + "-" + esc(r[1]); }).join("") + "]", "g");
     }

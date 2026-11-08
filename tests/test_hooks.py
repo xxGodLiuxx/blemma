@@ -788,3 +788,16 @@ def test_visible_variation_selectors_need_an_emoji_or_ideograph_base():
               "↔\U0000FE0F", "©\U0000FE0F", "❤\U0000FE0F", "\U0001F44D\U0000FE0F", "葛\U000E0100", "㐀\U000E0100",
               "\U00020000\U000E0100"]:
         assert PERM.visible(s) == s, ascii(s)                                     # 正当 = そのまま
+
+
+def test_visible_keycap_bases_need_the_keycap_mark():
+    """# * 数字の後の U+FE0E / U+FE0F は、次がキーキャップの印 (U+20E3) の時だけ正当 (UltraReview 2 回目の件 2 の締め)。
+    # * 数字は Emoji の性質を持つが bash の字でもある = echo hello 2 + U+FE0F + >f は札で 2>f (fd 2 の redirect) に見えて、
+    bash では 2 + U+FE0F が引数になり stdout が f へ行く (実測)。ほかの Emoji の字 (U+203C など) の後は次の字を見ない。"""
+    import permission as PERM
+
+    for s, want in [("echo hello 2\U0000FE0F>f", "echo hello 2⟨U+FE0F⟩>f"), ("#\U0000FE0F", "#⟨U+FE0F⟩"),
+                    ("*\U0000FE0F", "*⟨U+FE0F⟩"), ("9\U0000FE0Fx", "9⟨U+FE0F⟩x")]:
+        assert PERM.visible(s) == want, ascii(s)                                  # 印になる
+    for s in ["2\U0000FE0F\U000020E3", "#\U0000FE0F\U000020E3", "*\U0000FE0F\U000020E3", "‼\U0000FE0F"]:
+        assert PERM.visible(s) == s, ascii(s)                                     # 正当 = そのまま

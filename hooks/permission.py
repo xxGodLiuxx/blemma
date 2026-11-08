@@ -48,12 +48,15 @@ SUMMARY_CLIP = 300           # 1 行の要約 (Bash の description など)
 WRITE_HEAD_LINES = 40
 _HIDDEN = ("Cc", "Cf", "Cs", "Zl", "Zp")   # 見えない字の種 (改行とタブは残す)
 # 種では拾えない見えない字 (外の目の走査 F3): 結合文字の接着 U+034F・ハングルの埋め字・点字の空白・異体字セレクタ。
-# 異体字セレクタは前の字で決める: U+FE0E / U+FE0F (文字と絵文字の見せ方) は Emoji の性質を持つ字 (# * 数字・©・‼・❤ など)
-# の後だけ、U+E0100〜U+E01EF (漢字の異体字) は CJK 統合漢字の後だけ正当・U+FE00〜U+FE0D (異体字セレクタ 1〜14) は常に印
+# 異体字セレクタは前の字で決める: U+FE0E / U+FE0F (文字と絵文字の見せ方) は Emoji の性質を持つ字 (©・‼・❤ など) の後だけ
+# 正当 (# * 数字の後は、次がキーキャップの印 U+20E3 の時だけ = 2 + U+FE0F + >f が札で 2>f に見えないように)・
+# U+E0100〜U+E01EF (漢字の異体字) は CJK 統合漢字の後だけ正当・U+FE00〜U+FE0D (異体字セレクタ 1〜14) は常に印
 _HIDDEN_CHARS = frozenset({"͏", "ᅟ", "ᅠ", "ㅤ", "ﾠ", "⠀"})
 _VS_ALWAYS = frozenset(chr(c) for c in range(0xFE00, 0xFE0E))
 _VS_EMOJI = frozenset(chr(c) for c in (0xFE0E, 0xFE0F))
 _VS_IDEOGRAPH = frozenset(chr(c) for c in range(0xE0100, 0xE01F0))
+_KEYCAP_BASES = frozenset("#*0123456789")   # キーキャップの土台 (頁の KEYCAP_BASES と同じ字)
+_KEYCAP = chr(0x20E3)                       # キーキャップの印 (囲みの結合文字)
 # 前の字の表 = 番号の範囲 (始, 終) の昇順・頁 (board_core.js) の EMOJI_BASES・IDEOGRAPH_BASES と同じ物 (試験で照合)。性質の名で
 # なく表で持つ = Python と頁の処理系の Unicode の版で網が変わらない。Emoji = node 22 (Unicode 17.0) の \p{Emoji} から生成・
 # 漢字 = CJK 統合漢字 (Unified_Ideograph) の block
@@ -100,11 +103,13 @@ def _within(table: tuple[tuple[int, int], ...], ch: str) -> bool:
     return i >= 0 and cp <= table[i][1]
 
 
-def _hidden(ch: str, prev: str) -> bool:
+def _hidden(ch: str, prev: str, nxt: str) -> bool:
     if ch in "\n\t":
         return False
     if ch in _VS_EMOJI:
-        return not (prev and _within(_EMOJI_BASES, prev))         # Emoji の字 (❤・‼・キーキャップの数字など) の後は正当
+        if prev in _KEYCAP_BASES:
+            return nxt != _KEYCAP                                  # # * 数字の後は、キーキャップの印が続く時だけ正当
+        return not (prev and _within(_EMOJI_BASES, prev))         # ほかの Emoji の字 (❤・‼ など) の後は正当
     if ch in _VS_IDEOGRAPH:
         return not (prev and _within(_IDEOGRAPH_BASES, prev))     # CJK 統合漢字の後は正当
     return ch in _HIDDEN_CHARS or ch in _VS_ALWAYS or unicodedata.category(ch) in _HIDDEN
@@ -114,8 +119,8 @@ def visible(s: str) -> str:
     """見えない字を ⟨U+XXXX⟩ にして見せる (尾や途中に隠れた物を札で見落とさない)。"""
     out = []
     prev = ""
-    for ch in s:
-        out.append(f"⟨U+{ord(ch):04X}⟩" if _hidden(ch, prev) else ch)
+    for i, ch in enumerate(s):
+        out.append(f"⟨U+{ord(ch):04X}⟩" if _hidden(ch, prev, s[i + 1:i + 2]) else ch)     # 次の字 (尾では "")
         prev = ch
     return "".join(out)
 

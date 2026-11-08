@@ -744,10 +744,11 @@ console.log(JSON.stringify({one: core.buildScreen(one, core.newUi(), 'ja'), conf
     assert no_raw_hidden(out)
 
 
-# hook の visible と同じ答えになるべき 34 本 = 種では拾えない 6 字・文字の後の異体字セレクタ (と組み合わせ)・正当な異体字セレクタ・
+# hook の visible と同じ答えになるべき 39 本 = 種では拾えない 6 字・文字の後の異体字セレクタ (と組み合わせ)・正当な異体字セレクタ・
 # 改行とタブ・どちらの網でも拾う字 + 異体字セレクタの決まり (UltraReview 2 回目の件 2・件 4 = bash の記号・かな・ハングルの後と
-# U+FE00 は印、キーキャップ・U+203C などの Emoji の字の後と CJK 統合漢字の後は正当)。字は古くからの物だけ (3.10 の unicodedata と
-# node の Unicode の版の差を避ける・異体字セレクタの前の字は両方の表で決まるので版の差は出ない)。
+# U+FE00 は印、キーキャップ・U+203C などの Emoji の字の後と CJK 統合漢字の後は正当・# * 数字の後は U+20E3 が続く時だけ正当)。
+# 字は古くからの物だけ (3.10 の unicodedata と node の Unicode の版の差を避ける・異体字セレクタの前の字は両方の表で決まるので
+# 版の差は出ない)。
 HIDDEN_CASES = [
     "a͏b", "aᅟb", "aᅠb", "aㅤb", "aﾠb", "rm⠀-rf", "r️m -rf", "x\U000e0100y",
     "⠀️", "​️", "x︎",
@@ -755,6 +756,7 @@ HIDDEN_CASES = [
     ">\U0000FE0F", "|\U0000FE0F", "$\U0000FE0F", "=\U0000FE0F", "∩\U0000FE00", "a\U000E0100", "か\U000E0100",
     "가\U000E0100", "1\U0000FE0F\U000020E3", "#\U0000FE0F\U000020E3", "*\U0000FE0F\U000020E3", "‼\U0000FE0F",
     "⁉\U0000FE0F", "↔\U0000FE0F", "©\U0000FE0F", "㐀\U000E0100", "\U00020000\U000E0100",
+    "echo hello 2\U0000FE0F>f", "#\U0000FE0F", "*\U0000FE0F", "9\U0000FE0Fx", "2\U0000FE0F\U000020E3",
 ]
 
 
@@ -768,7 +770,7 @@ def test_page_and_hook_mark_the_same_hidden_characters(tmp_path):
                   HIDDEN_CASES)
     want = [PERM.visible(s) for s in HIDDEN_CASES]
     assert [(case, g, w) for case, g, w in zip(HIDDEN_CASES, got, want) if g != w] == []
-    assert len(got) == len(want) == 34
+    assert len(got) == len(want) == 39
 
 
 @needs_node
