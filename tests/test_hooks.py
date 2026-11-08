@@ -771,3 +771,20 @@ def test_visible_marks_hidden_characters_that_the_category_filter_misses():
     assert PERM.visible("a͏bㅤcᅟᅠﾠ⠀") == \
         "a⟨U+034F⟩b⟨U+3164⟩c⟨U+115F⟩⟨U+1160⟩⟨U+FFA0⟩⟨U+2800⟩"
     assert PERM.visible("❤️ 葛\U000e0100 \n\t") == "❤️ 葛\U000e0100 \n\t"
+
+
+def test_visible_variation_selectors_need_an_emoji_or_ideograph_base():
+    """異体字セレクタは前の字で決める (UltraReview 2 回目の件 2・件 4)。U+FE0E / U+FE0F は Emoji の性質を持つ字の後だけ正当 =
+    記号の後なら何でも正当、では bash の > | $ = の後の見えない字が札に出ず (件 2)、キーキャップ (1 + U+FE0F + U+20E3) と
+    U+203C + U+FE0F は数字と句読点の後なので壊れて見えた (件 4)。U+E0100〜U+E01EF は CJK 統合漢字の後だけ (かな・ハングルの
+    後は印)。U+FE00〜U+FE0D は常に印。"""
+    import permission as PERM
+
+    for s, want in [(">\U0000FE0F", ">⟨U+FE0F⟩"), ("|\U0000FE0F", "|⟨U+FE0F⟩"), ("$\U0000FE0F", "$⟨U+FE0F⟩"),
+                    ("=\U0000FE0F", "=⟨U+FE0F⟩"), ("∩\U0000FE00", "∩⟨U+FE00⟩"), ("a\U000E0100", "a⟨U+E0100⟩"),
+                    ("か\U000E0100", "か⟨U+E0100⟩"), ("가\U000E0100", "가⟨U+E0100⟩"), ("x\U0000FE0E", "x⟨U+FE0E⟩")]:
+        assert PERM.visible(s) == want, ascii(s)                                  # 印になる
+    for s in ["1\U0000FE0F\U000020E3", "#\U0000FE0F\U000020E3", "*\U0000FE0F\U000020E3", "‼\U0000FE0F", "⁉\U0000FE0F",
+              "↔\U0000FE0F", "©\U0000FE0F", "❤\U0000FE0F", "\U0001F44D\U0000FE0F", "葛\U000E0100", "㐀\U000E0100",
+              "\U00020000\U000E0100"]:
+        assert PERM.visible(s) == s, ascii(s)                                     # 正当 = そのまま

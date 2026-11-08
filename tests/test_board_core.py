@@ -744,12 +744,17 @@ console.log(JSON.stringify({one: core.buildScreen(one, core.newUi(), 'ja'), conf
     assert no_raw_hidden(out)
 
 
-# hook の visible と同じ答えになるべき 17 本 = 種では拾えない 6 字・文字の後の異体字セレクタ (と組み合わせ)・正当な異体字セレクタ・
-# 改行とタブ・どちらの網でも拾う字。字は古くからの物だけ (3.10 の unicodedata と node の Unicode の版の差を避ける)。
+# hook の visible と同じ答えになるべき 34 本 = 種では拾えない 6 字・文字の後の異体字セレクタ (と組み合わせ)・正当な異体字セレクタ・
+# 改行とタブ・どちらの網でも拾う字 + 異体字セレクタの決まり (UltraReview 2 回目の件 2・件 4 = bash の記号・かな・ハングルの後と
+# U+FE00 は印、キーキャップ・U+203C などの Emoji の字の後と CJK 統合漢字の後は正当)。字は古くからの物だけ (3.10 の unicodedata と
+# node の Unicode の版の差を避ける・異体字セレクタの前の字は両方の表で決まるので版の差は出ない)。
 HIDDEN_CASES = [
     "a͏b", "aᅟb", "aᅠb", "aㅤb", "aﾠb", "rm⠀-rf", "r️m -rf", "x\U000e0100y",
     "⠀️", "​️", "x︎",
     "❤️", "葛\U000e0100", "\U0001f44d️", "a\tb\nc 日本語", "ok‮; rm", "a​b\r",
+    ">\U0000FE0F", "|\U0000FE0F", "$\U0000FE0F", "=\U0000FE0F", "∩\U0000FE00", "a\U000E0100", "か\U000E0100",
+    "가\U000E0100", "1\U0000FE0F\U000020E3", "#\U0000FE0F\U000020E3", "*\U0000FE0F\U000020E3", "‼\U0000FE0F",
+    "⁉\U0000FE0F", "↔\U0000FE0F", "©\U0000FE0F", "㐀\U000E0100", "\U00020000\U000E0100",
 ]
 
 
@@ -763,7 +768,26 @@ def test_page_and_hook_mark_the_same_hidden_characters(tmp_path):
                   HIDDEN_CASES)
     want = [PERM.visible(s) for s in HIDDEN_CASES]
     assert [(case, g, w) for case, g, w in zip(HIDDEN_CASES, got, want) if g != w] == []
-    assert len(got) == len(want) == 17
+    assert len(got) == len(want) == 34
+
+
+@needs_node
+def test_page_and_hook_share_the_variation_selector_bases(tmp_path):
+    """異体字セレクタが正当になる前の字の表は、頁 (board_core.js の EMOJI_BASES・IDEOGRAPH_BASES) と hook (permission.py の
+    _EMOJI_BASES・_IDEOGRAPH_BASES) で同じ物 (UltraReview 2 回目の件 2・件 4)。Emoji の表には # * 数字・U+203C・矢印・
+    U+2764・U+1F44D が入り、bash の記号 (> | $)・英字・かな・漢字・度の印は入らない。"""
+    import permission as PERM
+
+    got = core_js(tmp_path, "console.log(JSON.stringify({emoji: core.EMOJI_BASES, ideograph: core.IDEOGRAPH_BASES}));",
+                  None)
+    assert [tuple(r) for r in got["emoji"]] == list(PERM._EMOJI_BASES)
+    assert [tuple(r) for r in got["ideograph"]] == list(PERM._IDEOGRAPH_BASES)
+
+    def emoji(ch: str) -> bool:
+        return any(a <= ord(ch) <= b for a, b in PERM._EMOJI_BASES)
+
+    assert [ascii(ch) for ch in "#*0123456789‼↔❤\U0001F44D" if not emoji(ch)] == []
+    assert [ascii(ch) for ch in ">|$aあ葛°" if emoji(ch)] == []
 
 
 @needs_node
