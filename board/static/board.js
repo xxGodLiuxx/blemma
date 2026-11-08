@@ -1561,6 +1561,7 @@
     S.armCode = code || null;         /* 焦点の上の鍵で選んだ時の、押したキー (e.code || e.key) = 2 回目は同じキーの時だけ */
     b.classList.add("armed");
     spotlight(b);
+    /* 帯の文は入り方に依らない (クリック・数字・キーのどれでも = UltraReview 3 回目の件 ③・入り方は状態の行が言う) */
     var t = $("fan-script-1");
     if (t && !t.firstChild.textContent) {
       t.style.fontSize = "18px";

@@ -82,7 +82,7 @@
       in_dwell: "gaze", in_key: "key", in_switch: "switch", in_touch: "touch", in_click: "click",
       per_card: "seconds per card", reset: "Reset counts",
       phone: "Open on a phone", close: "Close",
-      more: "▼ More (↓)", more_top: "▲ Back to top (↓)", copy: "Copy", copied: "Copied", copy_failed: "Could not copy", change: "Change", double_hint: "Click again to confirm", digit_again: "Press the same number again to confirm (Don't ask again)", key_again: "Press the same key again to confirm (Don't ask again)",
+      more: "▼ More (↓)", more_top: "▲ Back to top (↓)", copy: "Copy", copied: "Copied", copy_failed: "Could not copy", change: "Change", double_hint: "Once more to confirm", digit_again: "Press the same number again to confirm (Don't ask again)", key_again: "Press the same key again to confirm (Don't ask again)",
       set_click: "Confirm with", click_double: "Two clicks", click_single: "One click",
       phone_help: "Reach 127.0.0.1 from the phone through your own forwarding (e.g. USB Android: adb reverse tcp:{port} tcp:{port}). " +
         "If you open it under a name other than 127.0.0.1 / localhost, start the server with --allow-host <name>. " +
