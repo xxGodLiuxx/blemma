@@ -33,7 +33,10 @@ def test_state_script_real_board_isolated_and_silent(live, event, expected):
     run_state(srv.run_file, event)
     snap = srv.pending()
     assert snap["card"] is None
-    assert snap["states"] == [{"session": "abcdef", "state": expected, "stale": False, "reason": "", "ago": 0}]
+    # ago は 0.1 秒の丸め = 負荷で hook の POST から読むまでに 50 ms を超えると 0.1 になる (11/8 の 3.10 の全体回帰で 1 回) = 幅で見る
+    ago = snap["states"][0].pop("ago")
+    assert 0 <= ago < 1
+    assert snap["states"] == [{"session": "abcdef", "state": expected, "stale": False, "reason": ""}]
 
 
 @pytest.mark.parametrize("raw", [b"{}", b"{bad", b"null", b"\xff"])

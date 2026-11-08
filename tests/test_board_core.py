@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -251,6 +254,96 @@ def test_refused_undo_tells_whether_the_card_is_back(clock):
     assert b.undo("no-such-card", "click", 1) == (409, {"error": "not_undoable"})
 
 
+def test_refused_undo_says_how_an_ended_card_ended(clock):
+    """もう終わった札への取り消しの 409 には、/answer と同じく終わり方を添える = 頁は「答えは渡りました」を、答えが実際に
+    渡った時 (answered・released) だけ出せる (反証役の再現 = 時間切れ・切断の後の 409 に何も添えず、頁が「渡りました」と出した)。
+    判定の前に時間で進む物を確かめる = 接続が終わったはずの札を生きているとは答えず、取り消しも受けない。"""
+    b = new_board(clock)                             # 答えを渡し終えた札
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    assert b.answer(a, seq, {"type": "allow_once"}, "click", 1)[0] == 200
+    clock.advance(3.01)
+    _, _, card = b.wait(a)
+    b.delivered(card, True)
+    assert b.undo(a, "click", 1) == (409, {"error": "not_undoable", "end": "answered"})
+    b = new_board(clock)                             # 期限の直前に答え、1 枚目の頁が期限の後に取り消した (expired)
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    clock.advance(299.0)
+    keepalive(b, a)
+    assert b.answer(a, seq, {"type": "allow_once"}, "click", 1)[0] == 200
+    clock.advance(1.5)
+    assert b.undo(a, "click", 1) == (200, {"state": "expired"})
+    assert b.undo(a, "click", 1) == (409, {"error": "not_undoable", "end": "expired"})   # 2 枚目の頁
+    b = new_board(clock)                             # hook が居なくなった後に答えた札 (最後の /wait から 4 秒)
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    keepalive(b, a)
+    clock.advance(4.0)
+    assert b.answer(a, seq, {"type": "allow_once"}, "click", 1)[0] == 200
+    clock.advance(1.5)                               # 最後の /wait から 5.5 秒 (接続の終了は 5 秒)・猶予の内
+    assert b.undo(a, "click", 1) == (409, {"error": "not_undoable", "end": "disconnected"})
+    assert card_of(b, a).state == "disconnected"
+
+
+def test_the_board_says_which_answer_it_delivered(clock, tmp_path):
+    """板は、渡った答えの名札 (tag = 頁ごとの乱数 + 送信の番号) を、「直前に終わった札」(last.answered_by) に添える = 頁は
+    「自分のどの答えが渡って札が終わった」を、板の返りと写しの順に左右されずに読める (外部のレビューの所見 = 頁の側の
+    推し量りでは、ほかの頁の答えが先に通った時と、同じ頁の送り直しを見分けられなかった)。取り消して答え直した時は、渡った
+    答えの名札。答えが渡らずに終わった札 (時間切れ・渡す前に hook が居なくなった) には添えない。形の違う名札 (長すぎる・
+    字が違う・文字列でない) は、名札なしで受ける。名札は、札の写し・hook への返り・記録の file には載せない。"""
+    def deliver(board, cid):
+        clock.advance(3.01)
+        _, body, taken = board.wait(cid)
+        board.delivered(taken, True)
+        return body
+
+    b = new_board(clock, tmp_path)
+    a = ask(b)
+    card = b.pending(-1)["card"]
+    assert b.answer(a, card["view_seq"], {"type": "allow_once"}, "key", 1, None, "page-1:1")[0] == 200
+    assert "page-1:1" not in json.dumps(b.pending(-1)["card"])             # 猶予の札の写しには載せない
+    assert b.undo(a, "key", 1)[0] == 200
+    card = b.pending(-1)["card"]
+    assert b.answer(a, card["view_seq"], {"type": "deny", "reason": 0}, "click", 1, None, "page-2:1")[0] == 200   # ほかの頁が答え直す
+    body = deliver(b, a)
+    last = b.pending(-1)["last"]
+    assert (last["id"], last["end"], last["answered_by"]) == (a, "answered", "page-2:1")   # 渡ったのは、答え直した頁の答え
+    assert "page-" not in json.dumps(body)                                # hook へ渡す返りに、名札は載らない
+    a = ask(b)                                                            # 「端末で答える」が渡って終わった札にも添える
+    seq = b.pending(-1)["card"]["view_seq"]
+    assert b.answer(a, seq, {"type": "terminal"}, "key", 1, None, "page-3:1")[0] == 200
+    deliver(b, a)
+    last = b.pending(-1)["last"]
+    assert (last["id"], last["end"], last["answered_by"]) == (a, "released", "page-3:1")
+    logs = "".join(f.read_text(encoding="utf-8") for f in tmp_path.glob("log-*.jsonl"))
+    assert logs and "page-" not in logs                                   # 記録の file にも載らない
+    for bad in ("x" * 81, "page 1", "頁", "", 7, None, ["page-1:1"]):       # 形の違う名札 = 名札なしで受ける
+        b = new_board(clock)
+        a = ask(b)
+        seq = b.pending(-1)["card"]["view_seq"]
+        assert b.answer(a, seq, {"type": "allow_once"}, "key", 1, None, bad)[0] == 200
+        deliver(b, a)
+        last = b.pending(-1)["last"]
+        assert (last["id"], last["end"], last["answered_by"]) == (a, "answered", None), bad
+    b = new_board(clock)                                                  # 時間切れで終わった札には添えない
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    clock.advance(301.0)
+    assert b.answer(a, seq, {"type": "allow_once"}, "key", 1, None, "page-1:1")[0] == 409
+    last = b.pending(-1)["last"]
+    assert (last["id"], last["end"], last["answered_by"]) == (a, "expired", None)
+    b = new_board(clock)                                                  # 答えを受けた後、渡す前に hook が居なくなった札にも添えない
+    a = ask(b)
+    seq = b.pending(-1)["card"]["view_seq"]
+    keepalive(b, a)
+    clock.advance(4.0)
+    assert b.answer(a, seq, {"type": "allow_once"}, "key", 1, None, "page-1:1")[0] == 200
+    clock.advance(1.5)                                                    # 最後の /wait から 5.5 秒 (接続の終了は 5 秒)
+    last = b.pending(-1)["last"]
+    assert (last["id"], last["end"], last["answered_by"]) == (a, "disconnected", None)
+
+
 def test_answer_at_deadline_is_expired_and_409(clock):
     b = new_board(clock)
     a = ask(b)
@@ -402,6 +495,32 @@ def test_log_keeps_only_choice_time_and_counts(clock, tmp_path):
     assert rec["presses"] == 2 and rec["undo"] == 0 and rec["by"] == "dwell"
 
 
+def test_log_day_and_time_come_from_one_clock_reading(clock, tmp_path, monkeypatch):
+    """記録の行の時刻 (t) と file の日付は、時計を 1 回だけ読んで作る (1 巡目 #12 = 2 回読んでいたので、日付の変わり目に
+    終わった札は 11/7 の時刻の行が log-2026-11-08.jsonl に入った)。時計は naive の現地時刻 = 機械の時間帯に依らない。"""
+    from datetime import datetime as real
+    readings = [real(2026, 11, 7, 23, 59, 59, 999000), real(2026, 11, 8, 0, 0, 0)]
+    calls = []
+
+    class FakeDT:
+        @staticmethod
+        def now(tz=None):
+            calls.append(tz)
+            return readings[min(len(calls), len(readings)) - 1]
+
+    b = new_board(clock, tmp_path)
+    a = ask(b)
+    monkeypatch.setattr(S, "datetime", FakeDT)        # server.py は from datetime import datetime
+    clock.advance(301)                                # 期限 (300 秒) を過ぎる
+    keepalive(b, a)                                   # 板の時が進み、expired で終わって 1 行
+    assert card_of(b, a).state == "expired"
+    files = sorted(p.name for p in tmp_path.glob("log-*.jsonl"))
+    assert files == ["log-2026-11-07.jsonl"]
+    rec = json.loads((tmp_path / files[0]).read_text(encoding="utf-8").strip())
+    assert rec["t"][:10] == "2026-11-07" and rec["end"] == "expired"
+    assert calls == [None]                            # 時計を読むのは 1 回
+
+
 def test_no_log_dir_writes_nothing(clock, tmp_path):
     b = new_board(clock, None)
     a = ask(b)
@@ -544,4 +663,168 @@ def test_pending_returns_at_once_when_the_viewer_closed(clock):
         return False
     b.pending(b.seq, alive=closed)
     assert calls and b.viewers_open == 0
+
+
+# ---- 頁の計算 (board/static/board_core.js) を node の require() で = 札の字 (DOM なし) ----
+
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="node が無い (頁の計算の試験は node で走らせる)")
+CORE_JS = Path(__file__).resolve().parent.parent / "board" / "static" / "board_core.js"
+ZW, RLO = "​", "‮"
+
+
+def core_js(tmp_path, body: str, data) -> object:
+    """board_core.js を読み、body (DATA = data の JSON) が console.log で出す JSON を返す。data は \\u の形で渡す
+    (JS の source に見えない字を書かない)。"""
+    script = tmp_path / "core.js"
+    script.write_text(f"const core = require({json.dumps(str(CORE_JS))});\nconst DATA = {json.dumps(data)};\n" + body,
+                      encoding="utf-8")
+    p = subprocess.run([NODE, str(script)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert p.returncode == 0, p.stderr
+    return json.loads(p.stdout)
+
+
+def no_raw_hidden(screen) -> bool:
+    text = json.dumps(screen, ensure_ascii=False)
+    return ZW not in text and RLO not in text
+
+
+@needs_node
+def test_question_card_shows_hidden_characters(tmp_path):
+    """Claude の質問の札は、見えない字 (幅ゼロ・書字方向) を ⟨U+XXXX⟩ にして描く (1 巡目 #23 = 'Yes' と 'Ye'+U+200B+'s' の
+    釦が見分けられなかった)。直すのは表示だけ = 板へ返すのは番号 (picks) で、hook が組む answers は逐語 (test_hooks)。
+    1 問の札 (頭・問い・選択肢の字と説明) と、2 問の札の確かめの画面 (要約の名と選んだ字)・猶予の間の答えの字。"""
+    one = {"question": "Which?" + RLO, "header": "h" + ZW, "multiSelect": False,
+           "options": [{"label": "Yes"}, {"label": "Ye" + ZW + "s", "description": "d" + ZW + "x"}]}
+    out = core_js(tmp_path, r"""
+const one = {kind: 'question', payload: {questions: [DATA.one]}};
+const two = {kind: 'question', payload: {questions: [DATA.one, DATA.two]}};
+const ui = core.newUi(); ui.step = 2; ui.picks = [[1], [1]];
+console.log(JSON.stringify({one: core.buildScreen(one, core.newUi(), 'ja'), confirm: core.buildScreen(two, ui, 'ja'),
+  answer: core.choiceLabel(two, {type: 'answer', picks: [[1], [0]]}, 'ja'), send: core.pressKey(one, core.newUi(), 'opt:1')}));
+""", {"one": one, "two": dict(one, header="k" + RLO)})
+    s = out["one"]
+    assert (s["head"], s["question"]) == ("h⟨U+200B⟩", "Which?⟨U+202E⟩")
+    assert [(o["label"], o["desc"]) for o in s["options"]] == [("Yes", ""), ("Ye⟨U+200B⟩s", "d⟨U+200B⟩x")]
+    assert out["confirm"]["summary"] == ["h⟨U+200B⟩: Ye⟨U+200B⟩s", "k⟨U+202E⟩: Ye⟨U+200B⟩s"]
+    assert out["answer"] == "Ye⟨U+200B⟩s / Yes"
+    assert out["send"] == {"send": {"type": "answer", "picks": [[1]]}}          # 答えは番号だけ (字は hook が逐語で引く)
+    assert no_raw_hidden(out)
+
+
+@needs_node
+def test_mcp_card_shows_hidden_characters(tmp_path):
+    """MCP の問いの札も、頭 (server の名)・本文 (message)・欄の題と説明・選択肢の字と説明・板で描けない欄の名・確かめの
+    画面の要約と説明の、見えない字を ⟨U+XXXX⟩ にして描く (1 巡目 #23 = 'invoice_'+U+202E+'fdp.exe' が 'invoice_exe.pdf'
+    に見えた)。題が本文と同じ 1 欄の札は、直した後の字で比べて問いを重ねて出さない。"""
+    field = {"name": "ok", "title": "Open invoice_" + RLO + "fdp.exe ?", "description": "attach " + RLO + "fdp.exe",
+             "required": True, "multi": False,
+             "options": [{"label": "send invoice_" + RLO + "fdp.exe", "description": "d" + ZW + "x"}, {"label": "no"}]}
+    payload = {"head": "srv" + RLO + "xe", "text": "Send invoice_" + RLO + "fdp.exe", "fields": [field],
+               "omitted": ["note" + RLO + "txt.exe"]}
+    out = core_js(tmp_path, r"""
+const one = {kind: 'elicitation', payload: DATA.payload};
+const two = {kind: 'elicitation', payload: Object.assign({}, DATA.payload, {fields: [DATA.field, DATA.field]})};
+const same = {kind: 'elicitation', payload: Object.assign({}, DATA.payload, {text: DATA.field.title, fields: [DATA.field]})};
+const ui = core.newUi(); ui.step = 2; ui.picks = [[0], [1]];
+console.log(JSON.stringify({one: core.buildScreen(one, core.newUi(), 'ja'), confirm: core.buildScreen(two, ui, 'ja'),
+  same: core.buildScreen(same, core.newUi(), 'ja')}));
+""", {"payload": payload, "field": field})
+    s = out["one"]
+    assert (s["head"], s["text"]) == ("srv⟨U+202E⟩xe", "Send invoice_⟨U+202E⟩fdp.exe")
+    assert s["question"] == "Open invoice_⟨U+202E⟩fdp.exe ?"
+    assert "note⟨U+202E⟩txt.exe" in s["blocks"][0]["text"] and s["blocks"][1]["text"] == "attach ⟨U+202E⟩fdp.exe"
+    assert [(o["label"], o["desc"]) for o in s["options"] if o["key"].startswith("opt:")] == [
+        ("send invoice_⟨U+202E⟩fdp.exe", "d⟨U+200B⟩x"), ("no", "")]
+    c = out["confirm"]
+    assert c["summary"] == ["Open invoice_⟨U+202E⟩fdp.exe ?: send invoice_⟨U+202E⟩fdp.exe",
+                            "Open invoice_⟨U+202E⟩fdp.exe ?: no"]
+    assert [(b["label"], b["text"]) for b in c["blocks"][1:]] == [("Open invoice_⟨U+202E⟩fdp.exe ?", "attach ⟨U+202E⟩fdp.exe")] * 2
+    assert out["same"]["question"] == "" and out["same"]["text"] == "Open invoice_⟨U+202E⟩fdp.exe ?"
+    assert no_raw_hidden(out)
+
+
+# hook の visible と同じ答えになるべき 39 本 = 種では拾えない 6 字・文字の後の異体字セレクタ (と組み合わせ)・正当な異体字セレクタ・
+# 改行とタブ・どちらの網でも拾う字 + 異体字セレクタの決まり (UltraReview 2 回目の件 2・件 4 = bash の記号・かな・ハングルの後と
+# U+FE00 は印、キーキャップ・U+203C などの Emoji の字の後と CJK 統合漢字の後は正当・# * 数字の後は U+20E3 が続く時だけ正当)。
+# 字は古くからの物だけ (3.10 の unicodedata と node の Unicode の版の差を避ける・異体字セレクタの前の字は両方の表で決まるので
+# 版の差は出ない)。
+HIDDEN_CASES = [
+    "a͏b", "aᅟb", "aᅠb", "aㅤb", "aﾠb", "rm⠀-rf", "r️m -rf", "x\U000e0100y",
+    "⠀️", "​️", "x︎",
+    "❤️", "葛\U000e0100", "\U0001f44d️", "a\tb\nc 日本語", "ok‮; rm", "a​b\r",
+    ">\U0000FE0F", "|\U0000FE0F", "$\U0000FE0F", "=\U0000FE0F", "∩\U0000FE00", "a\U000E0100", "か\U000E0100",
+    "가\U000E0100", "1\U0000FE0F\U000020E3", "#\U0000FE0F\U000020E3", "*\U0000FE0F\U000020E3", "‼\U0000FE0F",
+    "⁉\U0000FE0F", "↔\U0000FE0F", "©\U0000FE0F", "㐀\U000E0100", "\U00020000\U000E0100",
+    "echo hello 2\U0000FE0F>f", "#\U0000FE0F", "*\U0000FE0F", "9\U0000FE0Fx", "2\U0000FE0F\U000020E3",
+]
+
+
+@needs_node
+def test_page_and_hook_mark_the_same_hidden_characters(tmp_path):
+    """頁の visibleText (board_core.js) と hook の visible (hooks/permission.py) は、同じ字に印を付ける (1 巡目 #25 = hook の網を
+    広げた後も、頁は種 5 つのままで、点字の空白・ハングルの埋め字・文字の後の異体字セレクタを素通しにした)。"""
+    import permission as PERM
+
+    got = core_js(tmp_path, "console.log(JSON.stringify(DATA.map(function (s) { return core.visibleText(s); })));",
+                  HIDDEN_CASES)
+    want = [PERM.visible(s) for s in HIDDEN_CASES]
+    assert [(case, g, w) for case, g, w in zip(HIDDEN_CASES, got, want) if g != w] == []
+    assert len(got) == len(want) == 39
+
+
+@needs_node
+def test_page_and_hook_share_the_variation_selector_bases(tmp_path):
+    """異体字セレクタが正当になる前の字の表は、頁 (board_core.js の EMOJI_BASES・IDEOGRAPH_BASES) と hook (permission.py の
+    _EMOJI_BASES・_IDEOGRAPH_BASES) で同じ物 (UltraReview 2 回目の件 2・件 4)。Emoji の表には # * 数字・U+203C・矢印・
+    U+2764・U+1F44D が入り、bash の記号 (> | $)・英字・かな・漢字・度の印は入らない。"""
+    import permission as PERM
+
+    got = core_js(tmp_path, "console.log(JSON.stringify({emoji: core.EMOJI_BASES, ideograph: core.IDEOGRAPH_BASES}));",
+                  None)
+    assert [tuple(r) for r in got["emoji"]] == list(PERM._EMOJI_BASES)
+    assert [tuple(r) for r in got["ideograph"]] == list(PERM._IDEOGRAPH_BASES)
+
+    def emoji(ch: str) -> bool:
+        return any(a <= ord(ch) <= b for a, b in PERM._EMOJI_BASES)
+
+    assert [ascii(ch) for ch in "#*0123456789‼↔❤\U0001F44D" if not emoji(ch)] == []
+    assert [ascii(ch) for ch in ">|$aあ葛°" if emoji(ch)] == []
+
+
+@needs_node
+def test_the_fallback_net_keeps_surrogate_pairs_and_marks_lone_halves(tmp_path):
+    """後ろ読みの無い古い JS の処理系 (Safari 16.4 より前) で組む予備の網 (u 旗なし = 字は UTF-16 の片割れ 1 つずつ) は、
+    正しい対 (絵文字・CJK 拡張 B 以降の漢字) をそのまま描き、孤立した片割れだけを ⟨U+XXXX⟩ にする (UltraReview 3 回目の
+    件 ② = 前は対の片割れ 2 つに当たり、絵文字が ⟨U+D83D⟩⟨U+DE00⟩ の 2 つの印になった)。予備は前の字を見られないので
+    U+FE0F・U+E0100 の 1 字は拾わない (U+FE00〜FE0D は拾う)。本物の網 (u 旗) は同じ入力で今までどおり = 対はそのまま・
+    U+E0100 は 2 code unit の 1 字でも印にする (予備の素通しを長さだけで決めない)。"""
+    rows = [  # (入力, 予備の網, 本物の網)
+        ("\U0001F600a\U00020000", "\U0001F600a\U00020000", "\U0001F600a\U00020000"),  # 絵文字 + a + 拡張 B の漢字
+        (chr(0xD83D), "⟨U+D83D⟩", "⟨U+D83D⟩"),                                        # 孤立した上位
+        (chr(0xDC00), "⟨U+DC00⟩", "⟨U+DC00⟩"),                                        # 孤立した下位
+        ("x" + chr(0xD83D) + "\U0001F600", "x⟨U+D83D⟩\U0001F600", "x⟨U+D83D⟩\U0001F600"),  # 孤立した上位の後の対
+        ("a\U0000200Bb", "a⟨U+200B⟩b", "a⟨U+200B⟩b"),
+        ("\U0000FE00", "⟨U+FE00⟩", "⟨U+FE00⟩"),                                       # 前の字に依らず印
+        ("\U0000FE0F", "\U0000FE0F", "⟨U+FE0F⟩"),                                     # 予備は前の字を見られない
+        ("\U000E0100", "\U000E0100", "⟨U+E0100⟩"),                                    # 予備は前の字を見られない
+    ]
+    got = core_js(tmp_path, "console.log(JSON.stringify({legacy: DATA.map(function (s) { return core.visibleTextLegacy(s); }),"
+                            " real: DATA.map(function (s) { return core.visibleText(s); })}));", [r[0] for r in rows])
+    assert got["legacy"] == [r[1] for r in rows]
+    assert got["real"] == [r[2] for r in rows]
+
+
+@needs_node
+def test_visible_suggestions_drop_bypass_and_auto(tmp_path):
+    """頁も「次から訊かない」に bypassPermissions と auto へ移す物を出さない (hook の offered と同じ・1 巡目 #26)。
+    先頭から 2 件まで・番号は元の列のまま。"""
+    sugg = [{"type": "setMode", "mode": "bypassPermissions", "destination": "session"},
+            {"type": "setMode", "mode": "auto", "destination": "session"},
+            {"type": "setMode", "mode": "acceptEdits", "destination": "session"},
+            {"type": "addDirectories", "directories": ["/home/u/demo-repo"], "destination": "session"},
+            {"type": "addRules", "rules": [{"toolName": "Bash"}], "behavior": "allow", "destination": "session"}]
+    out = core_js(tmp_path, "console.log(JSON.stringify(core.visibleSuggestions(DATA).map(function (v) { return v.index; })));",
+                  sugg)
+    assert out == [2, 3]
 

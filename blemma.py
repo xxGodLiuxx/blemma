@@ -7,21 +7,21 @@ from __future__ import annotations
 import sys
 
 if sys.version_info < (3, 10):
-    # 板も窓も起こす前に止める。古い python でもこの行まで届くよう、file 全体を 3.9 の文法で書く
-    # (walrus・match をこの前に置かない)。版は tuple でも読める形で取る。
+    # 板も窓も起こす前に止める。古い python (3.7 から) でもこの行まで届くよう、file 全体を 3.7 の文法で書く
+    # (walrus・match・位置専用引数を置かない)。版は tuple でも読める形で取る。
     _VERSION = "%d.%d" % tuple(sys.version_info[:2])
     sys.stderr.write("BLEMMA: Python 3.10 以上で実行してください (今の版は %s)\n"
                      "BLEMMA: Python 3.10 or later is required (this is %s)\n" % (_VERSION, _VERSION))
     sys.exit(1)
 
 import argparse
+import contextlib
 import http.client
 import json
 import os
 import re
 import secrets
 import shlex
-import shutil
 import signal
 import subprocess
 import tempfile
@@ -30,8 +30,10 @@ import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote, parse_qsl, urlencode
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # -I・-P・PYTHONSAFEPATH=1 でも隣の hooks を読む
 from hooks._client import _Connection as _DeadlineConnection
 
 ROOT = Path(__file__).resolve().parent
@@ -51,30 +53,68 @@ HOOKS = (
 )
 PAGE_KEYS = frozenset(("dwell", "scan", "key", "lang", "sound", "mode", "scale", "font", "theme", "desc", "trail", "click", "face", "pos", "clear"))
 PAGE_KEY_SHAPE = re.compile(r"[A-Za-z0-9_-]{1,24}")   # 誤りの文に名を出してよい鍵の形 (頼みの文や秘密を写さない)
+# 頁の parseOptions (board/static/board_core.js) が範囲の外で黙って既定 (切・Space) へ戻す 3 つの鍵は、起こす前に値も確かめる
+PAGE_NUMBER = re.compile(r"[0-9]+(?:\.[0-9]*)?|\.[0-9]+")          # 頁と同じ数の形 (符号・指数は読まない)
+PAGE_SWITCH_KEYS = re.compile(r"[A-Za-z0-9]|Space|Enter|NumpadEnter|Tab|Escape|Backspace|Arrow(?:Left|Right|Up|Down)"
+                              r"|F(?:[1-9]|1[0-9]|2[0-4])|Key[A-Z]|Digit[0-9]|Numpad[0-9]")   # 頁の key の一覧と同じ
+PAGE_VALUE_SHAPE = re.compile(r"[A-Za-z0-9._-]{1,24}")             # 誤りの文に写してよい値の形
+PAGE_RANGES = {
+    "dwell": ("0 か 0.3〜5 秒", "0 or 0.3-5 seconds"),
+    "scan": ("off か 0.5〜10 秒", "off or 0.5-10 seconds"),
+    "key": ("Space・Enter・F13 などの鍵の名 = board/README.md", "a key name such as Space, Enter or F13; see board/README.md"),
+}
 UNSET = object()                 # 旗を打っていない印 (--window-position の None は「右下」という読めた値)
 CLAUDE_MISSING = (
     # 第 2 の道は頁を開く板を手で起こす (--print-only は頁を開かないので、--keep-board で残した板には見る頁が無い)。
-    "claude が見つかりません。Claude Code が使える端末で、もう一度 python blemma.py を実行してください。"
-    "別の端末で Claude Code を起こす時は、python board/server.py で板を起こし (頁が開きます・Ctrl+C で止まります)、"
-    "Claude Code を起こす端末で python blemma.py --print-only を実行して、表示された 1 行を打ってください。\n"
-    "claude was not found. Run python blemma.py again in a terminal where Claude Code is available. "
+    "claude が見つかりません (claude が shell の alias だけで動く端末でも、こう出ます。その時は次の手順を使います)。"
+    "Claude Code が使える端末で、もう一度 python blemma.py を実行してください。"
+    "別の端末で Claude Code を起こす時は、python board/server.py で板を起こし (頁が開きます・Ctrl+C で止まります・"
+    "開くのは大きな板 = 扇にするなら住所の # より前に ?mode=small を足す)、"
+    "Claude Code を起こす端末で python blemma.py --print-only を実行して、(Windows では PowerShell で) 表示された 1 行を打ってください。\n"
+    "claude was not found (this also happens when claude is only a shell alias; use the steps below). "
+    "Run python blemma.py again in a terminal where Claude Code is available. "
     "To start Claude Code in another terminal, start the board with python board/server.py "
-    "(it opens the page; Ctrl+C stops it), then in the terminal for Claude Code, "
-    "run python blemma.py --print-only and run the printed line.")
+    "(it opens the large board; add ?mode=small before the # in the address for the fan; Ctrl+C stops it), then in the terminal for Claude Code, "
+    "run python blemma.py --print-only and run the printed line (PowerShell on Windows).")
 
 PAGE_OPEN = ("BLEMMA: 扇は既に開いています。この端末の確認も同じ扇に出ます "
-             "(見当たらない時は、開いている板の頁を閉じてから起こし直してください) / "
+             "(見当たらない時は、開いている板の頁を閉じてから起こし直してください)。"
+             "設定 (--set・BLEMMA_OPTS・--large/--small・窓の大きさと位置) は、開いている扇のままです "
+             "(変える時は、扇の窓を閉じてから設定を付けて起こし直すか、窓の歯車で替えます。歯車はキーかクリックで押します) / "
              "The fan is already open; prompts from this terminal appear there too "
-             "(if you cannot find it, close the open board page and start again)")
+             "(if you cannot find it, close the open board page and start again). "
+             "Settings (--set, BLEMMA_OPTS, --large/--small, window size and position) stay as the open fan has them "
+             "(to change them, close the fan window and start again with the new settings, or use the gear in the window; "
+             "press the gear with a key or a click)")
 
 
 class LaunchError(Exception):
     """利用者へ出せる、秘密を含まない英日の文 (ふつうは 1 行・main が行ごとに BLEMMA: を付ける)。"""
 
 
+def page_value_ok(key: str, value: str) -> bool:
+    """頁が受ける値か (頁の parseOptions と同じ決まり = dwell は 10 を、scan は 20 を超える値を ms と読む)。
+    dwell・scan・key の外は頁が確かめる (範囲の外は頁の既定へ戻る)。"""
+    if key == "key":
+        return value == " " or PAGE_SWITCH_KEYS.fullmatch(value) is not None
+    if key not in ("dwell", "scan"):
+        return True
+    if key == "scan" and value in ("", "on", "true", "off", "false"):
+        return True
+    if not PAGE_NUMBER.fullmatch(value):
+        return False
+    seconds = float(value)
+    if seconds > (10 if key == "dwell" else 20):
+        seconds /= 1000
+    low, high = (0.3, 5) if key == "dwell" else (0.5, 10)
+    return seconds == 0 or low <= seconds <= high
+
+
 def page_options(environment: str, assignments: list[str]) -> dict[str, str]:
-    """Only display keys enter the URL. Values are validated by the shared page parser.
-    BLEMMA_OPTS の知らない鍵は黙って捨てる。--set の知らない鍵は止める (打ち間違いを黙って効かなくしない)。"""
+    """Only display keys enter the URL. dwell, scan and key values are checked here (the page would fall back
+    silently); the page parser validates the rest.
+    BLEMMA_OPTS の知らない鍵は黙って捨てる。--set の知らない鍵は止める (打ち間違いを黙って効かなくしない)。
+    dwell・scan・key の値が頁の範囲の外なら、--set でも BLEMMA_OPTS でも止める (--set が勝った後の値で見る)。"""
     options = {k: v for k, v in parse_qsl(environment, keep_blank_values=True) if k in PAGE_KEYS}
     for assignment in assignments:
         key, _, value = assignment.partition("=")   # `=` の無い物 (例 scan) は空の値 = 頁の決まりの既定 (scan は 1.5 秒)
@@ -83,6 +123,11 @@ def page_options(environment: str, assignments: list[str]) -> dict[str, str]:
                 raise LaunchError(f"頁の設定の名を確認してください: {key} (--help) / Unknown page option: {key}")
             raise LaunchError("引数を確認してください (--help) / Invalid arguments (see --help)")
         options[key] = value
+    for key, (ja, en) in PAGE_RANGES.items():
+        value = options.get(key)
+        if value is not None and not page_value_ok(key, value):
+            shown = f"{key}={value}" if PAGE_VALUE_SHAPE.fullmatch(value) else key
+            raise LaunchError(f"頁の設定の値を確認してください: {shown} ({ja}) / Invalid page option value: {shown} ({en})")
     return options
 
 
@@ -131,8 +176,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                "Arguments after -- are passed unchanged to Claude Code.\n"
                "在処の記録 (board/state/run.json) の板が認証付きの照会に答えれば、その板を再利用します。\n"
                "Reuse the board in board/state/run.json when it answers an authenticated check.\n"
-               "画面の寸法が取得できない時は既定のブラウザで開きます (位置の指定で小窓を使えます)。\n"
-               "Use the default browser if display geometry is unavailable (set a position for app mode).")
+               "画面の寸法が取得できない時は既定のブラウザで開きます (位置の指定で小窓を使えます・画面の無い Linux では開けないので --print-only を)。\n"
+               "Use the default browser if display geometry is unavailable (set a position for app mode; a Linux box without a display cannot open it: use --print-only).")
     parser.add_argument("-h", "--help", action="help", help="使い方を表示\nShow this help")
     parser.add_argument("--demo", action="store_true", help="個人の設定・MCP を混ぜない\nUse project/local settings and only BLEMMA MCP")
     mode = parser.add_mutually_exclusive_group()
@@ -180,6 +225,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     option_mode = args.page_options.pop("mode", "small")
     args.mode = args.mode or (option_mode if option_mode in ("small", "large") else "small")
     args.claude_args = argv[split + 1:]
+    # Claude Code の --settings は値を 1 つだけ持ち、後に出た物が勝つ = -- の後ろに渡すと、生成した設定 (hooks 6 本と
+    # ask_board の許可) が丸ごと外れ、扇に札が来ないまま端末だけで動く。黙って効かなくせず断る。値は写さない (頼みの文を
+    # 含みうる)。判定は語の完全一致と --settings= の前置だけ = 頼みの文の 1 語や --setting-sources には当たらない。
+    if any(value == "--settings" or value.startswith("--settings=") for value in args.claude_args):
+        raise LaunchError("--settings は -- の後ろに渡せません (BLEMMA の設定と置き換わります)。"
+                          "hooks などは .claude/settings.json に書いてください / "
+                          "--settings cannot follow -- (it would replace BLEMMA's settings); "
+                          "put hooks in .claude/settings.json")
     return args
 
 
@@ -313,14 +366,14 @@ class BoardSession:
             return                         # An existing board belongs to its caller.
         stop_process(self.process)
         # TerminateProcess on Windows cannot run the server's finally/atexit cleanup.
+        # 消せない時 (Windows で別の process が run.json を開いている一瞬の PermissionError など) も止まらない =
+        # stop_reused_board と同じ扱い。残った run.json の pid は死んでいるので、後の回は使い回さずに上書きする。
         try:
             data = json.loads(self.run_file.read_text(encoding="utf-8"))
             if (isinstance(data, dict) and data.get("pid") == self.process.pid and
                     (self.info is None or data.get("token") == self.info.token)):
                 self.run_file.unlink()
-        except FileNotFoundError:
-            pass
-        except (ValueError, UnicodeError):
+        except (OSError, ValueError):      # FileNotFoundError・PermissionError は OSError、UnicodeError は ValueError の子
             pass
 
 
@@ -356,9 +409,11 @@ def ensure_board(root: Path, port: int, timeout: float = START_TIMEOUT) -> Board
             return session
         _check_start_deadline(deadline)
         launched = time.time() - 1.0  # run.json がこの時刻より後なら、自分が起こした板 (pid が転送役で合わない時)
+        # cwd は置き場 = 起こした端末の作業フォルダーを継がない (板は全部の路を自分の置き場から組む。Windows では cwd に
+        # している process が居る間、そのフォルダーの改名・削除が「使用中」で失敗する = --keep-board の板が掴み続けた)。
         session.process = subprocess.Popen(
             [python_executable(), "-I", str(root / "board" / "server.py"), "--no-browser", "--port", str(port)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(root),
             **background_options())
         while True:
             _check_start_deadline(deadline)
@@ -451,6 +506,20 @@ def stop_reused_board(session: BoardSession) -> None:
 
 
 CLIENT_FILE = re.compile(r"client-([0-9]{1,10})-[0-9a-f]{8}\.json")
+LOCK_WAIT = 15.0          # 名簿の錠 (clients/.lock) を待つ秒 (見ている錠を回収できる時刻までは伸ばす・上限 LOCK_STALE + 5)。
+                          # 待ち切れない時は守る区間に入らない (起こす側は止まり、終わる側は板を残す)
+LOCK_STALE = 60.0         # Windows で、生きている pid の錠を回収しに行くまでの秒 (持ち主が開いたままの錠は OS が消させない)
+LOCK_STALE_NO_PID = 5.0   # 持ち主の記録 (pid) の無い錠を回収するまでの秒 (持ち主は作った直後に pid を書くので、数秒で足りる)
+ROSTER_BUSY = (
+    "名簿の錠が取れません。別の端末の blemma.py が起動か終わりの途中です。少し待ってから起こし直してください "
+    "(ほかに blemma.py が動いていないのに、起こし直しても続く時は、board/state/clients/.lock を消します)。\n"
+    "Could not lock the launcher list: another blemma.py is starting or ending. Wait a moment and start again "
+    "(if no other blemma.py is running and it happens again, delete board/state/clients/.lock).")
+ROSTER_LEFT = ("BLEMMA: 名簿の錠が取れないため、板を止めずに残しました (止める時は python blemma.py --stop) / "
+               "Could not lock the launcher list, so the board was left running (stop it with python blemma.py --stop)")
+ROSTER_OFF = ("BLEMMA: 名簿 (board/state/clients) に書けないため、名簿を使わずに続けます (終わる時は、この回が起こした板だけを"
+              "止めます) / Cannot write the launcher list (board/state/clients), so it is not used "
+              "(on exit, only a board this launcher started is stopped)")
 
 
 class Clients:
@@ -458,7 +527,8 @@ class Clients:
 
     Claude を起こす回は 1 file で名乗る (名 = pid と乱数・中身 = pid と始めた時刻)。板を起こした回は
     「起こし方が起こした板」の印 board-<板の pid>.json を置く (手で起こした板には無い)。最後の使い手が、
-    印のある板だけを止める。名簿の読み書きに失敗した回は、今までの動き (自分が起こした板だけを止める) に戻る。
+    印のある板だけを止める。名簿の読み書きに失敗した回と、名簿の錠を作れない置き場 (書けない dir) の回は、今までの動き
+    (自分が起こした板だけを止める) に戻る。名簿の錠が取れない回は、名乗らずに止まる (起こす側)・板を止めずに残す (終わる側)。
     Launchers sharing one board register here; the last one stops only a launcher-started board."""
 
     def __init__(self, state: Path) -> None:
@@ -466,11 +536,211 @@ class Clients:
         self.me: Path | None = None
         self.ok = True                     # False = 名簿を使わず、今までの動き
 
+    @contextlib.contextmanager
+    def _lock(self):
+        """名簿の錠 (clients/.lock) = 名乗り (join) と、最後の使い手の「ほかの使い手を数える → 板を止める」(leave) を互いに
+        割り込ませない (外の目の 8 巡目 = A が 0 人と数えた直後に B が名乗って板を使い回し、その後で A が板を止めた)。
+        錠は file の作成の原子性 (O_EXCL) で取り、持ち主の pid と時刻を書く。取れたら True を渡す。取れない時は LOCK_WAIT (見て
+        いる錠を回収できる時刻までは伸ばす) まで待ち、待ち切れたら取れなかった事 (False) を渡す = 呼び手は守る区間に入らない
+        (9 巡目 = 錠なしで進むと、数え終えて止める直前の回の板を使い回せた)。錠を作れない置き場 (書けない dir・読み取り専用の
+        checkout) の時と、そこに残った回収できる古い錠を消せない時 (_reclaim が None) は、待たずに None を渡す = 呼び手は名簿を
+        使わない今までの動きに戻る (UltraReview の件 1 と 2 回目の件 1 = 前はこれも使用中と見て待ち切り、毎回止まった)。古い錠の
+        回収は経過時間だけで決めず (_stale)、移してから見る (_reclaim)。"""
+        path = self.dir / ".lock"
+        fd = None
+        held: bool | None = False
+        refused = 0                        # 錠の名が無いのに作成を断られた回数 (続けて)
+        start = time.monotonic()
+        deadline = start + LOCK_WAIT
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            while True:
+                try:
+                    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    break
+                except (FileExistsError, PermissionError) as error:
+                    # PermissionError は、Windows で錠の名が在る時は使用中 (別の回が開いている間に消された錠 = 消える途中) =
+                    # 在る錠と同じく待つ。名が無い時は、別の回が錠を消している一瞬 (Windows の DeleteFileW が消しの印を立てて
+                    # から閉じるまで・確かめた時には名がもう無い) か、錠を作れない置き場 (POSIX の EACCES・Windows の書けない
+                    # dir)。続けて 3 回断られた時だけ、作れない置き場と見て下の退化へ (1 回きりで退化すると、錠の取り合いの
+                    # 中で名簿を使わない動きに落ちた)
+                    if isinstance(error, PermissionError) and not (os.name == "nt" and os.path.lexists(path)):
+                        refused += 1
+                        if refused >= 3:
+                            raise
+                        time.sleep(0.05)
+                        continue
+                    refused = 0
+                    wait, mark = self._stale(path)
+                    if wait is not None and wait <= 0:
+                        reclaimed = self._reclaim(path, mark)
+                        if reclaimed is None:
+                            held = None    # 回収できる古い錠を消せない置き場 (書けない dir) = 待たずに下の退化へ
+                            break
+                        if reclaimed:
+                            continue
+                    # 待つのは LOCK_WAIT。見ている錠を回収できる時刻 (記録の無い錠は LOCK_STALE_NO_PID・Windows の生きている
+                    # pid の錠は LOCK_STALE) までは伸ばす = 待ち切って止まった直後に回収できる錠で、起こし直しを繰り返させない
+                    # (UltraReview の件 2)。上限は LOCK_STALE + 5 秒 (時計が戻った後の錠などで待ち続けない)
+                    limit = deadline
+                    if wait is not None:
+                        limit = max(limit, min(start + LOCK_STALE + 5, time.monotonic() + wait + 0.25))
+                    if time.monotonic() >= limit:
+                        break
+                    time.sleep(0.05)
+        except OSError:
+            fd, held = None, None          # 錠を作れない置き場 (dir を作れない・書けない) = 呼び手は名簿を使わない動きへ
+        try:
+            if fd is not None:
+                held = True
+                try:
+                    os.write(fd, json.dumps({"pid": os.getpid(), "at": datetime.now().astimezone().isoformat(
+                        timespec="seconds")}).encode("utf-8"))
+                except OSError:
+                    # pid を書けない錠は持たない = 記録の無い錠のまま区間に入ると、ほかの回が LOCK_STALE_NO_PID (5 秒) で
+                    # 回収しうる (UltraReview の件 1 の直しの残し)。錠を外して、名簿を使わない動き (None) へ
+                    self._unlock(path, fd)
+                    fd, held = None, None
+            yield held
+        finally:
+            if fd is not None:
+                self._unlock(path, fd)
+
+    @staticmethod
+    def _stale(path: Path) -> tuple[float | None, tuple]:
+        """見ている錠を回収できるまでの秒 (0 以下 = 今・None = 古さでは回収しない) と、読んだ時の印 (更新の時刻・大きさ・
+        中身 = 消す直前に同じ錠かを確かめる・_reclaim。st_ino は FAT / exFAT で長い名へ移すと変わるので使わない・
+        UltraReview の 3 回目)。持ち主の pid が書いてあれば、その生死で決める = pid が死んだ錠は今。
+        生きている pid の錠は、どれだけ古くても奪わない (止まっているだけの持ち主の名簿の区間に割り込まない・外の目の 9 巡目)。
+        ただし Windows は LOCK_STALE を過ぎた時 (下)。記録の無い錠 (作った直後でまだ書いていない・書けなかった・消せずに
+        残った・前の版の錠) は LOCK_STALE_NO_PID を過ぎた時。読めない時は None。"""
+        try:
+            stat = path.stat()
+            raw = path.read_bytes()
+        except OSError:
+            return None, ()
+        mark = (stat.st_mtime_ns, stat.st_size, raw)
+        age = time.time() - stat.st_mtime
+        try:
+            pid = json.loads(raw.decode("utf-8")).get("pid")
+        except (ValueError, AttributeError, RecursionError):
+            pid = None
+        if type(pid) is int and 0 < pid < 2 ** 31:
+            if not pid_alive(pid):
+                return 0.0, mark
+            # Windows = 持ち主が開いたままの錠は OS が消させない (共有の決まり) ので、生きている pid の錠でも LOCK_STALE を
+            # 過ぎたら回収を試みる = kill された回の pid を別の process が使い回しても 1 分で外れる (生きている持ち主の錠は
+            # 消せずに「在る錠」として待つ)。POSIX は pid の生死だけ = 消せてしまうので、古さでは奪わない
+            return (LOCK_STALE - age if os.name == "nt" else None), mark
+        return LOCK_STALE_NO_PID - age, mark
+
+    @staticmethod
+    def _reclaim(path: Path, mark: tuple) -> bool | None:
+        """古い錠を移してから見る = まず一意の名へ移し (移しは原子的 = 同じ古い錠を 2 つの回が回収しに来ても、移せるのは
+        1 つ)、移した物が判定 (_stale) で読んだ錠と同じ (印 = 更新の時刻・大きさ・中身が合う) 時だけ消して True。st_ino は
+        照らさない = FAT / exFAT では長い名へ移すと変わり、古い錠をいつも「違う」と見て戻し、回収できなかった (UltraReview の
+        3 回目)。判定の後に作り直された新しい錠は、中身 (pid と時刻) と更新の時刻が違う。合わない時 (判定の後に別の回が回収して
+        作り直した新しい錠を移してしまった) は、上書きしない link で元の名へ戻して False = 同じ inode なので、持ち主の fd も
+        _unlock の照合もそのまま効く (UltraReview の件 3 = 判定の後に作り直された錠を消し、両方が守る区間に入れた・2 回目の
+        件 3 = 見てから消しても、照合と移しの間に作り直された錠を消せた。POSIX には持ち主の開いた fd が移しを止める決まりが
+        無い)。錠の名が空いていた時 (別の回が先に回収した) は True。移せない時は、待つ (False) か、この置き場では錠を消せない
+        (None = 書けない置き場・呼び手は名簿を使わない動きへ) かを見分ける (2 回目の件 1 = 前はどちらも待ち、書けない置き場では
+        毎回止まった)。Windows は持ち主が開いたままの錠も移せない (共有の決まり) ので、置き場に試しの file を作れたら待つ。
+        POSIX の断り (EACCES・EPERM = 他人の dir・sticky の dir) と、そのほかの失敗 (読み取り専用の file system の EROFS
+        など) は None。"""
+        aside = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.stale")
+        try:
+            os.replace(path, aside)
+        except FileNotFoundError:
+            return True                        # 別の回が先に回収した = すぐ作り直してみる (O_EXCL が決める)
+        except PermissionError:
+            if os.name != "nt":
+                return None                    # POSIX には共有の決まりが無い = 他人の dir・sticky の dir の消せない錠
+            probe = path.with_name(f".probe.{os.getpid()}.{secrets.token_hex(4)}")
+            try:
+                fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except OSError:
+                return None                    # 試しの file も作れない = 書けない置き場
+            try:
+                os.close(fd)
+                probe.unlink()
+            except OSError:
+                pass                           # 残った試しの file は名簿の数えに入らない (client-*.json の名だけを見る)
+            return False                       # 置き場には書ける = 別の回が錠を開いたまま (共有の決まり) = 待つ
+        except OSError:
+            return None                        # 読み取り専用の file system (EROFS) など = この置き場では錠を消せない
+        try:
+            stat = aside.stat()
+            same = (stat.st_mtime_ns, stat.st_size, aside.read_bytes()) == mark
+        except OSError:
+            same = False                       # 読めない = 判定で読んだ錠と言えない = 戻す
+        if not same:
+            # 判定の後に別の回が回収して作り直した錠を移した = 元の名へ戻す (上書きしない link = その一瞬に別の回が作った
+            # 錠を消さない)
+            try:
+                os.link(aside, path)
+            except FileExistsError:
+                pass                           # その一瞬に、さらに別の回が錠を作った (3 つの回が同時)
+            except OSError:
+                if not os.path.lexists(path):  # link の使えない file system = 名が空いている時だけ、移して戻す
+                    try:
+                        os.replace(aside, path)
+                    except OSError:
+                        pass
+        try:
+            aside.unlink()
+        except OSError:
+            pass                               # 移した古い錠・戻した錠の 2 つ目の名 (名簿の数えは client-*.json の名だけを見る)
+        return same
+
+    @staticmethod
+    def _unlock(path: Path, fd: int) -> None:
+        # 記録を先に空にする = 消せずに残った錠も、記録の無い錠として LOCK_STALE_NO_PID で回収される (空にしないと、生きて
+        # いるこの process の pid のまま残り、回の終わりまで、POSIX では回収されず、Windows でも LOCK_STALE まで待たせる)。
+        # 消すのは、その名に今在る錠が自分の錠 (同じ dev と inode) の時だけ = 自分の錠が別の回に回収された後に、その回が
+        # 作り直した錠を消さない (UltraReview の 2 回目の件 3)。自分の錠と見分けられない時 (fstat の失敗) も消さない
+        # (空にした錠は、記録の無い錠として LOCK_STALE_NO_PID で回収される)。
+        try:
+            os.ftruncate(fd, 0)
+        except OSError:
+            pass
+        try:
+            mine = os.fstat(fd)
+        except OSError:
+            mine = None
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        if mine is None:
+            return
+        for _ in range(20):
+            try:
+                stat = path.stat()
+                if (stat.st_dev, stat.st_ino) == (mine.st_dev, mine.st_ino):
+                    path.unlink()
+                return                     # 消した・別の回の錠が今その名に在る (消さない)
+            except FileNotFoundError:
+                return                     # 消す物が無い (別の回が回収した)
+            except PermissionError:        # Windows = 別の回が錠の記録を読んでいる一瞬 (_write の置き換えと同じ扱い)
+                time.sleep(0.05)
+            except OSError:
+                return
+
     def join(self) -> None:
-        pid = os.getpid()
-        path = self.dir / f"client-{pid}-{secrets.token_hex(4)}.json"
-        if self._write(path, {"pid": pid, "started": datetime.now().astimezone().isoformat(timespec="seconds")}):
-            self.me = path
+        with self._lock() as held:
+            if held is None:
+                # 錠を作れない置き場 = 名簿を使わない今までの動き (名乗らない・終わる時は自分が起こした板だけを止める)
+                self.ok = False
+                print(ROSTER_OFF, file=sys.stderr)
+                return
+            if not held:
+                # 錠なしで名乗ると、数え終えて止める直前の回の板を使い回せる = 板も Claude Code も起こさずに止まる
+                raise LaunchError(ROSTER_BUSY)
+            pid = os.getpid()
+            path = self.dir / f"client-{pid}-{secrets.token_hex(4)}.json"
+            if self._write(path, {"pid": pid, "started": datetime.now().astimezone().isoformat(timespec="seconds")}):
+                self.me = path
 
     def mark(self, session: BoardSession) -> None:
         # 印の pid は run.json の pid (Windows の venv の転送役では、子の pid と食い違う)。
@@ -479,12 +749,31 @@ class Clients:
             self._write(self._marker(info), {"pid": info.pid, "port": info.port, "started": info.started})
 
     def leave(self, session: BoardSession | None, keep: bool) -> None:
-        """終わる時の順 = 自分の登録を消す → ほかの使い手を数える → 残すか、印のある板だけを止める。"""
+        """終わる時の順 = 自分の登録を消す → ほかの使い手を数える → 残すか、印のある板だけを止める。全部を名簿の錠の中で
+        行う = 数えてから止めるまでの間に、新しい使い手が名乗って板を使い回せない。錠が取れない時は、数えも止めもしない
+        (錠を持つ回の名乗りや数えの途中に板を止めない = 板は残し、次の起こし方の後始末か --stop に任せる)。錠なしでも
+        安全な 2 つだけ、この順で行う = 残すと決めた板の印を外す (止めにくくする向き)・自分の登録を消す (数を減らすだけ)。
+        錠を作れない置き場で、名簿を使っていない回 (名乗りで退化した回) は、錠なしで今までの動き (数えずに、自分が起こした
+        板だけを止める)。名簿を使った回が終わる時に錠を作れなくなった時は、取れない時と同じく板を残す (使い手を奪わない)。"""
+        with self._lock() as held:
+            if held or (held is None and not self.ok):
+                self._leave(session, keep)
+                return
+        if session is not None and keep and self.ok:
+            self._unmark(session.info)
+        self._forget()
+        if session is not None and not keep:
+            print(ROSTER_LEFT, file=sys.stderr)
+
+    def _forget(self) -> None:
         if self.me is not None:
             try:
                 self.me.unlink(missing_ok=True)
             except OSError:
                 pass                       # 消せなかった登録は、この pid が死んだ後に別の回が消す
+
+    def _leave(self, session: BoardSession | None, keep: bool) -> None:
+        self._forget()
         if session is None:
             return
         others = self._others() if self.ok else None
@@ -612,9 +901,31 @@ def stop_board(root: Path) -> int:
     return 0
 
 
+def _which(name: str) -> str | None:
+    """PATH の絶対の dir の中だけで実行の file を探す (cwd も相対の dir も探さない)。shutil.which は Windows で cwd を
+    先頭に足す (3.12 以降も、環境変数 NoDefaultCurrentDirectoryInExePath が無ければ) ので、信頼していない repo で
+    起こすと、そこに置かれた claude.cmd・chrome.cmd を拾い、Claude Code の信頼の確認より前に実行してしまう。
+    Windows は PATHEXT の拡張子を足して探し、拡張子の無い file は拾わない (名に PATHEXT の拡張子が在る時だけ、その名のまま)。"""
+    tails = [""]
+    if os.name == "nt":
+        exts = [e for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e]
+        if os.path.splitext(name)[1].upper() not in {e.upper() for e in exts}:
+            tails = exts
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        if os.name == "nt":            # Windows の PATH の欄は前後の空白と引用符を外して読む (POSIX では名の一部になりうる = そのまま)
+            folder = folder.strip().strip('"')
+        if not folder or not os.path.isabs(folder):
+            continue
+        for tail in tails:
+            candidate = os.path.join(folder, name + tail)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
 def find_app_browser() -> str | None:
     for name in ("chrome", "google-chrome", "google-chrome-stable", "msedge", "microsoft-edge"):
-        found = shutil.which(name)
+        found = _which(name)
         if found:
             return found
     candidates = []
@@ -674,14 +985,15 @@ def open_board(info: RunInfo, mode: str, size: tuple[int, int],
                           f"--window-position={position[0]},{position[1]}", f"--user-data-dir={profile}",
                           "--no-first-run", "--no-default-browser-check"],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, **background_options())
+                         stderr=subprocess.DEVNULL, cwd=str(ROOT),     # 板と同じく作業フォルダーを継がない
+                         **background_options())
     elif not webbrowser.open(url):
         raise LaunchError("ブラウザを開けません / Could not open the board browser")
 
 
 def find_claude() -> str | None:
     names = ("claude", "claude.cmd", "claude.exe") if os.name == "nt" else ("claude",)
-    return next((found for name in names if (found := shutil.which(name))), None)
+    return next(filter(None, map(_which, names)), None)   # 最初に見つかった物 (walrus を使わない = 3.7 の文法)
 
 
 def claude_command(executable: str | None, paths: tuple[Path, Path],
@@ -698,6 +1010,8 @@ def format_command(command: list[str]) -> str:
         # A pasteable PowerShell line, including paths containing spaces or apostrophes.
         def word(value: str) -> str:
             value = value.replace("`", "``").replace('"', '`"').replace("$", "`$")
+            for quote in (chr(0x201C), chr(0x201D), chr(0x201E)):   # PowerShell は全角の二重引用符も文字列の閉じと読む
+                value = value.replace(quote, "`" + quote)
             return '"' + value.replace("\r", "`r").replace("\n", "`n") + '"'
         return "& " + " ".join(word(value) for value in command)
     # Bash/zsh ANSI-C quoting keeps even multiline prompts on one printed line.
@@ -760,7 +1074,28 @@ def launch(args: argparse.Namespace, root: Path) -> int:
         paths = write_configs(root)
         command = claude_command(executable, paths, args)
         if args.print_only:
-            print(format_command(command))
+            # 命令の行だけは書けない字を ? に替えない (harden_streams の replace は案内の行のため) = pipe や file へ
+            # 向けた時 (Windows は ANSI の code page) に、黙って違う頼み・違う路の命令を出さず、理由つきで止まる。
+            # 確かめと書き出しは、出力先の元の errors で行う = surrogateescape (POSIX の UTF-8 mode・C の locale) の出力先は、
+            # 読めない bytes を含む路と引数も元の bytes のまま書ける (UltraReview の件 4)。? などに替える handler は strict で。
+            line = format_command(command)
+            stream = sys.stdout
+            original = getattr(stream, ORIGINAL_ERRORS, None) or getattr(stream, "errors", None)
+            errors = "surrogateescape" if original == "surrogateescape" else "strict"
+            try:
+                line.encode(getattr(stream, "encoding", None) or "utf-8", errors)
+            except UnicodeEncodeError:
+                raise LaunchError("この 1 行は今の出力先の文字コードで書けません。console に表示して写してください / "
+                                  "The command line cannot be encoded for this output; "
+                                  "print it to the console and copy it") from None
+            try:
+                stream.reconfigure(errors=errors)       # 確かめた handler のまま書く (replace の ? を通さない)
+            except (AttributeError, ValueError, OSError):
+                pass
+            try:
+                print(line, file=stream)
+            finally:
+                harden_streams(stream)                  # 後の案内の行は replace に戻す
             result = 0
         else:
             result = run_claude(command)
@@ -770,7 +1105,28 @@ def launch(args: argparse.Namespace, root: Path) -> int:
         clients.leave(session, keep=completed and args.keep_board)
 
 
+ORIGINAL_ERRORS = "_blemma_errors"   # harden_streams が replace に替える前の errors を控える stream の属性
+
+
+def harden_streams(*streams: Any) -> None:
+    """案内の行 (日本語を含む) を、console の文字コードが書けない時 (英語の Windows の cp1252 など) も落とさない = 書けない字は
+    ? に替える。文字コードは変えない (日本語の console はそのまま読める)。替える前の errors は stream に控える (--print-only の
+    命令の行は、元の errors で確かめて書く)。Replace unencodable characters instead of raising."""
+    for stream in streams or (sys.stdout, sys.stderr):
+        try:
+            errors = stream.errors
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            continue
+        if not hasattr(stream, ORIGINAL_ERRORS):   # 2 度目以後に控えると、替えた後の replace を控えてしまう
+            try:
+                setattr(stream, ORIGINAL_ERRORS, errors)
+            except AttributeError:
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    harden_streams()
     try:
         args = parse_args(argv)
         if args.stop:

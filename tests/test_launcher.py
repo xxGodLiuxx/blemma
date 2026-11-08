@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import ast
+import contextlib
+import errno
 import json
 import os
 import shutil
@@ -12,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -335,6 +338,25 @@ def test_flags_and_passthrough(tmp_path, demo):
     assert defaults.window_position is None and defaults.claude_args == []
 
 
+@pytest.mark.parametrize("extra", [["--settings", "my.json"], ["--settings=my.json"], ["--settings", "{}"]])
+def test_settings_after_the_separator_is_refused(monkeypatch, capsys, extra):
+    """`--` の後ろの --settings は断る (2 巡目 i8)。Claude Code の --settings は後に出た物が勝つ = 渡すと生成した設定
+    (hooks 6 本と ask_board の許可) が丸ごと外れ、扇に札が来ないまま端末だけで動く。断る文は 1 行で、値は写さない。
+    --setting-sources (前が同じ別の旗) は今までどおり通す。"""
+    def unexpected(*args, **kwargs):
+        pytest.fail("--settings を断る時は何も起こさない")
+
+    monkeypatch.setattr(L, "launch", unexpected)
+    with pytest.raises(L.LaunchError, match="--settings"):
+        L.parse_args(["--large", "--", "--continue", *extra])
+    assert L.main(["--", "--continue", *extra]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and len(captured.err.splitlines()) == 1
+    assert "--settings" in captured.err and "my.json" not in captured.err and "{}" not in captured.err
+    args = L.parse_args(["--", "--setting-sources", "project,local", "--continue"])
+    assert args.claude_args == ["--setting-sources", "project,local", "--continue"]
+
+
 def test_geometry_env_and_argument_precedence(monkeypatch):
     monkeypatch.setenv("BLEMMA_WINDOW_SIZE", "640x400")
     monkeypatch.setenv("BLEMMA_WINDOW_POSITION", "-200,20")
@@ -387,11 +409,33 @@ def test_help_runs_without_starting_apps():
     assert "認証付きの照会に答えれば" in result.stdout and "answers an authenticated check" in result.stdout
 
 
+def test_help_runs_under_isolated_and_safepath_modes(tmp_path):
+    """script の dir を sys.path に置かない起こし方 (-I・3.11 からの -P と PYTHONSAFEPATH=1) でも、隣の hooks を読んで
+    --help まで届く (1 巡目 #2 = blemma.py だけが自分の dir を足さず、板も claude も起きる前に import で落ちた)。
+    -I は PYTHON* の環境変数を見ないので、どの形も環境変数を外し、-X utf8 で同じ文字コードにして比べる。"""
+    script = str(REPO / "blemma.py")
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
+
+    def help_of(*flags, **extra):
+        return subprocess.run([sys.executable, *flags, "-X", "utf8", "-B", script, "--help"], cwd=tmp_path,
+                              capture_output=True, encoding="utf-8", env={**env, **extra}, timeout=30)
+
+    plain = help_of()
+    assert plain.returncode == 0 and plain.stderr == "" and "Launch the board" in plain.stdout
+    runs = {"-I": help_of("-I")}
+    if sys.version_info >= (3, 11):                 # -P と PYTHONSAFEPATH は 3.11 から (3.10 は -I だけで確かめる)
+        runs["-P"] = help_of("-P")
+        runs["PYTHONSAFEPATH=1"] = help_of(PYTHONSAFEPATH="1")
+    for name, result in runs.items():
+        assert (result.returncode, result.stderr, result.stdout) == (0, "", plain.stdout), name
+
+
 def test_old_python_stops_before_the_board_and_window(tmp_path):
-    """3.10 未満なら、ほかの import より前に日英 1 行ずつで止まる。版を 3.9 に差し替えて、blemma.py だけを置いた
-    写しで走らせる (hooks も board も無い = 確かめが import の後ろにずれると ImportError で落ちる)。"""
+    """3.10 未満なら、ほかの import より前に日英 1 行ずつで止まる。版を 3.7 に差し替えて、blemma.py だけを置いた
+    写しで走らせる (hooks も board も無い = 確かめが import の後ろにずれると ImportError で落ちる)。file 全体が
+    3.7 の文法で読める = 3.7〜3.9 で起こしても、構文の誤りにならずに案内まで届く (1 巡目 #35)。"""
     source = (REPO / "blemma.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, feature_version=(3, 9))   # 3.9 で起こしても、構文の誤りにならずに確かめの行へ届く
+    tree = ast.parse(source, feature_version=(3, 7))   # 3.7 で起こしても、構文の誤りにならずに確かめの行へ届く
     docstring, future, imported, check = tree.body[:4]
     assert isinstance(docstring, ast.Expr) and isinstance(future, ast.ImportFrom) and future.module == "__future__"
     assert isinstance(imported, ast.Import) and [alias.name for alias in imported.names] == ["sys"]
@@ -399,15 +443,15 @@ def test_old_python_stops_before_the_board_and_window(tmp_path):
     copy = tmp_path / "blemma 写し"
     copy.mkdir()
     shutil.copy2(REPO / "blemma.py", copy / "blemma.py")
-    code = ("import runpy, sys; sys.version_info = (3, 9, 6, 'final', 0); "
+    code = ("import runpy, sys; sys.version_info = (3, 7, 17, 'final', 0); "
             "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
     result = subprocess.run([sys.executable, "-B", "-c", code, str(copy / "blemma.py"), "--large", "--port",
                              str(unused_port()), "--", "日本語の頼み"], cwd=copy, capture_output=True,
                             encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"}, timeout=30)
     assert result.returncode == 1 and result.stdout == ""
     assert result.stderr.splitlines() == [
-        "BLEMMA: Python 3.10 以上で実行してください (今の版は 3.9)",
-        "BLEMMA: Python 3.10 or later is required (this is 3.9)",
+        "BLEMMA: Python 3.10 以上で実行してください (今の版は 3.7)",
+        "BLEMMA: Python 3.10 or later is required (this is 3.7)",
     ]
     assert sorted(path.name for path in copy.iterdir()) == ["blemma.py"]   # board/state も窓の profile も作らない
 
@@ -432,6 +476,33 @@ def test_set_names_an_unknown_key_and_takes_a_bare_key(monkeypatch, capsys):
         assert L.main(["--set", assignment]) == 1
         captured = capsys.readouterr()
         assert captured == ("", "BLEMMA: 引数を確認してください (--help) / Invalid arguments (see --help)\n")
+
+
+def test_set_and_opts_values_outside_the_page_ranges_are_refused(monkeypatch, capsys):
+    """dwell・scan・key は、頁が範囲の外で黙って既定 (切・Space) へ戻す値なら、板も窓も開く前に止める (1 巡目 #6・#24 =
+    scan=12 は走査なし・key=PageDown は Space に黙って戻った)。頁と同じ決まり = dwell は 10 を、scan は 20 を超える値を
+    ms と読む。--set が BLEMMA_OPTS に勝つ。値は短い英数の形の時だけ写す (頼みの文や秘密を写さない)。"""
+    def unexpected(*args, **kwargs):
+        pytest.fail("値の誤りでは何も起こさない")
+
+    monkeypatch.setattr(L, "launch", unexpected)
+    for bad in ("scan=12", "scan=0.4", "scan=25", "dwell=6", "dwell=0.2", "dwell=1e3", "key=PageDown", "key=Home"):
+        assert L.main(["--set", bad]) == 1
+        out, err = capsys.readouterr()
+        assert out == "" and len(err.splitlines()) == 1, bad
+        assert err.startswith(f"BLEMMA: 頁の設定の値を確認してください: {bad} (") and f"page option value: {bad} (" in err
+    for bad, shown in (("dwell", "dwell"), ("key=日本語の頼み", "key")):      # 空の値・鍵らしくない値は名だけ
+        assert L.main(["--set", bad]) == 1
+        err = capsys.readouterr().err
+        assert err.startswith(f"BLEMMA: 頁の設定の値を確認してください: {shown} (") and "日本語" not in err
+    monkeypatch.setenv("BLEMMA_OPTS", "theme=dark&scan=25")
+    assert L.main([]) == 1 and "scan=25 (" in capsys.readouterr().err
+    assert L.parse_args(["--set", "scan=1"]).page_options == {"theme": "dark", "scan": "1"}   # --set が勝つ
+    monkeypatch.delenv("BLEMMA_OPTS")
+    for good in ("scan=1.5", "scan=off", "scan=0", "scan=true", "scan=1500", "dwell=0", "dwell=1", "dwell=300",
+                 "key=F13", "key=Space", "key=a", "key=KeyQ", "key=Numpad0", "key=ArrowLeft", "key= "):
+        key, _, value = good.partition("=")
+        assert L.parse_args(["--set", good]).page_options == {key: value}, good
 
 
 @pytest.mark.parametrize("name,flag,value", [
@@ -499,7 +570,7 @@ def test_missing_claude_stops_before_board_and_window(isolated_repo, sessions, m
 @pytest.mark.parametrize("keep", [False, True])
 def test_print_only_prepares_real_board_without_claude(isolated_repo, sessions, monkeypatch, capsys, keep):
     monkeypatch.setattr(L, "ROOT", isolated_repo)
-    monkeypatch.setattr(L.shutil, "which", lambda name: "claude.exe" if name == "claude" else None)
+    monkeypatch.setattr(L, "_which", lambda name: "claude.exe" if name == "claude" else None)
     monkeypatch.setattr(L.webbrowser, "open", lambda url: True)
     argv = ["--large", "--demo", "--print-only", "--port", str(unused_port())]
     assert L.main(argv + (["--keep-board"] if keep else [])) == 0
@@ -510,6 +581,61 @@ def test_print_only_prepares_real_board_without_claude(isolated_repo, sessions, 
     assert session.run_file.exists() == keep
     assert (session.process.poll() is None) == keep
     assert L.board_responds(session.info, timeout=0.05) == keep
+
+
+def test_print_only_refuses_to_write_a_mangled_command(isolated_repo, sessions, monkeypatch):
+    """--print-only の 1 行を pipe や file へ向けた時 (Windows は ANSI の code page = 日本語の Windows は cp932) に、書けない字
+    (é など) を ? に替えた命令を黙って出さず、理由つきの 1 行で止まる (2 巡目 i29)。stream は main の harden_streams が
+    errors="replace" に替える本物の道を通す。書ける行 (日本語の頼み) は今までどおり出る。"""
+    import io
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "_which", lambda name: "claude.exe" if name == "claude" else None)
+    monkeypatch.setattr(L.webbrowser, "open", lambda url: True)
+
+    def print_only(prompt):
+        out, err = io.BytesIO(), io.BytesIO()
+        for name, raw in (("stdout", out), ("stderr", err)):
+            monkeypatch.setattr(sys, name, io.TextIOWrapper(raw, encoding="cp932", errors="strict", write_through=True))
+        code = L.main(["--large", "--print-only", "--port", str(unused_port()), "--", prompt])
+        return code, out.getvalue(), err.getvalue().decode("cp932")
+
+    code, out, err = print_only("café の案を 3 つ")
+    assert code == 1 and out == b"" and b"caf?" not in out
+    assert len(err.splitlines()) == 1 and "console に表示して" in err and "print it to the console" in err
+    assert "caf" not in err                                    # 頼みの文は写さない
+    code, out, err = print_only("日本語の案を 3 つ")
+    assert code == 0 and err == ""
+    assert len(out.splitlines()) == 1 and "日本語の案を 3 つ" in out.decode("cp932")
+    assert len(sessions) == 2 and all(session.process.poll() is not None for session in sessions)
+
+
+def test_print_only_writes_undecodable_bytes_back_through_surrogateescape(isolated_repo, sessions, monkeypatch):
+    """POSIX の UTF-8 mode や C の locale では、stdout の errors が surrogateescape = 読めない bytes を含む路や引数 (Python では
+    lone surrogate) も元の bytes のまま書ける。--print-only はそれを断らずに、元の bytes で出す (UltraReview の件 4 = 確かめは
+    harden_streams が replace に替える前の handler で・? に替えた行も出さない)。strict の出力先 (cp1252 の pipe など) で
+    書けない字 (日本語) は、今までどおり理由つきで止まる。"""
+    import io
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "_which", lambda name: "claude.exe" if name == "claude" else None)
+    monkeypatch.setattr(L.webbrowser, "open", lambda url: True)
+
+    def print_only(prompt, encoding, errors):
+        out, err = io.BytesIO(), io.BytesIO()
+        monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(out, encoding=encoding, errors=errors, write_through=True))
+        monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(err, encoding=encoding, errors="strict", write_through=True))
+        code = L.main(["--large", "--print-only", "--port", str(unused_port()), "--", prompt])
+        return code, out.getvalue(), err.getvalue()
+
+    code, out, err = print_only("caf\udce9 の案", "utf-8", "surrogateescape")    # UTF-8 として読めなかった byte 0xE9
+    assert code == 0 and err == b"", err
+    assert len(out.splitlines()) == 1 and b"caf\xe9" + " の案".encode("utf-8") in out and b"caf?" not in out
+    assert sys.stdout.errors == "replace"                       # 書いた後は案内の行の replace に戻す
+    # 同じ stream で 2 度目 = 控えは最初の 1 度だけ (戻した replace を元の errors と取り違えない)
+    assert L.main(["--large", "--print-only", "--port", str(unused_port()), "--", "caf\udce9 の案"]) == 0
+    assert sys.stdout.buffer.getvalue().count(b"caf\xe9") == 2
+    code, out, err = print_only("日本語の案を 3 つ", "cp1252", "strict")
+    assert code == 1 and out == b"" and len(err.splitlines()) == 1 and b"print it to the console" in err
+    assert len(sessions) == 3 and all(session.process.poll() is not None for session in sessions)
 
 
 def test_real_server_start_reuse_and_stop(isolated_repo, sessions, monkeypatch):
@@ -538,6 +664,32 @@ def test_cleanup_preserves_another_servers_run_file(isolated_repo, sessions):
     session.close()
     assert session.process.poll() is not None
     assert json.loads(session.run_file.read_text(encoding="utf-8")) == replacement
+
+
+def test_close_survives_a_permission_error_on_run_json(isolated_repo, sessions, monkeypatch, capsys):
+    """Windows では、別の process (名簿の外の回の hook・別の --print-only の read_run) が run.json を開いている一瞬に、
+    unlink が PermissionError になる。後始末 (close) はそれで止まらない = Claude Code の終わりの値を返し、名簿の後始末
+    (自分の名乗りと板の印の消し) も最後まで走る (2 巡目 i33・前は「起動処理に失敗しました」・exit 1 で、印が残った)。"""
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")
+    monkeypatch.setattr(L, "open_board", lambda *args, **kwargs: None)
+    monkeypatch.setattr(L, "run_claude", lambda command: 0)
+    original = Path.unlink
+    refused = []
+
+    def unlink_in_use(self, missing_ok=False):
+        if self.name == "run.json" and not refused:        # 最初の 1 回だけ = 試験の後始末では消せる
+            refused.append(self)
+            raise PermissionError(13, "in use")
+        return original(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink_in_use)
+    assert L.main(["--port", str(unused_port())]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "" and "起動処理に失敗しました" not in captured.err
+    assert len(refused) == 1                                  # 消せない道を通った
+    assert sessions[0].process.poll() is not None              # 自分が起こした板は止まった
+    assert client_files(isolated_repo) == []                   # 名乗りと板の印も消えた = 後始末が途中で止まらない
 
 
 def test_run_record_shape_is_checked_but_not_its_age(tmp_path):
@@ -588,6 +740,27 @@ def test_occupied_port_stops_before_browser_or_claude(isolated_repo, monkeypatch
         if os.name == "nt":
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        assert L.main(["--port", str(listener.getsockname()[1])]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and len(captured.err.splitlines()) == 1
+    assert "板を起動できません" in captured.err and "Board server exited" in captured.err
+    assert not (isolated_repo / "board" / "state" / "run.json").exists()
+
+
+def test_wildcard_listener_on_the_port_stops_before_browser_or_claude(isolated_repo, monkeypatch, capsys):
+    """0.0.0.0 で待つ相手 (同じ利用者の別のプログラム) の port でも、板を起こさずに止まる (1 巡目 #16 = Windows では板が
+    起き、相手の 127.0.0.1 の客を奪った)。README の「板を起動できません (ポート・配置を確認)」の行がそのまま当たる。"""
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("板が起きて、窓か claude まで進んだ")
+
+    monkeypatch.setattr(L, "open_board", unexpected)
+    monkeypatch.setattr(L, "run_claude", unexpected)
+    with socket.socket() as listener:
+        listener.bind(("0.0.0.0", 0))
         listener.listen()
         assert L.main(["--port", str(listener.getsockname()[1])]) == 1
     captured = capsys.readouterr()
@@ -652,6 +825,32 @@ def test_claude_exit_code_and_caller_working_directory(isolated_repo, sessions, 
     assert sessions[0].process.poll() is not None and not sessions[0].run_file.exists()
     assert client_files(isolated_repo) == []
     assert capsys.readouterr() == ("", "")
+
+
+def test_children_do_not_inherit_the_callers_cwd(isolated_repo, sessions, monkeypatch, tmp_path):
+    """Claude Code は起こした端末の作業フォルダーで動く (上の試験) が、板と小窓のブラウザはそれを cwd に継がない
+    (2 巡目 i31)。Windows では cwd にしている process が居る間、そのフォルダーの改名・削除が「使用中」で失敗する
+    (--keep-board で残した板が、最初に起こしたフォルダーを掴み続けた)。"""
+    caller = tmp_path / "作業 フォルダー"
+    caller.mkdir()
+    monkeypatch.chdir(caller)
+    original = L.subprocess.Popen
+    started = []
+
+    def record(*args, **kwargs):
+        started.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(L.subprocess, "Popen", record)
+    session = L.ensure_board(isolated_repo, unused_port())
+    assert session.process is not None and len(started) == 1
+    assert started[0].get("cwd") == str(isolated_repo.resolve())
+    opened = []
+    monkeypatch.setattr(L.subprocess, "Popen", lambda command, **kwargs: opened.append(kwargs))
+    monkeypatch.setattr(L, "find_app_browser", lambda: "chrome")
+    monkeypatch.setattr(L, "work_area", lambda: (0, 0, 1920, 1080))
+    L.open_board(L.RunInfo(18770, "test-placeholder", 123), "small", (640, 720), None)
+    assert len(opened) == 1 and opened[0].get("cwd") == str(L.ROOT)
 
 
 def test_config_write_failure_stops_before_claude(isolated_repo, sessions, monkeypatch, capsys):
@@ -973,8 +1172,39 @@ def test_stop_failure_keeps_the_marker(isolated_repo, sessions, launchers, monke
 @pytest.mark.skipif(os.name != "nt", reason="Windows executable suffixes")
 @pytest.mark.parametrize("name", ["claude.cmd", "claude.exe"])
 def test_windows_claude_suffix_lookup(monkeypatch, name):
-    monkeypatch.setattr(L.shutil, "which", lambda candidate: name if candidate == name else None)
+    monkeypatch.setattr(L, "_which", lambda candidate: name if candidate == name else None)
     assert L.find_claude() == name
+
+
+def test_the_lookup_never_runs_a_claude_or_browser_placed_in_the_working_folder(tmp_path, monkeypatch):
+    """claude とブラウザは PATH の絶対の dir だけで探す。起こした所 (cwd)・PATH の空の欄・相対の dir に置かれた
+    claude.cmd や chrome.cmd は拾わない = 信頼していない repo で起こしても、そこの file を Claude Code の信頼の確認より前に
+    実行しない (Python の点検 BL-PY-02 の再現 = Windows の shutil.which は cwd を先に探した)。"""
+    windows = os.name == "nt"
+    repo, bin_dir = tmp_path / "untrusted", tmp_path / "bin"
+    repo.mkdir(); bin_dir.mkdir()
+    def plant(folder, name):
+        path = folder / (name + (".cmd" if windows else ""))
+        path.write_text("@echo off\n" if windows else "#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
+    for name in ("claude", "chrome"):
+        plant(repo, name)
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)   # shutil.which なら cwd を探す条件
+    seen = {}
+    for path_value in ("", os.pathsep, ".", "untrusted", os.pathsep.join(["", ".", "untrusted"])):
+        monkeypatch.setenv("PATH", path_value)
+        seen[path_value] = (L._which("claude"), L._which("chrome"))
+    assert all(found == (None, None) for found in seen.values()), seen
+    real = os.path.normcase(str(plant(bin_dir, "claude")))   # Windows の名は大小を区別しない (拡張子は PATHEXT の綴りで返る)
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(bin_dir)]))
+    assert os.path.normcase(L._which("claude") or "") == real
+    assert os.path.normcase(L.find_claude() or "") == real
+    if windows:                                    # 拡張子の無い file (npm の sh の写し) は Windows では拾わない
+        (bin_dir / "chrome").write_text("#!/bin/sh\n", encoding="utf-8")
+        assert L._which("chrome") is None
+        assert os.path.normcase(L._which("claude.cmd") or "") == real
 
 
 def test_real_child_wait_and_argument_preservation():
@@ -1037,6 +1267,27 @@ def test_default_browser_fallback(monkeypatch, mode, browser, area):
     assert len(urls) == 1 and f"?mode={mode}#t=" in urls[0]
 
 
+@pytest.mark.skipif(os.name != "nt" or not (shutil.which("pwsh") or shutil.which("powershell")),
+                    reason="PowerShell に貼る 1 行の試験 (Windows だけ)")
+def test_the_printed_powershell_line_keeps_full_width_quotes_inside_the_argument(tmp_path):
+    """--print-only の PowerShell の 1 行は、全角の二重引用符 (U+201C・U+201D・U+201E) も文字列の中に留める = 引数のまま
+    子へ渡り、続きが命令として走らない (Python の点検 BL-PY-06 の再現 = 全角の閉じ引用で文字列が終わり、続きが走った)。"""
+    marker = tmp_path / "ran.txt"
+    left, right, low = chr(0x201C), chr(0x201D), chr(0x201E)
+    args = [f"a{right}; New-Item -ItemType File '{marker}'; {left}b", f"{low}x{right}", "plain"]
+    line = L.format_command([sys.executable, "-c", "import sys; print(ascii(sys.argv[1:]))", *args])
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    # 外部アプリの起動の番 (no_external_apps) は Python の子だけを通す = PowerShell は、その Python の子から起こす
+    relay = ("import subprocess, sys\n"
+             "r = subprocess.run(sys.argv[1:], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)\n"
+             "print(r.stdout, end=''); print(r.stderr, end='', file=sys.stderr)\n")
+    done = subprocess.run([sys.executable, "-c", relay, shell, "-NoProfile", "-NonInteractive", "-Command", line],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90,
+                          env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    assert not marker.exists(), done.stdout + done.stderr
+    assert done.stdout.strip() == ascii(args), done.stdout + done.stderr
+
+
 def test_command_line_stays_on_one_line():
     line = L.format_command(["claude", "空白 と '引用'", "$value`", "line1\nline2\r"])
     assert len(line.splitlines()) == 1
@@ -1044,3 +1295,571 @@ def test_command_line_stays_on_one_line():
         assert line.startswith('& "claude" ') and "`$value``" in line and "`n" in line
     else:
         assert line.startswith("claude ") and "\\n" in line
+
+
+def test_the_roster_lock_covers_joining_and_the_last_users_stop(isolated_repo, monkeypatch):
+    """名乗り (join) と、最後の使い手の「ほかの使い手を数える → 板を止める」(leave) は、同じ錠 (clients/.lock) の中で行う
+    = A が 0 人と数えた直後に B が名乗って板を使い回し、その後で A が板を止める隙間が無い (外の目の 8 巡目)。錠は終わると消える。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    a = L.Clients(state)
+    seen = {}
+    monkeypatch.setattr(a, "_write", lambda path, data: seen.__setitem__("join_locked", lock.exists()) or True)
+    a.join()
+    assert seen == {"join_locked": True} and not lock.exists()
+    a.me = state / "clients" / f"client-{os.getpid()}-deadbeef.json"
+    monkeypatch.setattr(a, "_others", lambda: seen.__setitem__("count_locked", lock.exists()) or 0)
+    monkeypatch.setattr(a, "_stop_used", lambda session: seen.__setitem__("stop_locked", lock.exists()))
+    a.leave(L.BoardSession(state / "run.json", L.RunInfo(1, "t", 1)), keep=False)
+    assert seen == {"join_locked": True, "count_locked": True, "stop_locked": True} and not lock.exists()
+
+
+def test_a_held_roster_lock_delays_the_stop_and_a_stale_lock_is_broken(isolated_repo, monkeypatch):
+    """別の回が錠を持っている間は、最後の使い手の止めは待つ (錠が外れてから止める)。持ち主の記録 (pid) の無い錠は、
+    LOCK_STALE_NO_PID を過ぎた時だけ、後始末なしに消えた回の古い錠として壊して進む (外の目の 9 巡目の後 = pid の在る錠は
+    pid の生死で決める・下の試験。この試験の錠は平文なので、記録の無い錠の枝を通る)。"""
+    state = isolated_repo / "board" / "state"
+    (state / "clients").mkdir(parents=True)
+    lock = state / "clients" / ".lock"
+    a = L.Clients(state)
+    order = []
+    monkeypatch.setattr(a, "_others", lambda: 0)
+    monkeypatch.setattr(a, "_stop_used", lambda session: order.append("stop"))
+    lock.write_text("held", encoding="utf-8")                           # 別の回が錠を持っている
+
+    def release():
+        time.sleep(0.5)
+        order.append("release")
+        lock.unlink()
+    threading.Thread(target=release, daemon=True).start()
+    a.leave(L.BoardSession(state / "run.json", L.RunInfo(1, "t", 1)), keep=False)
+    assert order == ["release", "stop"] and not lock.exists()
+    lock.write_text("stale", encoding="utf-8")                          # 持ち主が死んで残った古い錠
+    old = time.time() - L.LOCK_STALE_NO_PID - 5
+    os.utime(lock, (old, old))
+    started = time.monotonic()
+    a.leave(L.BoardSession(state / "run.json", L.RunInfo(1, "t", 1)), keep=False)
+    assert order == ["release", "stop", "stop"] and time.monotonic() - started < 2 and not lock.exists()
+
+
+HOLD_LOCK = ("import os, sys\n"
+             "from pathlib import Path\n"
+             "sys.path.insert(0, sys.argv[1])\n"
+             "import blemma\n"
+             "with blemma.Clients(Path(sys.argv[2]))._lock():\n"
+             "    print('held', flush=True)\n"
+             "    if sys.argv[3] == 'die':\n"
+             "        os._exit(0)\n"
+             "    sys.stdin.read()\n")
+
+
+@contextlib.contextmanager
+def roster_lock_held(state, how="hold"):
+    """別の起こし方 (実の python の process) が、本物の _lock で名簿の錠を取る。hold = 錠を持ったまま止まっている
+    (stdin を閉じると外して終わる)・die = 錠の中で後始末なしに消えた (錠の file が残る)。python は本体 (venv の転送役は
+    孫を起こすので、錠に書かれる pid と child.pid が合わない)。"""
+    child = subprocess.Popen([L.python_executable(), "-I", "-c", HOLD_LOCK, str(REPO), str(state), how],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8")
+    try:
+        assert child.stdout.readline().strip() == "held"
+        if how == "die":
+            child.wait(10)
+        yield child
+    finally:
+        if child.poll() is None:
+            child.stdin.close()
+            child.wait(10)
+        child.stdout.close()
+
+
+def test_a_launcher_that_cannot_take_the_roster_lock_starts_nothing(isolated_repo, monkeypatch, capsys):
+    """名簿の錠が待ち時間 (LOCK_WAIT) の内に取れない起こし方は、名乗らずに止まる = 板も窓も Claude Code も起こさず、
+    理由を日英 1 行ずつ出して戻り値 1 (外の目の 9 巡目 = 錠を待ち切ると錠なしで名乗り、人数を数え終えて止める直前の
+    別の回の板を使い回した。その回が再開すると、使い中の板を止めた)。持ち主の錠には触らない。"""
+    state = isolated_repo / "board" / "state"
+    monkeypatch.setattr(L, "ROOT", isolated_repo)
+    monkeypatch.setattr(L, "find_claude", lambda: "claude")
+    monkeypatch.setattr(L, "LOCK_WAIT", 0.3)
+    monkeypatch.setattr(L, "LOCK_STALE", 0.5)   # Windows の待ち手は、生きている pid の錠を LOCK_STALE まで待つ = 試験では短く
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("名簿の錠が無いまま、板・窓・claude へ進んだ")
+
+    for name in ("ensure_board", "open_board", "run_claude"):
+        monkeypatch.setattr(L, name, unexpected)
+    with roster_lock_held(state) as holder:
+        record = (state / "clients" / ".lock").read_text(encoding="utf-8")
+        assert L.main(["--port", str(unused_port())]) == 1
+        assert client_files(isolated_repo) == [".lock"]                       # 名乗っていない
+        assert (state / "clients" / ".lock").read_text(encoding="utf-8") == record
+        assert holder.poll() is None
+    captured = capsys.readouterr()
+    lines = captured.err.splitlines()
+    assert captured.out == "" and len(lines) == 2, captured.err
+    assert lines[0].startswith("BLEMMA: 名簿の錠が取れません") and lines[1].startswith("BLEMMA: Could not lock")
+    assert not (state / "run.json").exists()
+
+
+def test_a_last_user_that_cannot_take_the_roster_lock_leaves_the_board_running(isolated_repo, sessions, monkeypatch,
+                                                                              capsys):
+    """終わる側も、名簿の錠が取れない時は数えも止めもしない = 板は止めずに残し (印も残す = 次の起こし方の後始末か
+    --stop が止める)、理由を stderr に 1 行出す。錠を持つ回が名乗りや数えの途中の間に、錠なしで板を止めない。
+    止めの道は実物 (_stop_used・実の子の板)。自分の登録は消す (数を減らすだけ = 錠なしでも誰の板も止めない)。"""
+    state = isolated_repo / "board" / "state"
+    monkeypatch.setattr(L, "LOCK_WAIT", 0.3)
+    monkeypatch.setattr(L, "LOCK_STALE", 0.5)   # Windows の待ち手は、生きている pid の錠を LOCK_STALE まで待つ = 試験では短く
+    session = L.ensure_board(isolated_repo, unused_port())                      # 自分が起こした板 (実の子 process)
+    a = L.Clients(state)
+    a.join()
+    a.mark(session)
+    stops = []
+    real_stop = a._stop_used
+    monkeypatch.setattr(a, "_stop_used", lambda board: stops.append(board) or real_stop(board))
+    with roster_lock_held(state):
+        a.leave(session, keep=False)
+        assert stops == []
+        assert session.process.poll() is None and L.board_responds(session.info)   # 板は動いたまま
+        assert client_files(isolated_repo) == [".lock", f"board-{session.info.pid}.json"]
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 1 and "名簿の錠が取れない" in err[0] and "python blemma.py --stop" in err[0], err
+
+
+def test_a_live_holders_roster_lock_is_never_broken_but_a_dead_holders_lock_is(isolated_repo, monkeypatch):
+    """古い錠の回収は経過時間だけで決めない = 錠に持ち主の pid を書き、生きている pid の錠は、POSIX ではどれだけ古くても
+    奪わない (止まっているだけの持ち主の名簿の区間に割り込まない)。Windows は LOCK_STALE (60 秒) を過ぎた錠を回収しに行く
+    (下)。pid が死んだ錠 (錠の中で後始末なしに消えた回) は、待たずに回収して進む。記録の無い錠の決まり (5 秒) は上と下の
+    試験。実の持ち主 (錠を開いたまま) は、Windows では OS も消させない (共有の決まり・実測) = 誰も開いていない錠の段が、
+    pid の決まりそのものを見る。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    a = L.Clients(state)
+    monkeypatch.setattr(L, "LOCK_WAIT", 0.5)
+    old = time.time() - L.LOCK_STALE - 5
+    with roster_lock_held(state) as holder:
+        os.utime(lock, (old, old))
+        with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+            a.join()
+        assert a.me is None and json.loads(lock.read_text(encoding="utf-8"))["pid"] == holder.pid
+    assert not lock.exists()                                                    # 持ち主が外した
+    record = json.dumps({"pid": os.getpid(), "at": "2026-11-08T00:00:00+09:00"})
+    lock.write_text(record, encoding="utf-8")                                   # 生きている pid・誰も開いていない錠
+    os.utime(lock, (old, old))
+    if os.name == "nt":
+        # Windows = 持ち主が開いたままの錠は OS が消させないので、生きている pid でも 60 秒を過ぎた錠は回収する
+        # (kill された回の pid の使い回しで止まり続けない)。若い錠は LOCK_STALE を過ぎるまで奪わず、待ち手は LOCK_WAIT で
+        # 諦めずにその時まで待って回収する (UltraReview の件 2 = 起こし直しを繰り返させない・試験では LOCK_STALE を短く)。
+        b = L.Clients(state)
+        b.join()
+        assert b.me is not None and b.me.exists() and not lock.exists()
+        monkeypatch.setattr(L, "LOCK_STALE", 1.5)
+        lock.write_text(record, encoding="utf-8")
+        started = time.monotonic()
+        c = L.Clients(state)
+        c.join()
+        assert 1.0 < time.monotonic() - started < 5 and c.me is not None and c.me.exists() and not lock.exists()
+    else:
+        with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+            a.join()
+        assert a.me is None and lock.read_text(encoding="utf-8") == record
+        lock.unlink()
+    monkeypatch.setattr(L, "LOCK_WAIT", 3.0)
+    with roster_lock_held(state, "die") as dead:
+        assert lock.exists() and not L.pid_alive(dead.pid)
+        started = time.monotonic()
+        a.join()
+        assert time.monotonic() - started < 2 and a.me is not None and a.me.exists() and not lock.exists()
+
+
+def test_a_lock_without_a_record_is_reclaimed_within_the_wait(isolated_repo):
+    """記録 (pid) の無い錠 (作った直後に kill された回の錠・消せずに残った錠) は、LOCK_STALE_NO_PID (5 秒) を過ぎたら回収
+    する = 待ち (LOCK_WAIT 15 秒) の内に外れて進む (UltraReview の件 2 = 前は 60 秒で、待ち手は 15 秒で諦め、起こす回は
+    止まり、終わる回は板を残した)。持ち主は作った直後に pid を書くので、5 秒の内の錠は奪わない。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b"")                                       # O_EXCL の直後 (pid を書く前) に消えた回の錠
+    a = L.Clients(state)
+    started = time.monotonic()
+    a.join()
+    assert L.LOCK_STALE_NO_PID - 1 < time.monotonic() - started < L.LOCK_WAIT
+    assert a.me is not None and a.me.exists() and not lock.exists()
+
+
+def test_the_extended_wait_for_a_lock_has_a_cap(isolated_repo, monkeypatch):
+    """待ち手が伸ばす待ち (見ている錠を回収できる時刻まで) には上限 (LOCK_STALE + 5 秒) がある = 時計が戻った後の錠
+    (更新の時刻が未来) でも、回収できる時刻まで待ち続けずに止まる。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    monkeypatch.setattr(L, "LOCK_WAIT", 0.3)
+    monkeypatch.setattr(L, "LOCK_STALE", 0.2)                   # 上限 = 0.2 + 5 秒
+    lock.write_bytes(b"")
+    future = time.time() + 30
+    os.utime(lock, (future, future))                            # 記録の無い錠を回収できるのは 35 秒後
+    started = time.monotonic()
+    with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+        L.Clients(state).join()
+    assert 4.5 < time.monotonic() - started < 10 and lock.exists()
+
+
+def test_a_reclaimer_does_not_remove_a_lock_made_after_it_judged_the_old_one(isolated_repo, monkeypatch):
+    """古い錠の回収は、判定で読んだ錠と同じ錠 (更新の時刻・大きさ・中身) の時だけ消す。判定 (pid の生死を見る間) の後に、
+    別の回が同じ古い錠を回収して新しい錠を作っていたら、それは消さずに (移した時は元の名へ戻して) 待つ (UltraReview の件 3
+    = 遅い方が速い方の新しい錠を消し、両方が守る区間に入れた)。別の回は、判定の pid_alive の差し替えで、その間に割り込ませる。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    dead = 2 ** 31 - 2                                          # 死んだ持ち主 (下の差し替えが「死んでいる」と答える)
+    lock.write_text(json.dumps({"pid": dead, "at": "2026-11-08T00:00:00+09:00"}), encoding="utf-8")
+    fresh = json.dumps({"pid": os.getpid(), "at": "2026-11-08T00:00:01+09:00"})
+    real_alive = L.pid_alive
+    swapped, seen, released = [], [], threading.Event()
+
+    def other_launcher():                                       # 新しい錠の持ち主 = 区間を終えて、自分の錠を外す
+        time.sleep(0.5)
+        seen.append(lock.read_text(encoding="utf-8") if lock.exists() else None)
+        released.set()                                          # 区間を終えた (ここから錠を外す)
+        for _ in range(500):
+            try:
+                lock.unlink(missing_ok=True)
+                return
+            except PermissionError:                             # Windows = 待ち手が錠を読む一瞬は消せない (_unlock と同じく待つ)
+                time.sleep(0.01)
+
+    def judged_then_swapped(pid):
+        if pid != dead:
+            return real_alive(pid)
+        if not swapped:                                         # この回の判定の間に、別の回が回収して作り直した
+            swapped.append(True)
+            lock.unlink()
+            lock.write_text(fresh, encoding="utf-8")
+            threading.Thread(target=other_launcher, daemon=True).start()
+        return False
+
+    monkeypatch.setattr(L, "pid_alive", judged_then_swapped)
+    monkeypatch.setattr(L, "LOCK_WAIT", 3.0)
+    with L.Clients(state)._lock() as held:
+        assert held and released.is_set()                      # 新しい錠が外れてから入った = 2 つの回が同時に入らない
+    assert seen == [fresh] and swapped == [True]                # 新しい錠は、持ち主が外すまで消されなかった
+
+
+def test_a_reclaimer_moves_the_old_lock_aside_before_it_checks_it(isolated_repo, monkeypatch):
+    """古い錠の回収は移してから見る = まず一意の名へ移し (移しは原子的 = 移せた回だけがその錠を見る)、移した物が判定で
+    読んだ錠と同じ時だけ消す。判定の後・移しの前に、別の回が同じ古い錠を回収して新しい錠を作っていたら、それを移して
+    しまっても上書きせずに元の名へ戻す (UltraReview の 2 回目の件 3 = 見てから消すと、照合が通った後・移しの前に作り直された
+    新しい錠を消し、両方が守る区間に入れた。POSIX には持ち主の開いた fd が移しを止める決まりが無い)。別の回は、移しの
+    差し替えで、照合と移しの間に割り込ませる。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    dead = 2 ** 31 - 2                                          # 死んだ持ち主 (下の差し替えが「死んでいる」と答える)
+    lock.write_text(json.dumps({"pid": dead, "at": "2026-11-08T00:00:00+09:00"}), encoding="utf-8")
+    fresh = json.dumps({"pid": os.getpid(), "at": "2026-11-08T00:00:01+09:00"})
+    real_alive, real_replace, swapped = L.pid_alive, os.replace, []
+    monkeypatch.setattr(L, "pid_alive", lambda pid: pid != dead and real_alive(pid))
+    wait, mark = L.Clients._stale(lock)
+    assert wait == 0                                            # 死んだ持ち主の錠 = 今すぐ回収できる
+
+    def another_reclaimed_first(source, target, *args, **kwargs):
+        if Path(source) == lock and not swapped:                # 判定の後・移しの前に、別の回が回収して作り直した
+            swapped.append(True)
+            lock.unlink()
+            lock.write_text(fresh, encoding="utf-8")
+        return real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(L.os, "replace", another_reclaimed_first)
+    assert L.Clients._reclaim(lock, mark) is False              # 判定で読んだ錠ではなかった = 待つ
+    assert swapped == [True] and lock.read_text(encoding="utf-8") == fresh   # 新しい錠は元の名に戻っている
+    assert client_files(isolated_repo) == [".lock"]             # 移した名も残らない
+
+
+def test_an_old_lock_is_reclaimed_where_moving_it_aside_changes_its_file_id(isolated_repo, monkeypatch):
+    """古い錠の回収の照合 (移した物が判定で読んだ錠と同じか) は、更新の時刻・大きさ・中身で見て、st_ino は見ない = Windows の
+    FAT / exFAT (USB の置き場など) では、file ID が directory の entry の位置から作られ、長い名へ移すと変わる (Microsoft の
+    文書) ので、st_ino で照らすと移した古い錠がいつも「違う錠」になり、元の名へ戻して待ち続けた = 死んだ回の古い錠を回収
+    できずに「名簿の錠が取れません」で止まった (UltraReview の 3 回目)。判定の後に作り直された新しい錠は、中身 (pid と時刻)
+    と更新の時刻で見分ける (上の 2 本)。FAT の振る舞いは、移した名 (.stale) の stat の st_ino だけをずらす差し替えで作る。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    dead = 2 ** 31 - 2                                          # 死んだ持ち主 (下の差し替えが「死んでいる」と答える)
+    record = json.dumps({"pid": dead, "at": "2026-11-08T00:00:00+09:00"})
+    lock.write_text(record, encoding="utf-8")
+    real_alive, real_stat = L.pid_alive, Path.stat
+    monkeypatch.setattr(L, "pid_alive", lambda pid: pid != dead and real_alive(pid))
+
+    def renumbered_when_moved(self, *, follow_symlinks=True):   # FAT = 長い名へ移すと file ID (st_ino) が変わる
+        found = real_stat(self, follow_symlinks=follow_symlinks)
+        if not self.name.endswith(".stale"):
+            return found
+        return types.SimpleNamespace(st_ino=found.st_ino + 1, st_mtime_ns=found.st_mtime_ns, st_mtime=found.st_mtime,
+                                     st_size=found.st_size, st_dev=found.st_dev, st_mode=found.st_mode)
+
+    monkeypatch.setattr(Path, "stat", renumbered_when_moved)
+    wait, mark = L.Clients._stale(lock)
+    assert wait == 0                                            # 死んだ持ち主の錠 = 今すぐ回収できる
+    assert L.Clients._reclaim(lock, mark) is True               # 移した物は判定で読んだ錠 = 消す (戻して待たない)
+    assert client_files(isolated_repo) == []                    # 元の名も移した名も残らない
+    lock.write_text(record, encoding="utf-8")                   # 錠の取り方の通しでも、待たずに回収して入る
+    monkeypatch.setattr(L, "LOCK_WAIT", 1.0)
+    started = time.monotonic()
+    with L.Clients(state)._lock() as held:
+        assert held and time.monotonic() - started < 2
+    assert client_files(isolated_repo) == []
+
+
+def test_unlocking_removes_the_lock_only_when_it_is_ones_own(isolated_repo):
+    """錠を外す時は、その名に今在る錠が自分の錠 (同じ dev と inode) の時だけ消す = 自分の錠が別の回に回収された後に、その回が
+    作り直した錠を消さない (UltraReview の 2 回目の件 3 = 前は名で消したので、回収された後に外すと別の回の錠を消せた)。
+    自分の fd の記録は今までどおり先に空にする。自分の錠は、別の file (other) を開いた fd で作る。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    record = json.dumps({"pid": os.getpid() + 1, "at": "2026-11-08T00:00:00+09:00"})
+    lock.write_text(record, encoding="utf-8")                   # 別の回が今その名で持っている錠
+    other = lock.with_name("other")
+    other.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    L.Clients._unlock(lock, os.open(other, os.O_RDWR))         # 自分の錠だった file の fd
+    assert lock.read_text(encoding="utf-8") == record           # 別の回の錠は中身ごと残る
+    assert other.stat().st_size == 0                            # 自分の記録は空にした
+
+
+def test_a_roster_folder_that_cannot_be_written_falls_back_to_the_old_way(isolated_repo, sessions, launchers,
+                                                                          monkeypatch, capsys):
+    """名簿の置き場 (board/state/clients) に書けない時 (前に sudo で起こして作られた dir・読み取り専用の checkout) は、錠を
+    待たずに名簿を使わない今までの動きに戻る = 起こす側は名乗らずに進み (15 秒待って「名簿の錠が取れません」で止まらない)、
+    終わる側は自分が起こした板だけを止める (使い回した板は止めない)。理由は stderr に日英の 1 行 (UltraReview の件 1 = 前は
+    書けない dir の EACCES も錠の使用中と見て、毎回 15 秒待って止まった)。書けない dir は、錠の作成の EACCES で作る。"""
+    state = isolated_repo / "board" / "state"
+    real_open = os.open
+
+    def refused(path, flags, *args, **kwargs):
+        if Path(path).name == ".lock":
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(L.os, "open", refused)
+    a = L.Clients(state)
+    started = time.monotonic()
+    a.join()
+    assert time.monotonic() - started < 2 and not a.ok and a.me is None
+    launchers.start("starter")
+    launchers.start("reuser")
+    assert sessions[0].process is not None and sessions[1].process is None   # 2 つ目は使い回し
+    info = run_info(isolated_repo)
+    assert client_files(isolated_repo) == []                                 # 名乗りも板の印も書かない
+    launchers.end("reuser")
+    assert L.board_responds(info) and sessions[0].process.poll() is None     # 使い回した回は止めない
+    launchers.end("starter")
+    assert not L.board_responds(info, timeout=0.05) and sessions[0].process.poll() is not None   # 自分の板は止める
+    err = capsys.readouterr().err.splitlines()
+    assert err == [L.ROSTER_OFF] * 3, err
+
+
+def unmovable_old_lock(state, monkeypatch, probe_allowed):
+    """今すぐ回収できる古い錠 (記録 (pid) の無いまま LOCK_STALE_NO_PID を過ぎた錠) を置き、回収の移し (os.replace) を断る。
+    probe_allowed = 置き場に試しの file (.probe.*) を作れるか (False = 書けない置き場)。試しの file を作りに来た名の list を
+    返す。死んだ pid の錠にしないのは、待ちの延長が「回収できる時刻 = 今」に張り付き、LOCK_WAIT でなく LOCK_STALE + 5 秒
+    まで待つため (記録の無い古い錠は回収できる時刻が過去 = LOCK_WAIT で切れる = 直しを外した写しも速く落ちる)。"""
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b"")
+    old = time.time() - L.LOCK_STALE_NO_PID - 1
+    os.utime(lock, (old, old))
+    real_open, real_replace, probes = os.open, os.replace, []
+
+    def refused_replace(source, target, *args, **kwargs):
+        if Path(source) == lock:
+            raise PermissionError(errno.EACCES, "Permission denied", str(source))
+        return real_replace(source, target, *args, **kwargs)
+
+    def probing_open(path, flags, *args, **kwargs):
+        if Path(path).name.startswith(".probe"):
+            probes.append(path)
+            if not probe_allowed:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(L.os, "replace", refused_replace)
+    monkeypatch.setattr(L.os, "open", probing_open)
+    monkeypatch.setattr(L, "LOCK_WAIT", 1.0)
+    return probes
+
+
+def test_an_old_lock_in_a_folder_that_cannot_be_written_falls_back_to_the_old_way(isolated_repo, monkeypatch, capsys):
+    """書けない置き場 (別の口座や sudo で作られた dir・読み取り専用の file system・sticky の dir) に、回収できる古い錠 (死んだ
+    回の錠・記録の無いまま古くなった錠) が残っていても、待たずに名簿を使わない今までの動きに戻る (UltraReview の 2 回目の
+    件 1 = 錠の作成は在る錠で断られ (EEXIST)、回収の移しの断り (EACCES・EPERM・EROFS) を Windows の一瞬の共有違反と同じく
+    待ち、待ち切って毎回「名簿の錠が取れません」で止まった)。Windows は置き場に試しの file を作って見分ける (作れない =
+    書けない置き場)。POSIX の移しの断りは、そのまま書けない置き場。錠は残ったまま・試しの file も移した名も残さない。"""
+    state = isolated_repo / "board" / "state"
+    probes = unmovable_old_lock(state, monkeypatch, probe_allowed=False)
+    a = L.Clients(state)
+    started = time.monotonic()
+    a.join()
+    assert time.monotonic() - started < 2 and not a.ok and a.me is None
+    assert bool(probes) == (os.name == "nt")                    # 試しの file は Windows だけ (POSIX には共有違反が無い)
+    assert client_files(isolated_repo) == [".lock"]             # 錠は消せずに残る・試しの file も移した名も無い
+    assert capsys.readouterr().err.splitlines() == [L.ROSTER_OFF]
+
+
+def test_an_old_lock_that_cannot_be_moved_in_a_writable_folder_is_waited_for_on_windows(isolated_repo, monkeypatch,
+                                                                                         capsys):
+    """Windows で回収の移しが断られても、置き場に試しの file を作れる時は書けない置き場ではない (別の回が錠を開いたまま =
+    共有の決まり) = 名簿を使わない動きに落ちず、在る錠と同じく待つ (待ち切れたら「名簿の錠が取れません」)。POSIX には共有
+    の決まりが無い = 移しの断り (EACCES・EPERM) は書けない置き場 (上の試験と同じ退化)。どちらも試しの file は残さない。"""
+    state = isolated_repo / "board" / "state"
+    probes = unmovable_old_lock(state, monkeypatch, probe_allowed=True)
+    a = L.Clients(state)
+    if os.name == "nt":
+        with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+            a.join()
+        assert a.ok and a.me is None and probes                 # 試しの file は作れた = 書ける置き場 = 待った
+        assert L.ROSTER_OFF not in capsys.readouterr().err
+    else:
+        a.join()
+        assert not a.ok and a.me is None and not probes
+        assert capsys.readouterr().err.splitlines() == [L.ROSTER_OFF]
+    assert client_files(isolated_repo) == [".lock"]             # 試しの file は消した
+
+
+def test_a_lock_whose_pid_cannot_be_written_is_released_and_the_roster_is_not_used(isolated_repo, monkeypatch, capsys):
+    """錠は作れたが持ち主の pid を書けない時 (disk が一杯・file system の気まぐれ) は、記録の無い錠のまま名簿の区間に
+    入らない = 錠を外して、名簿を使わない動きに退化する (記録の無い錠はほかの回が LOCK_STALE_NO_PID = 5 秒で回収できる
+    ので、区間の途中で錠を奪われうる・UltraReview の件 1 の直しの残し)。錠は残さない・stderr は名簿を使わない 1 行。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    real_write = os.write
+    hits = []
+
+    def failing(fd, data, *args):
+        if isinstance(data, (bytes, bytearray)) and b'"pid"' in bytes(data):
+            hits.append(fd)
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(fd, data, *args)
+
+    monkeypatch.setattr(L.os, "write", failing)
+    a = L.Clients(state)
+    started = time.monotonic()
+    a.join()
+    assert time.monotonic() - started < 2 and hits and not a.ok and a.me is None
+    assert not lock.exists() and client_files(isolated_repo) == []
+    assert capsys.readouterr().err.splitlines() == [L.ROSTER_OFF]
+
+
+def test_a_lock_refused_while_another_launcher_deletes_it_is_not_a_fallback(isolated_repo, monkeypatch, capsys):
+    """Windows で別の回が錠を消す一瞬 (DeleteFileW が消しの印を立ててから閉じるまで) は、O_EXCL の作成が PermissionError に
+    なり、確かめた時には錠の名がもう消えている。これは書けない置き場ではない = 続けて断られた時だけ退化し、1 回きりの
+    断りでは作り直して錠を取る (件 1 の直しの後の負荷の試し = 錠の取り合いを 15 秒続けると、3.13 で 17 回・3.10 で 4 回
+    退化した)。"""
+    state = isolated_repo / "board" / "state"
+    real_open = os.open
+    refusals = []
+
+    def refused_once(path, flags, *args, **kwargs):
+        if Path(path).name == ".lock" and not refusals:
+            refusals.append(path)
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(L.os, "open", refused_once)
+    a = L.Clients(state)
+    a.join()
+    assert len(refusals) == 1 and a.ok and a.me is not None and a.me.exists()
+    assert capsys.readouterr().err == ""
+
+
+@contextlib.contextmanager
+def deleting_lock(path):
+    """Windows の「消える途中」の錠 = 別の process (検索の索引・ウイルス対策など) が消しの共有つきで開いている間に、古い型の
+    消し (FileDispositionInfo) を受けた file。名は残るが開けない (O_EXCL の作成も PermissionError)。handle を閉じると消える。"""
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                     wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    invalid = ctypes.c_void_p(-1).value
+    path.write_text("", encoding="utf-8")
+    holder = kernel32.CreateFileW(str(path), 0x80000000, 7, None, 3, 0, None)    # GENERIC_READ・共有は読み書き消し
+    assert holder not in (None, invalid)
+    try:
+        deleter = kernel32.CreateFileW(str(path), 0x00010000, 7, None, 3, 0, None)   # DELETE
+        assert deleter not in (None, invalid)
+        flag = ctypes.c_ubyte(1)                                                    # FILE_DISPOSITION_INFO.DeleteFile
+        try:
+            assert kernel32.SetFileInformationByHandle(deleter, 4, ctypes.byref(flag), 1)
+        finally:
+            kernel32.CloseHandle(deleter)
+        yield
+    finally:
+        kernel32.CloseHandle(holder)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="消える途中の錠は Windows の型 (POSIX の作成の PermissionError は書けない dir)")
+def test_a_lock_being_deleted_on_windows_is_waited_for(isolated_repo, monkeypatch):
+    """Windows で、別の process が開いている間に消された錠 (消える途中) は、O_EXCL の作成が PermissionError になる。書けない
+    dir と違い、在る錠と同じく待つ (名簿を使わない動きに落ちない)。開いていた handle が閉じて消えた後は、普通に錠が取れる。"""
+    state = isolated_repo / "board" / "state"
+    lock = state / "clients" / ".lock"
+    lock.parent.mkdir(parents=True)
+    monkeypatch.setattr(L, "LOCK_WAIT", 0.3)
+    a = L.Clients(state)
+    with deleting_lock(lock):
+        with pytest.raises(PermissionError):
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        assert os.path.lexists(lock)
+        with pytest.raises(L.LaunchError, match="名簿の錠が取れません"):
+            a.join()
+        assert a.ok and a.me is None
+    assert not os.path.lexists(lock)
+    a.join()
+    assert a.ok and a.me is not None and a.me.exists() and not lock.exists()
+
+
+def test_hardened_streams_do_not_raise_on_a_console_that_cannot_write_japanese():
+    """英語の Windows の console (cp1252) のように日本語を書けない stream でも、案内の行で落ちない = 書けない字は ? になる。
+    文字コードは変えない (日本語の console はそのまま読める)。付け替えられない stream は放っておく。"""
+    import io
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict", newline="\n")
+    with pytest.raises(UnicodeEncodeError):
+        print("BLEMMA: 板を開きました", file=stream)
+    L.harden_streams(stream, object())                                   # 2 つ目 = reconfigure の無い物も通る
+    print("BLEMMA: 板 / board", file=stream, flush=True)
+    assert raw.getvalue() == b"BLEMMA: ? / board\n" and stream.encoding == "cp1252"
+
+
+def test_every_annotation_in_the_launcher_resolves(monkeypatch):
+    """注釈の名は全部読める = `from __future__ import annotations` で注釈は文字列のまま残るので、import し忘れた名は呼ぶ時
+    ではなく、注釈を読む時 (typing.get_type_hints・型の道具) に初めて NameError になる (UltraReview の 2 回目の件 5 =
+    harden_streams の Any)。module の関数と、class とその method を全部読む。この file の autouse の差し替え
+    (subprocess.Popen を関数に) は先に外す = BoardSession の `subprocess.Popen | None` を素の module と同じく読む。"""
+    import inspect
+    import typing
+    monkeypatch.undo()                                          # この試験は何も起こさない (注釈を読むだけ)
+    failures, checked = {}, []
+
+    def resolve(name, value):
+        try:
+            typing.get_type_hints(value)
+            checked.append(name)
+        except Exception as error:                              # 名と理由を集めて、全部を 1 度に出す
+            failures[name] = repr(error)
+
+    for name, value in list(vars(L).items()):
+        if getattr(value, "__module__", None) != L.__name__:
+            continue                                            # import した物 (quote・dataclass・_DeadlineConnection など)
+        if inspect.isfunction(value):
+            resolve(name, value)
+        elif inspect.isclass(value):
+            resolve(name, value)
+            for attr, member in vars(value).items():
+                function = getattr(member, "__func__", member)  # staticmethod・classmethod
+                if inspect.isfunction(function):
+                    resolve(f"{name}.{attr}", function)
+    assert failures == {}
+    assert "harden_streams" in checked and "Clients._reclaim" in checked and "RunInfo" in checked

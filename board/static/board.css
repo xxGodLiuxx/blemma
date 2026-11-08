@@ -149,6 +149,8 @@ body.small.glow { box-shadow: inset 0 0 0 2px var(--rib); }
 .btn:disabled { cursor: default; border-style: dashed; }
 .btn:focus-visible, .mini:focus-visible { outline: 6px solid var(--focus); outline-offset: 4px; }
 .btn.scan { background: var(--scan-bg); color: var(--scan-fg); outline: 6px dashed var(--focus); outline-offset: 4px; }
+/* 数字で「次から訊かない」を選んだ 1 回目 (同じ数字の 2 回目で決まる)。扇の羽根は扇の決まり (.small .fan > .btn.armed) */
+#opts .btn.armed { background: var(--mark-bg); color: var(--mark-fg); outline: 6px double var(--focus); outline-offset: 4px; }
 
 .mini {
   font: inherit;
@@ -300,10 +302,15 @@ body.small.glow { box-shadow: inset 0 0 0 2px var(--rib); }
 }
 .small .fan > .btn.fixed { color: var(--seal); }
 .small .fan > .btn.term { color: var(--sec-term-fg); }
-.small .fan > .btn:is(:hover, :focus-visible, .scan) {
+/* 光る羽根 = 走査の光 (.scan) と、走査が回っていない時の pointer (:hover)・鍵の焦点 (:focus-visible)。走査が回っている間
+   (body.scanning = 頁が毎こま付ける) は、pointer の載った羽根を光らせず、鍵の焦点は外の縁の弧にする = 光って見えるのは、次の
+   1 押しで押される羽根だけ (最終デバッグ 1 巡目 #3)。:where は詳細度を足さない = 選んだ印 (.armed) が今までどおり勝つ */
+.small .fan > .btn.scan, .small:where(:not(.scanning)) .fan > .btn:is(:hover, :focus-visible) {
   color: var(--sec-on-fg); outline: none;
   background: conic-gradient(from var(--a0) at var(--cx) var(--cy), var(--sec-on-bg) 0deg, var(--sec-on-bg2) var(--full), var(--sec-on-bg) var(--full));
 }
+.small .fan > .btn:focus-visible { outline: none; }
+.small:where(.scanning) .fan > .btn:focus-visible:where(:not(.scan)) .dwell-arc path { stroke: var(--focus); stroke-dashoffset: 0; }
 .small .fan > .btn .fill, .small .fan > .btn .desc, .small .fan > .btn .def, .small .fan > .btn .label, .small .fan > .btn .num { display: none; }
 .small .fan > .btn .fan-text {
   position: absolute; left: var(--lx); top: var(--ly); transform: translate(-50%, -50%) rotate(var(--rot));
@@ -325,7 +332,7 @@ body.small.glow { box-shadow: inset 0 0 0 2px var(--rib); }
 .fan-aux { position: absolute; right: 0; bottom: 0; display: flex; gap: 6px; }
 .small .fan-aux .btn { min-width: 96px; min-height: 44px; padding: 4px 12px; font-size: calc(16px * var(--font, 1)); background: transparent; border-width: 1px; border-radius: 6px; }
 .small .fan-aux .btn .num, .small .fan-aux .btn .desc { display: none; }
-.small .fan-aux .btn:is(:hover, :focus-visible, .scan) { background: var(--sec-on-bg); color: var(--sec-on-fg); }
+.small .fan-aux .btn.scan, .small:where(:not(.scanning)) .fan-aux .btn:is(:hover, :focus-visible) { background: var(--sec-on-bg); color: var(--sec-on-fg); }
 .fan-time { position: absolute; left: 50%; top: calc(var(--cy, 50%) - 40px); transform: translate(-50%, -50%); padding: 0 8px; background: var(--bg); border-radius: 6px; z-index: 1; font-size: calc(16px * var(--font, 1)); font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; pointer-events: none; }
 .small .undo-zone { top: 64px; padding: 6px; width: calc(100vw - 20px); max-height: 152px; overflow: auto; }
 .small .undo-label { font-size: calc(16px * var(--font, 1)); margin: 0 0 4px; max-height: 32px; overflow: auto; }
@@ -405,7 +412,7 @@ body.small.glow { box-shadow: inset 0 0 0 2px var(--rib); }
 .small .fan .undo-label { display: none; }
 .small .fan .btn.undo { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: transparent; pointer-events: auto; }
 .small .fan .btn.undo .label, .small .fan .btn.undo .num { display: none; }
-.small .fan .btn.undo:is(:hover, :focus-visible, .scan) { background: var(--sec-bg2); outline: none; }
+.small .fan .btn.undo:is(:focus-visible, .scan), .small:where(:not(.scanning)) .fan .btn.undo:hover { background: var(--sec-bg2); outline: none; }
 .small .fan .btn.undo .fill { opacity: .5; }
 .fan-script.note { fill: var(--pivot); }
 
@@ -496,11 +503,14 @@ body.small { font-family: var(--face); }
 }
 .small:not(.idle) .card:hover .copy-btn, .small:not(.idle) .copy-btn:focus-visible { opacity: 1; }
 /* Windows のコントラスト テーマ (強制の配色) では、背景の図と自前の色が系の色に置き換わる = 扇の「今ここ」(pointer・焦点・走査の光) と
-   「選んだ」(2 回押しの 1 回目) を系の強調色の地で示し、大きな釦の滞留の満ちは色を保つ (theme=contrast とは別物) */
+   「選んだ」(2 回押しの 1 回目) を系の強調色の地で示し、大きな釦の滞留の満ちは色を保つ (theme=contrast とは別物)。走査が回っている間は
+   系の強調色の地は走査の光だけ (pointer は光らせず、鍵の焦点は弧) */
 @media (forced-colors: active) {
-  .small .fan > .btn:is(:hover, :focus-visible, .scan), .small .fan-aux .btn:is(:hover, :focus-visible, .scan) {
+  .small .fan > .btn.scan, .small .fan-aux .btn.scan,
+  .small:where(:not(.scanning)) .fan > .btn:is(:hover, :focus-visible), .small:where(:not(.scanning)) .fan-aux .btn:is(:hover, :focus-visible) {
     forced-color-adjust: none; background: Highlight; color: HighlightText;
   }
-  .small .fan > .btn.armed, .small .fan-aux .btn.armed { forced-color-adjust: none; background: CanvasText; color: Canvas; }
+  .small:where(.scanning) .fan > .btn:focus-visible:where(:not(.scan)) .dwell-arc path { forced-color-adjust: none; stroke: CanvasText; }
+  .small .fan > .btn.armed, .small .fan-aux .btn.armed, #opts .btn.armed { forced-color-adjust: none; background: CanvasText; color: Canvas; }
   .btn .fill { forced-color-adjust: none; background: Highlight; }
 }

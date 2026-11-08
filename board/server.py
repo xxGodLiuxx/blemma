@@ -8,8 +8,8 @@
 - 127.0.0.1 だけで待ち受ける (LAN・外には bind しない)。起動ごとに token を作り、
   `board/state/run.json` (`{"port","token","pid","started"}`) に書く。止まる時に消す。
 - hook は `POST /ask` → `GET /wait` (long-poll)、頁は `GET /pending` (long-poll) → `POST /answer`
-  / `POST /undo`。札は 1 件ずつ・期限は表示から数えて作成からの上限で抑える・終わりは 5 つの
-  どれか 1 つに排他で決まる・取り消しの猶予は server が持つ (§3.4〜§3.6)。
+  / `POST /undo`。札は 1 件ずつ・期限は表示から数えて作成からの上限で抑える・終わりは 4 つ
+  (resolved は作らない・§3.5) のどれか 1 つに排他で決まる・取り消しの猶予は server が持つ (§3.4〜§3.6)。
 - 板から返すのは choice (種と番号) だけ。公式の JSON は hook が組む (§3.3)。
 - 記録は選択と時刻と数だけ (問いの本文・道具の入力・答えの文字は書かない・§3.8)。
 """
@@ -19,8 +19,8 @@ from __future__ import annotations
 import sys
 
 if sys.version_info < (3, 10):
-    # 手で起こした時も、板を起こす前に止める (blemma.py と同じ文)。古い python でもこの行まで届くよう、
-    # file 全体を 3.9 の文法で書く。
+    # 手で起こした時も、板を起こす前に止める (blemma.py と同じ文)。古い python (3.7 から) でもこの行まで届くよう、
+    # file 全体を 3.7 の文法で書く (walrus・match・位置専用引数を置かない)。
     _VERSION = "%d.%d" % tuple(sys.version_info[:2])
     sys.stderr.write("BLEMMA: Python 3.10 以上で実行してください (今の版は %s)\n"
                      "BLEMMA: Python 3.10 or later is required (this is %s)\n" % (_VERSION, _VERSION))
@@ -29,6 +29,7 @@ if sys.version_info < (3, 10):
 import argparse
 import atexit
 import collections
+import errno
 import functools
 import hmac
 import json
@@ -43,7 +44,7 @@ import subprocess
 import threading
 import time
 import webbrowser
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -200,6 +201,13 @@ def _presses_of(by: str, presses: Any) -> Dict[str, int]:
     return out
 
 
+def _tag_of(value: Any) -> Optional[str]:
+    """答えの名札 (頁ごとの乱数 + 送信の番号)。英数字と - _ : の 80 字までだけを通す。それ以外は名札なし。"""
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_:-]{1,80}", value):
+        return value
+    return None
+
+
 def _press_batches_of(by: str, presses: Any, batches: Any) -> Optional[List[tuple]]:
     """ID 付きの束を先に全件確かめる。古い呼び手の presses だけの形も受ける。"""
     if batches is None:
@@ -228,7 +236,7 @@ def _flushing(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 class Card:
-    """札 1 枚。状態 = queued / shown / deciding / 終わり 5 つ (§3.5)。"""
+    """札 1 枚。状態 = queued / shown / deciding / 終わり 4 つ (resolved は作らない・§3.5)。"""
 
     def __init__(self, cid: str, kind: str, frm: dict, payload: dict, now: float) -> None:
         self.id = cid
@@ -242,6 +250,7 @@ class Card:
         self.view_seq = 0
         self.choice: Optional[dict] = None
         self.by: Optional[str] = None
+        self.tag: Optional[str] = None      # 最後に受けた答えの名札 (頁ごとの乱数 + 送信の番号。記録にも hook への返りにも書かない)
         self.decided_at: Optional[float] = None
         self.undo_until: Optional[float] = None
         self.ready = False          # 猶予が過ぎ、hook の /wait へ渡すのを待っている
@@ -318,6 +327,7 @@ class Board:
         c.view_seq = self.seq
 
     def _finish(self, c: Card, end: str, now: float) -> None:
+        assert end in FINAL, end            # 終わりは FINAL の 4 つだけ (注釈と code をずらさない)
         if c.end is not None:               # 終わりは 1 回だけ (排他・§3.5)
             return
         c.from_deciding = c.state == "deciding"
@@ -340,15 +350,17 @@ class Board:
                 self.stats_cards.append({"kind": c.kind, "end": end, "sec": sec})
         if c.first_shown is not None:
             self.last = {"id": c.id, "kind": c.kind, "end": end,
-                         "from_deciding": c.from_deciding, "at": now}
+                         "from_deciding": c.from_deciding, "at": now,
+                         "answered_by": c.tag if end in ("answered", "released") else None}
         self._log(c, sec)
 
     def _log(self, c: Card, sec: Optional[float]) -> None:
         """1 札 1 行 = 種・終わり・選択の種・秒・手段・押した数・取り消しの数だけ (§3.8)。"""
         if self.log_dir is None:
             return
+        now = datetime.now().astimezone()    # 1 回だけ読む = 日付の変わり目でも、行の時刻と file の日付が揃う
         rec = {
-            "t": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "t": now.isoformat(timespec="seconds"),
             "kind": c.kind,
             "end": c.end,
             "choice": c.choice.get("type") if (c.choice and c.end in ("answered", "released")) else None,
@@ -357,7 +369,7 @@ class Board:
             "presses": sum(c.presses.values()),
             "undo": c.undos,
         }
-        self._logq.append((datetime.now().strftime("%Y-%m-%d"), rec))   # 書くのは錠の外 (_flush_logs)
+        self._logq.append((now.strftime("%Y-%m-%d"), rec))   # 書くのは錠の外 (_flush_logs)
 
     def _flush_logs(self) -> None:
         """溜まった記録を file へ書く。板の錠を持たずに呼ぶ (file の待ちで板を止めない)。"""
@@ -522,7 +534,7 @@ class Board:
 
     @_flushing
     def answer(self, cid: Any, seq: Any, choice: Any, by: Any, presses: Any,
-               press_batches: Any = None) -> Tuple[int, dict]:
+               press_batches: Any = None, tag: Any = None) -> Tuple[int, dict]:
         with self.cond:
             now = self.clock()
             head = self._head()
@@ -549,6 +561,7 @@ class Board:
             head.state = "deciding"
             head.choice = norm
             head.by = by_s
+            head.tag = _tag_of(tag)               # どの送信の答えか (渡って終わった時に、last へ添える)
             head.decided_at = now
             head.undo_until = now + self.lim.undo_ms / 1000.0
             head.ready = self.lim.undo_ms == 0
@@ -559,13 +572,18 @@ class Board:
     def undo(self, cid: Any, by: Any, presses: Any, press_batches: Any = None) -> Tuple[int, dict]:
         with self.cond:
             now = self.clock()
+            self._advance(now)                          # 接続の終了・期限を先に確かめる (終わったはずの札を生きていると答えない)
             head = self._head()
             if head is None or head.id != cid or head.state != "deciding" or head.delivering \
                     or head.ready or head.undo_until is None or now >= head.undo_until:
-                # 同じ札がまだ頭に居る時は、今の状態を添える = 頁が「ほかの頁が先に取り消した (shown)」と
-                # 「答えが渡る (deciding)」を見分けられる。札が替わった後・無い時は添えない。
+                # 同じ札がまだ頭に居る時は今の状態を、もう終わった札には終わり方を添える = 頁が「ほかの頁が先に取り消した
+                # (shown)」「答えが渡る途中 (deciding)」「渡った (answered・released)」「渡っていない (expired・disconnected)」を
+                # 見分けられる (/answer の 409 と同じ形)。知らない札には添えない。
                 if head is not None and head.id == cid:
                     return 409, {"error": "not_undoable", "state": head.state}
+                d = self.done.get(cid) if isinstance(cid, str) else None
+                if d is not None:
+                    return 409, {"error": "not_undoable", "end": d.end}
                 return 409, {"error": "not_undoable"}
             by_s = by if by in INPUTS else "click"
             batches = _press_batches_of(by_s, presses, press_batches)
@@ -821,7 +839,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(code, json.dumps(obj, ensure_ascii=True).encode("ascii"),
                           "application/json; charset=utf-8")
 
-    def _read_json(self) -> Tuple[Optional[dict], int]:
+    def _read_body(self) -> Tuple[Optional[bytes], int]:
+        """本文の bytes を読み切るだけ (解かない)。鍵の確かめの前に読む = 読み残すと Windows は RST を返す。
+        解くのは鍵が通った後 (_parse_json) = 鍵の無い相手の深い入れ子や巨大な数で、板の thread を落とさず止めない。"""
         n = self.headers.get("Content-Length")
         try:
             size = int(n) if n is not None else -1
@@ -832,9 +852,15 @@ class Handler(BaseHTTPRequestHandler):
         if size > MAX_BODY:
             return None, 413
         try:
-            raw = self.rfile.read(size)
+            return self.rfile.read(size), 200
+        except OSError:
+            return None, 400
+
+    @staticmethod
+    def _parse_json(raw: Optional[bytes]) -> Tuple[Optional[dict], int]:
+        try:
             data = json.loads(raw.decode("utf-8")) if raw else None
-        except (OSError, ValueError):
+        except (ValueError, RecursionError):   # 深い入れ子も、壊れた本文として断る (捕まえないと handler の thread が落ちる)
             return None, 400
         if not isinstance(data, dict):
             return None, 400
@@ -875,10 +901,13 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path.startswith("/static/"):
             self._static(path[len("/static/"):])
             return
-        data, st = (self._read_json() if method == "POST" else (None, 200))
+        raw, st = (self._read_body() if method == "POST" else (None, 200))
         if not self._token_ok():          # 本文を読み切ってから断る (読み残すと Windows は RST を返す)
             self._json(401, {"error": "token"})
             return
+        data = None
+        if method == "POST" and st == 200:
+            data, st = self._parse_json(raw)          # 解くのは鍵の後
         board = self.app.board
         q = parse_qs(parts.query)
         if method == "GET" and path == "/page":      # 起こし方の照会 = 札を作らず、見る人にも数えない
@@ -915,7 +944,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(code, body)
         elif path == "/answer":
             code, body = board.answer(data.get("id"), data.get("seq"), data.get("choice"),
-                                      data.get("by"), data.get("presses"), data.get("press_batches"))
+                                      data.get("by"), data.get("presses"), data.get("press_batches"),
+                                      data.get("tag"))
             self._json(code, body)
         elif path == "/undo":
             code, body = board.undo(data.get("id"), data.get("by"), data.get("presses"),
@@ -958,7 +988,8 @@ class Handler(BaseHTTPRequestHandler):
 class BoardHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False      # 抱えた long-poll の終わりを待たずに閉じる
-    # Windows の SO_REUSEADDR は使用中の port にも bind できてしまう = 使わず、排他の旗を立てる
+    # Windows の SO_REUSEADDR は使用中の port にも bind できてしまう = 使わず、排他の旗を立てる。
+    # wildcard (0.0.0.0・:: の二重) で待つ相手には排他の旗でも bind が通る = make_server が connect の試しで断る
     allow_reuse_address = os.name != "nt"
     max_connections = MAX_CONNECTIONS
 
@@ -992,8 +1023,22 @@ class BoardHTTPServer(ThreadingHTTPServer):
         self.server_port = port
 
 
+def _refuse_if_answered(port: int) -> None:
+    """127.0.0.1:port に繋がる相手が居れば OSError (EADDRINUSE)。0.0.0.0 や :: (二重) で待つ相手が居ても、Windows と mac
+    では 127.0.0.1 の bind が通り、その相手の 127.0.0.1 の客を奪う = bind の前に繋いでみる (人の上に起きないための
+    確かめ・確かめと bind の間の隙は許す)。繋がらない (断られた・時間切れ) 時は空きと見て bind へ進む。"""
+    try:
+        probe = socket.create_connection(("127.0.0.1", port), timeout=0.2)
+    except OSError:
+        return
+    probe.close()
+    raise OSError(errno.EADDRINUSE, "この port で接続を受ける相手が居ます (0.0.0.0・:: で待つ物を含む)")
+
+
 def make_server(app: App, port: int) -> BoardHTTPServer:
     """127.0.0.1 だけに bind する。使用中なら OSError (黙って別の port に移らない)。"""
+    if port:                                  # 0 = OS が空きを選ぶ (試験の板)
+        _refuse_if_answered(port)
     httpd = BoardHTTPServer(("127.0.0.1", port), Handler)
     httpd.app = app  # type: ignore[attr-defined]
     return httpd
@@ -1093,7 +1138,19 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return ap.parse_args(argv)
 
 
+def harden_streams(*streams: Any) -> None:
+    """案内の行 (日本語を含む) を、console の文字コードが書けない時 (英語の Windows の cp1252 など) も落とさない = 書けない字は
+    ? に替える。文字コードは変えない (日本語の console はそのまま読める)。付け替えられない stream (差し替えの物) は放っておく。
+    Replace unencodable characters instead of raising, so a non-Japanese console cannot kill the board at startup."""
+    for stream in streams or (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    harden_streams()
     args = parse_args(argv)
     lim = Limits(wait=args.wait,
                  perm_wait=args.perm_wait,

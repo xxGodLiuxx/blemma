@@ -25,7 +25,7 @@
       in_dwell: "視線", in_key: "キー", in_switch: "スイッチ", in_touch: "触る", in_click: "クリック",
       per_card: "札ごとの秒", reset: "計を 0 に",
       phone: "携帯で開く", close: "閉じる",
-      more: "▼ 続き (↓)", more_top: "▲ 先頭へ (↓)", copy: "コピー", copied: "コピーしました", copy_failed: "コピーできません", change: "変更", double_hint: "もう 1 回で決まります",
+      more: "▼ 続き (↓)", more_top: "▲ 先頭へ (↓)", copy: "コピー", copied: "コピーしました", copy_failed: "コピーできません", change: "変更", double_hint: "もう 1 回で決まります", digit_again: "同じ数字をもう 1 回押すと決まります (次から訊かない)", key_again: "同じキーをもう 1 回押すと決まります (次から訊かない)",
       set_click: "押し方", click_double: "2 回で決まる", click_single: "1 回で決まる",
       phone_help: "携帯は利用者の転送で 127.0.0.1 へ届けます (例: USB の Android = adb reverse tcp:{port} tcp:{port})。" +
         "127.0.0.1 / localhost 以外の名で開く時は、server を --allow-host <名> で起こしてください。" +
@@ -44,6 +44,7 @@
       offline: "板の server に繋がりません (繋ぎ直しています)",
       stale: "画面が古くなっていました。もう一度選んでください",
       undo_late: "取り消しは間に合いませんでした (答えは渡りました)",
+      undo_going: "取り消しは間に合いませんでした (答えを渡している所です)",
       omitted: "この問いには、ここに出せない任意の欄が {n} 個あります ({names})。書く時は「端末で答える」を選んでください",
       light_permission_prompt: "権限の確認が届いています",
       light_elicitation_dialog: "問いが届いています",
@@ -81,7 +82,7 @@
       in_dwell: "gaze", in_key: "key", in_switch: "switch", in_touch: "touch", in_click: "click",
       per_card: "seconds per card", reset: "Reset counts",
       phone: "Open on a phone", close: "Close",
-      more: "▼ More (↓)", more_top: "▲ Back to top (↓)", copy: "Copy", copied: "Copied", copy_failed: "Could not copy", change: "Change", double_hint: "Click again to confirm",
+      more: "▼ More (↓)", more_top: "▲ Back to top (↓)", copy: "Copy", copied: "Copied", copy_failed: "Could not copy", change: "Change", double_hint: "Once more to confirm", digit_again: "Press the same number again to confirm (Don't ask again)", key_again: "Press the same key again to confirm (Don't ask again)",
       set_click: "Confirm with", click_double: "Two clicks", click_single: "One click",
       phone_help: "Reach 127.0.0.1 from the phone through your own forwarding (e.g. USB Android: adb reverse tcp:{port} tcp:{port}). " +
         "If you open it under a name other than 127.0.0.1 / localhost, start the server with --allow-host <name>. " +
@@ -100,6 +101,7 @@
       offline: "Cannot reach the board server (reconnecting)",
       stale: "The screen was out of date. Please choose again",
       undo_late: "Too late to undo: the answer was handed over",
+      undo_going: "Too late to undo: the answer is being handed over",
       omitted: "{n} optional field(s) cannot be shown here ({names}). Choose the terminal to fill them in",
       light_idle_prompt: "Claude is waiting for your next instruction (terminal)",
       light_elicitation_url_dialog: "Decide in the terminal whether to open the link",
@@ -250,7 +252,9 @@
   /* 滞留 = 同じ釦の上に ms 留まると押す。外れても grace のうちに戻れば数え続ける。
    * 外れた長さは戻った時にも見る (grace を超えていれば頭から数え直す)。こま (update の呼び) の間が grace より
    * 長く空いた時も (頁が隠れた・描画が止まった) その間 留まっていたか分からない = 頭から数え直す (§4.2)。
-   * block(key) = その釦は pointer が一度外へ出るまで数えない (押した直後・表示の世代が変わった時)。 */
+   * block(key) = その釦は pointer が一度外へ出るまで数えない (押した直後・表示の世代が変わった時)。外へ出たと見るのは、
+   * 釦の無い所に grace より長く居た時か、別の釦に入った時 = 数える側と同じ揺れの許し (羽根の縁に休む視線が 1 こまだけ
+   * 帯へ揺れても、見ていない (入り直していない) 羽根を 1 秒後に押さない)。 */
   function Dwell(ms, graceMs) {
     this.ms = ms;
     this.grace = graceMs === undefined ? 150 : graceMs;
@@ -261,12 +265,14 @@
     this.start = 0;
     this.outSince = null;
     this.blocked = null;
+    this.blockedOut = null;                   /* 守りの釦の外 (釦なし) に出た時刻 */
     this.last = null;
   };
   Dwell.prototype.block = function (key) {
     this.target = null;
     this.outSince = null;
     this.blocked = key || null;
+    this.blockedOut = null;
   };
   /* key = いま pointer の下の釦 (無ければ null)。返り = {target, progress (0〜1), fire} */
   Dwell.prototype.update = function (key, now) {
@@ -279,8 +285,13 @@
       this.outSince = null;
     }
     if (this.blocked !== null) {
-      if (key === this.blocked) return none;
-      this.blocked = null;
+      if (key === this.blocked) { this.blockedOut = null; return none; }
+      if (key === null || key === undefined) {  /* 釦なし = grace の内は守りを保つ (縁の揺れ)・grace を超えて続いたら解く */
+        if (this.blockedOut === null) this.blockedOut = now;
+        if (now - this.blockedOut <= this.grace) return none;
+      }
+      this.blocked = null;                    /* 別の釦に入った時は、すぐ解く */
+      this.blockedOut = null;
     }
     if (key === null || key === undefined) {
       if (this.target === null) return none;
@@ -326,20 +337,120 @@
     return I18N[lang].reasons.slice();
   }
 
-  /* 「次から訊かない」に出す suggestion = 先頭から 2 件まで・bypassPermissions へ移す物は出さない (§2.1) */
+  /* 「次から訊かない」に出す suggestion = 先頭から 2 件まで・bypassPermissions・auto へ移す物は出さない (§2.1) */
   function visibleSuggestions(list) {
     var out = [];
     if (!Array.isArray(list)) return out;
     for (var i = 0; i < list.length && out.length < 2; i++) {
       var s = list[i];
       if (!s || typeof s !== "object") continue;
-      if (s.type === "setMode" && s.mode === "bypassPermissions") continue;
+      if (s.type === "setMode" && (s.mode === "bypassPermissions" || s.mode === "auto")) continue;
       out.push({ index: i, s: s });
     }
     return out;
   }
 
+  /* 異体字セレクタが正当になる前の字の表 = 番号の範囲 [始, 終] の昇順 (hooks/permission.py の _EMOJI_BASES・_IDEOGRAPH_BASES と
+     同じ物 = 試験で照合)。性質の名でなく表で持つ = 処理系と Python の Unicode の版で網が変わらない。EMOJI_BASES = node 22
+     (Unicode 17.0) の \p{Emoji} から生成・IDEOGRAPH_BASES = CJK 統合漢字 (Unified_Ideograph) の block */
+  var EMOJI_BASES = [
+    [0x23, 0x23], [0x2A, 0x2A], [0x30, 0x39], [0xA9, 0xA9], [0xAE, 0xAE], [0x203C, 0x203C], [0x2049, 0x2049],
+    [0x2122, 0x2122], [0x2139, 0x2139], [0x2194, 0x2199], [0x21A9, 0x21AA], [0x231A, 0x231B], [0x2328, 0x2328],
+    [0x23CF, 0x23CF], [0x23E9, 0x23F3], [0x23F8, 0x23FA], [0x24C2, 0x24C2], [0x25AA, 0x25AB], [0x25B6, 0x25B6],
+    [0x25C0, 0x25C0], [0x25FB, 0x25FE], [0x2600, 0x2604], [0x260E, 0x260E], [0x2611, 0x2611], [0x2614, 0x2615],
+    [0x2618, 0x2618], [0x261D, 0x261D], [0x2620, 0x2620], [0x2622, 0x2623], [0x2626, 0x2626], [0x262A, 0x262A],
+    [0x262E, 0x262F], [0x2638, 0x263A], [0x2640, 0x2640], [0x2642, 0x2642], [0x2648, 0x2653], [0x265F, 0x2660],
+    [0x2663, 0x2663], [0x2665, 0x2666], [0x2668, 0x2668], [0x267B, 0x267B], [0x267E, 0x267F], [0x2692, 0x2697],
+    [0x2699, 0x2699], [0x269B, 0x269C], [0x26A0, 0x26A1], [0x26A7, 0x26A7], [0x26AA, 0x26AB], [0x26B0, 0x26B1],
+    [0x26BD, 0x26BE], [0x26C4, 0x26C5], [0x26C8, 0x26C8], [0x26CE, 0x26CF], [0x26D1, 0x26D1], [0x26D3, 0x26D4],
+    [0x26E9, 0x26EA], [0x26F0, 0x26F5], [0x26F7, 0x26FA], [0x26FD, 0x26FD], [0x2702, 0x2702], [0x2705, 0x2705],
+    [0x2708, 0x270D], [0x270F, 0x270F], [0x2712, 0x2712], [0x2714, 0x2714], [0x2716, 0x2716], [0x271D, 0x271D],
+    [0x2721, 0x2721], [0x2728, 0x2728], [0x2733, 0x2734], [0x2744, 0x2744], [0x2747, 0x2747], [0x274C, 0x274C],
+    [0x274E, 0x274E], [0x2753, 0x2755], [0x2757, 0x2757], [0x2763, 0x2764], [0x2795, 0x2797], [0x27A1, 0x27A1],
+    [0x27B0, 0x27B0], [0x27BF, 0x27BF], [0x2934, 0x2935], [0x2B05, 0x2B07], [0x2B1B, 0x2B1C], [0x2B50, 0x2B50],
+    [0x2B55, 0x2B55], [0x3030, 0x3030], [0x303D, 0x303D], [0x3297, 0x3297], [0x3299, 0x3299], [0x1F004, 0x1F004],
+    [0x1F0CF, 0x1F0CF], [0x1F170, 0x1F171], [0x1F17E, 0x1F17F], [0x1F18E, 0x1F18E], [0x1F191, 0x1F19A],
+    [0x1F1E6, 0x1F1FF], [0x1F201, 0x1F202], [0x1F21A, 0x1F21A], [0x1F22F, 0x1F22F], [0x1F232, 0x1F23A],
+    [0x1F250, 0x1F251], [0x1F300, 0x1F321], [0x1F324, 0x1F393], [0x1F396, 0x1F397], [0x1F399, 0x1F39B],
+    [0x1F39E, 0x1F3F0], [0x1F3F3, 0x1F3F5], [0x1F3F7, 0x1F4FD], [0x1F4FF, 0x1F53D], [0x1F549, 0x1F54E],
+    [0x1F550, 0x1F567], [0x1F56F, 0x1F570], [0x1F573, 0x1F57A], [0x1F587, 0x1F587], [0x1F58A, 0x1F58D],
+    [0x1F590, 0x1F590], [0x1F595, 0x1F596], [0x1F5A4, 0x1F5A5], [0x1F5A8, 0x1F5A8], [0x1F5B1, 0x1F5B2],
+    [0x1F5BC, 0x1F5BC], [0x1F5C2, 0x1F5C4], [0x1F5D1, 0x1F5D3], [0x1F5DC, 0x1F5DE], [0x1F5E1, 0x1F5E1],
+    [0x1F5E3, 0x1F5E3], [0x1F5E8, 0x1F5E8], [0x1F5EF, 0x1F5EF], [0x1F5F3, 0x1F5F3], [0x1F5FA, 0x1F64F],
+    [0x1F680, 0x1F6C5], [0x1F6CB, 0x1F6D2], [0x1F6D5, 0x1F6D8], [0x1F6DC, 0x1F6E5], [0x1F6E9, 0x1F6E9],
+    [0x1F6EB, 0x1F6EC], [0x1F6F0, 0x1F6F0], [0x1F6F3, 0x1F6FC], [0x1F7E0, 0x1F7EB], [0x1F7F0, 0x1F7F0],
+    [0x1F90C, 0x1F93A], [0x1F93C, 0x1F945], [0x1F947, 0x1F9FF], [0x1FA70, 0x1FA7C], [0x1FA80, 0x1FA8A],
+    [0x1FA8E, 0x1FAC6], [0x1FAC8, 0x1FAC8], [0x1FACD, 0x1FADC], [0x1FADF, 0x1FAEA], [0x1FAEF, 0x1FAF8]
+  ];
+  var IDEOGRAPH_BASES = [
+    [0x3400, 0x4DBF], [0x4E00, 0x9FFF], [0xFA0E, 0xFA0F], [0xFA11, 0xFA11], [0xFA13, 0xFA14], [0xFA1F, 0xFA1F],
+    [0xFA21, 0xFA21], [0xFA23, 0xFA24], [0xFA27, 0xFA29], [0x20000, 0x2A6DF], [0x2A700, 0x2B73F], [0x2B740, 0x2B81F],
+    [0x2B820, 0x2CEAF], [0x2CEB0, 0x2EBEF], [0x2EBF0, 0x2EE5F], [0x30000, 0x3134F], [0x31350, 0x323AF]
+  ];
+  /* キーキャップの土台 (# * 0〜9) = EMOJI_BASES に入るが、この字の後の U+FE0E / FE0F は次がキーキャップの印 U+20E3 の時だけ正当
+     (2 + U+FE0F + >f が札で 2>f に見えないように・hooks/permission.py の _KEYCAP_BASES と同じ字) */
+  var KEYCAP_BASES = [[0x23, 0x23], [0x2A, 0x2A], [0x30, 0x39]];
+
+  /* 見えない字 (制御の字・書字方向の字・幅ゼロの字など) を ⟨U+XXXX⟩ にして見せる。hooks/permission.py の visible と同じ網
+     (種 Cc・Cf・Cs・Zl・Zp + 種では拾えない 6 字 (U+034F・U+115F・U+1160・U+3164・U+FFA0・U+2800) + 異体字セレクタ = U+FE00〜FE0D
+     は常に・U+FE0E と FE0F は EMOJI_BASES の字の後でない時と、KEYCAP_BASES の字の後で次が U+20E3 でない時・U+E0100〜E01EF は
+     IDEOGRAPH_BASES の字の後でない時・改行とタブは残す)。権限の札の本文は hook で、質問と MCP の札の字と「次から訊かない」の文は
+     頁がここで直す (表示だけ = 返す答えは番号のまま) */
+  var HIDDEN_LEGACY = false;           /* 下の HIDDEN_RE を予備の網で組んだか (古い JS の処理系) */
+  function buildHiddenRe(legacy) {
+    var cls = function (ranges) {      /* 表 → 後ろ読みの字の類 (\u{...} の逃がしで組む = source に字を書かない・u 旗) */
+      return "[" + ranges.map(function (r) {
+        return "\\u{" + r[0].toString(16) + "}-\\u{" + r[1].toString(16) + "}";
+      }).join("") + "]";
+    };
+    if (!legacy) {
+      return new RegExp("[\\p{Cc}\\p{Cf}\\p{Cs}\\p{Zl}\\p{Zp}\\u034F\\u115F\\u1160\\u3164\\uFFA0\\u2800\\uFE00-\\uFE0D]|" +
+                        "(?<!" + cls(EMOJI_BASES) + ")[\\uFE0E\\uFE0F]|(?<=" + cls(KEYCAP_BASES) + ")[\\uFE0E\\uFE0F](?!\\u20E3)|" +
+                        "(?<!" + cls(IDEOGRAPH_BASES) + ")[\\u{E0100}-\\u{E01EF}]", "gu");
+    }
+    /* 予備 = 後ろ読みの無い古い JS の処理系の網 = 主な見えない字の範囲だけ (番号で組む = source に見えない字を書かない)。
+       U+FE00〜FE0D は前の字に依らず印なので拾う。U+FE0E / FE0F と U+E0100〜 は前の字を見られない (後ろ読みが無い) ので、
+       この予備では拾わない。u 旗が無い = 字は UTF-16 の片割れ 1 つずつ = 正しい対 (絵文字・CJK 拡張 B 以降の漢字) は先の
+       枝が 2 つ組で拾って visibleText が素通しにし、孤立した片割れだけを後ろの類 (D800〜DFFF) で印にする (UltraReview
+       3 回目の件 ② = 前は対を片割れ 2 つの印に割った)。対で書く見えない字 (タグの字 U+E0000〜 など) も、この予備では拾わない */
+    var ranges = [[0x0, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x34f, 0x34f], [0x61c, 0x61c], [0x115f, 0x1160],
+                  [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f],
+                  [0x2800, 0x2800], [0x3164, 0x3164], [0xfe00, 0xfe0d], [0xfeff, 0xfeff], [0xffa0, 0xffa0],
+                  [0xfff9, 0xfffb], [0xd800, 0xdfff]];
+    var esc = function (n) { var h = n.toString(16); while (h.length < 4) h = "0" + h; return "\\" + "u" + h; };
+    var span = function (r) { return esc(r[0]) + "-" + esc(r[1]); };
+    return new RegExp("[" + span([0xd800, 0xdbff]) + "][" + span([0xdc00, 0xdfff]) + "]|[" + ranges.map(span).join("") + "]", "g");
+  }
+  var HIDDEN_RE = (function () {
+    try {
+      return buildHiddenRe(false);
+    } catch (e) {            /* 後ろ読みや \p{…} を知らない古い JS の処理系 (Safari 16.4 より前) = 予備の網 */
+      HIDDEN_LEGACY = true;
+      return buildHiddenRe(true);
+    }
+  })();
+  var LEGACY_RE = buildHiddenRe(true);   /* 予備の網を今の処理系でも確かめる口 (visibleTextLegacy・試験が使う) */
+  /* re・legacy は予備の網を名指しする時だけ (省略 = 上で組んだ網)。予備の網で 2 字の当たり = 正しい対 = 素通し。本物の網
+     (u 旗) では U+E0100〜 などの 1 字も長さ 2 なので、長さだけで素通しにしない */
+  function visibleText(s, re, legacy) {
+    if (re === undefined) { re = HIDDEN_RE; legacy = HIDDEN_LEGACY; }
+    return String(s).replace(re, function (ch) {
+      if (ch === "\n" || ch === "\t") return ch;
+      if (legacy && ch.length === 2) return ch;
+      var hex = ch.codePointAt(0).toString(16).toUpperCase();
+      while (hex.length < 4) hex = "0" + hex;
+      return "⟨U+" + hex + "⟩";
+    });
+  }
+  function visibleTextLegacy(s) {
+    return visibleText(s, LEGACY_RE, true);
+  }
+
   function suggestionLabel(s, lang) {
+    return visibleText(suggestionText(s, lang));
+  }
+
+  function suggestionText(s, lang) {
     var L = I18N[lang];
     if (s && s.label !== undefined) return tx(s.label, lang);
     var dest = s.destination ? (L["dest_" + s.destination] || s.destination) : "";
@@ -584,7 +695,7 @@
   }
 
   function optionLabels(opts, picks, lang, emptyText) {
-    var labels = (picks || []).map(function (i) { return tx(((opts || [])[i] || {}).label, lang); });
+    var labels = (picks || []).map(function (i) { return visibleText(tx(((opts || [])[i] || {}).label, lang)); });
     return labels.length ? labels.join(", ") : emptyText;
   }
 
@@ -615,12 +726,12 @@
     var st = steps(card);
     var n = st.length;
     if (card.kind === "elicitation") {
-      out.head = tx(p.head, lang);
-      out.text = tx(p.text, lang);
+      out.head = visibleText(tx(p.head, lang));
+      out.text = visibleText(tx(p.text, lang));
       /* 板で描けない任意の欄 (hook が札から落とした物) は、黙って落とさず知らせる = 人が見ていない欄を空のまま送らせない */
       var omitted = (Array.isArray(p.omitted) ? p.omitted : []).filter(function (x) { return typeof x === "string" && x; });
       if (omitted.length) {
-        out.blocks.push({ label: "", text: fmt(L.omitted, { n: omitted.length, names: omitted.join(lang === "ja" ? "・" : ", ") }), mono: false });
+        out.blocks.push({ label: "", text: fmt(L.omitted, { n: omitted.length, names: omitted.map(function (x) { return visibleText(x); }).join(lang === "ja" ? "・" : ", ") }), mono: false });
       }
     }
     if (ui.step < n) {
@@ -628,20 +739,20 @@
       var multi = isMulti(card, cur);
       var defs = Array.isArray(cur.default) ? cur.default : [];
       if (card.kind === "question") {
-        out.head = tx(cur.header, lang);
-        out.question = tx(cur.question, lang);
+        out.head = visibleText(tx(cur.header, lang));
+        out.question = visibleText(tx(cur.question, lang));
       } else {
-        out.question = tx(cur.title, lang);
+        out.question = visibleText(tx(cur.title, lang));
       }
       if (card.kind === "elicitation" && n === 1 && out.question === out.text) out.question = "";
       /* 欄に題と別の説明がある時は、問いの上に出す = 題が「Confirm」だけでも、何を確かめる問いかが見える */
       if (card.kind === "elicitation" && tx(cur.description, lang)) {
-        out.blocks.push({ label: "", text: tx(cur.description, lang), mono: false });
+        out.blocks.push({ label: "", text: visibleText(tx(cur.description, lang)), mono: false });
       }
       if (n > 1) out.question = (out.question ? out.question + "  " : "") + "(" + (ui.step + 1) + " / " + n + ")";
       (Array.isArray(cur.options) ? cur.options : []).forEach(function (o, i) {
         o = o || {};
-        out.options.push({ key: "opt:" + i, label: tx(o.label, lang), desc: tx(o.description, lang),
+        out.options.push({ key: "opt:" + i, label: visibleText(tx(o.label, lang)), desc: visibleText(tx(o.description, lang)),
                            def: defs.indexOf(i) >= 0, marked: multi ? ui.marks.indexOf(i) >= 0 : null });
       });
       if (card.kind === "elicitation" && !cur.required && !multi) {
@@ -653,10 +764,10 @@
     } else {
       out.question = L.confirm;
       out.summary = st.map(function (s, k) {
-        var name = card.kind === "question" ? tx(s.header || s.question, lang) : tx(s.title || s.name, lang);
+        var name = visibleText(card.kind === "question" ? tx(s.header || s.question, lang) : tx(s.title || s.name, lang));
         /* 送る前の確かめでも、欄ごとの説明をもう一度見せる (何に答えたのかを題だけで判断させない) */
         if (card.kind === "elicitation" && tx(s.description, lang)) {
-          out.blocks.push({ label: name, text: tx(s.description, lang), mono: false });
+          out.blocks.push({ label: name, text: visibleText(tx(s.description, lang)), mono: false });
         }
         return name + ": " + optionLabels(s.options, ui.picks[k], lang, L.empty_field);
       });
@@ -707,7 +818,7 @@
         if (at >= 0) m.splice(at, 1); else m.push(i);
         m.sort(function (a, b) { return a - b; });
         u.marks = m;
-        return { ui: u, gen: false };          /* 印を付けるだけ = 並びは変わらない */
+        return { ui: u, gen: false };          /* 印を付けるだけ = 世代は進めない。走査の列は「次へ」の分だけ伸び縮みする = 光は keepLight で保つ */
       }
       return advance([i]);
     }
@@ -824,7 +935,8 @@
   var api = {
     I18N: I18N, INPUTS: INPUTS, FIXED: FIXED, fmt: fmt, tx: tx, pickLang: pickLang,
     parseDwell: parseDwell, parseScan: parseScan, mmss: mmss, Dwell: Dwell, Scan: Scan,
-    reasonsOf: reasonsOf, visibleSuggestions: visibleSuggestions, suggestionLabel: suggestionLabel,
+    reasonsOf: reasonsOf, visibleSuggestions: visibleSuggestions, suggestionLabel: suggestionLabel, visibleText: visibleText,
+    visibleTextLegacy: visibleTextLegacy, EMOJI_BASES: EMOJI_BASES, IDEOGRAPH_BASES: IDEOGRAPH_BASES,
     steps: steps, needConfirm: needConfirm, newUi: newUi, uiAfterUndo: uiAfterUndo,
     fanEligible: fanEligible, fanLayout: fanLayout, fanMark: fanMark, fanScript: fanScript, scrollDirection: scrollDirection, actionDescription: actionDescription,
     priorityState: priorityState, diffRange: diffRange,

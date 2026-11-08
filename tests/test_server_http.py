@@ -117,10 +117,11 @@ def test_page_flow_answer_undo_answer_and_hook_gets_it(live):
     assert card["payload"]["blocks"][0]["text"] == "echo 日本語 && ls" and card["payload"]["text"] == "一覧を出す"
     st, body, _, _ = srv.request("POST", "/answer", {"id": cid, "seq": card["view_seq"],
                                                      "choice": {"type": "allow_once"}, "by": "dwell",
-                                                     "presses": 1})
+                                                     "presses": 1, "tag": "page-1:1"})
     assert st == 200 and body["undo_ms"] == 200
     snap = srv.pending()
     assert snap["card"]["state"] == "deciding" and snap["card"]["choice"] == {"type": "allow_once"}
+    assert "page-1" not in json.dumps(snap["card"])        # 答えの名札は、猶予の札の写しには載せない
     assert srv.request("POST", "/undo", {"id": cid, "by": "switch", "presses": 1})[0] == 200
     card2 = srv.pending()["card"]
     assert card2["state"] == "shown" and card2["view_seq"] != card["view_seq"]
@@ -128,17 +129,18 @@ def test_page_flow_answer_undo_answer_and_hook_gets_it(live):
                                                      "choice": {"type": "stop"}, "by": "key", "presses": 1})
     assert st == 409 and body["error"] == "stale"
     assert srv.request("POST", "/answer", {"id": cid, "seq": card2["view_seq"], "choice": {"type": "stop"},
-                                           "by": "key", "presses": 1})[0] == 200
+                                           "by": "key", "presses": 1, "tag": "page-2:1"})[0] == 200
     t0 = time.monotonic()
     while True:
         st, body, _, _ = srv.request("GET", f"/wait?id={cid}")
         if body["state"] != "waiting":
             break
         assert time.monotonic() - t0 < 3
-    assert body == {"state": "answered", "answer": {"type": "stop"}}
+    assert body == {"state": "answered", "answer": {"type": "stop"}}   # hook への返りに、頁の名札は載らない
     time.sleep(0.05)
     snap = srv.pending()
     assert snap["card"] is None and snap["last"]["end"] == "answered"
+    assert snap["last"]["answered_by"] == "page-2:1"   # 渡ったのは、答え直した答え (HTTP の口から名札が届く)
     assert snap["stats"]["presses"] == {"dwell": 1, "key": 1, "switch": 1, "touch": 0, "click": 0}
     assert snap["stats"]["answers"] == 1
 
@@ -244,6 +246,43 @@ def test_bad_bodies(live):
     assert srv.request("POST", "/ask", {"kind": "nope", "payload": {}})[0] == 400
 
 
+@pytest.mark.parametrize("token", [None, "right"])
+def test_a_deeply_nested_body_is_refused_without_breaking_the_handler(live, capsys, token):
+    """本文は鍵の確かめの後に解く = 鍵の無い相手の深い入れ子 (や Python 3.10.6 までの巨大な数) で、handler の thread を
+    落とさず (返りの無いまま閉じない)、板を止めない。鍵のある相手の深い入れ子も、壊れた本文として 400 で断る
+    (Python の点検 BL-PY-03 の再現 = 鍵なしの深さ 20 万の [ で RecursionError が捕まらず、応答なしで閉じた)。"""
+    srv = live()
+    body = b"[" * 200000
+    conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+    headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+    if token:
+        headers["X-Blemma-Token"] = srv.token
+    conn.request("POST", "/ask", body=body, headers=headers)
+    resp = conn.getresponse()
+    got = (resp.status, json.loads(resp.read()))
+    conn.close()
+    time.sleep(0.1)
+    assert got == ((400, {"error": "bad_body"}) if token else (401, {"error": "token"}))
+    err = capsys.readouterr().err
+    assert "RecursionError" not in err and "Traceback" not in err
+    assert srv.request("GET", "/pending")[0] == 200          # 板はそのまま答える
+
+
+def test_the_body_is_parsed_only_after_the_token_passes(live, monkeypatch):
+    """本文の JSON を解くのは、鍵が通った後だけ = 鍵の無い要求では 1 度も解かない (外の目の 6 巡目 = 返りの形だけを見る
+    試験では、解く順を鍵の前へ戻す後戻りを見張れなかった)。"""
+    calls = []
+    real = S.Handler._parse_json
+    monkeypatch.setattr(S.Handler, "_parse_json", staticmethod(lambda raw: calls.append(raw) or real(raw)))
+    srv = live()
+    body = {"kind": "permission", "from": {"cwd": "repo"}, "payload": dict(PERM)}
+    assert srv.request("POST", "/ask", body, token=None)[0] == 401
+    assert srv.request("POST", "/ask", body, token="wrong")[0] == 401
+    assert calls == []
+    assert srv.request("POST", "/ask", body)[0] == 200
+    assert len(calls) == 1
+
+
 def test_hook_that_dies_is_disconnected_quickly(live):
     """/wait を抱えている間に hook が死んでも、抱える秒を待たずに接続の終了へ (§3.7 (a))。"""
     srv = live(replace(FAST, wait_hold=10.0, disconnect=0.3))
@@ -329,6 +368,38 @@ def test_port_in_use_is_refused(live):
     app = S.App(FAST, "t")
     with pytest.raises(OSError):
         S.make_server(app, srv.port)
+
+
+def wildcard_listener(family: str) -> socket.socket:
+    """同じ利用者の別のプログラムが全部の口で待つ形 = 0.0.0.0 か、:: の二重 (IPV6_V6ONLY=0・python -m http.server の形)。
+    作れない環境は skip にせず、理由つきで落とす (skip は通ったの外)。"""
+    if family == "ipv4":
+        sock, address = socket.socket(socket.AF_INET, socket.SOCK_STREAM), ("0.0.0.0", 0)
+    else:
+        if not socket.has_ipv6:
+            pytest.fail("この python は IPv6 の socket を作れない (:: の二重で待つ相手を作れない)")
+        sock, address = socket.socket(socket.AF_INET6, socket.SOCK_STREAM), ("::", 0)
+    try:
+        if family == "dual":
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        sock.bind(address)
+        sock.listen()
+    except OSError as e:
+        sock.close()
+        pytest.fail(f"{address[0]} で待てない ({type(e).__name__}: {e})")
+    return sock
+
+
+@pytest.mark.parametrize("family", ["ipv4", "dual"])
+def test_wildcard_listener_on_the_port_is_refused(family):
+    """0.0.0.0 / :: (二重) で待つ相手の port には起きない (1 巡目 #16 = Windows では 127.0.0.1 の bind が通り、相手の
+    127.0.0.1 の客を奪った)。相手の socket は make_server の間だけ開く。"""
+    listener = wildcard_listener(family)
+    try:
+        with pytest.raises(OSError):
+            S.make_server(S.App(FAST, "t"), listener.getsockname()[1]).server_close()   # 起きてしまったら閉じて落とす
+    finally:
+        listener.close()
 
 
 def test_run_file_write_and_remove_only_own(tmp_path):
@@ -534,3 +605,34 @@ def test_state_folder_is_readable_only_by_the_current_user_on_windows(tmp_path):
     assert len(_entries(folder)) == 1
     (folder / "run.json").write_text("{}", encoding="utf-8")              # 絞った後も、自分は書ける・読める
     assert (folder / "run.json").read_text(encoding="utf-8") == "{}"
+
+
+def test_the_board_starts_on_a_console_that_cannot_write_japanese(tmp_path):
+    """日本語を書けない console (英語の Windows の cp1252 など) でも板は起動し、案内の行で落ちない (探し役の所見 = 起動の print の
+    UnicodeEncodeError で、run.json を書いた直後に板が死んでいた)。stdout の文字コードを cp1252 の strict に固定した子で確かめる。"""
+    root = tmp_path / "repo"
+    (root / "board").mkdir(parents=True)
+    shutil.copy2(S.__file__, root / "board" / "server.py")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    env = dict(os.environ, PYTHONIOENCODING="cp1252:strict", PYTHONUTF8="0")
+    board = subprocess.Popen([sys.executable, str(root / "board" / "server.py"), "--no-browser", "--no-log", "--port", str(port)],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    try:
+        run = root / "board" / "state" / "run.json"
+        end = time.monotonic() + 10
+        while not run.exists() and time.monotonic() < end and board.poll() is None:
+            time.sleep(0.05)
+        assert run.exists(), "板が起きない"
+        time.sleep(0.5)                                                  # 案内の行を書いた後も生きている
+        assert board.poll() is None, (board.stdout.read(), board.stderr.read())
+        info = json.loads(run.read_text(encoding="utf-8"))
+        conn = http.client.HTTPConnection("127.0.0.1", info["port"], timeout=3)
+        conn.request("GET", "/pending?seq=-1", headers={"X-Blemma-Token": info["token"]})
+        assert conn.getresponse().status == 200
+        conn.close()
+    finally:
+        board.terminate()
+        board.wait(timeout=10)
+    assert b"BLEMMA: ?" in board.stdout.read()                          # 日本語は ? に替わって、行は出ている

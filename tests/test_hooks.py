@@ -136,6 +136,7 @@ GIT_RULE = {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "g
             "behavior": "allow", "destination": "localSettings"}
 DIRS = {"type": "addDirectories", "directories": ["/home/u/demo-repo"], "destination": "session"}
 BYPASS = {"type": "setMode", "mode": "bypassPermissions", "destination": "session"}
+AUTO = {"type": "setMode", "mode": "auto", "destination": "session"}
 EDIT = perm("Edit", {"file_path": "/home/u/demo-repo/README.md", "old_string": "行01: りんご",
                      "new_string": "行01: 林檎", "replace_all": False}, [ACCEPT_EDITS])
 BASH = perm("Bash", {"command": 'git commit -m "誤字を直す"', "description": "Commit the fix"}, [GIT_RULE])
@@ -187,13 +188,19 @@ def test_perm_set_mode_suggestion(board):
 
 
 def test_perm_offers_two_known_suggestions_without_bypass(board):
-    """板に出すのは公式の 6 種だけ・bypassPermissions へ移す物は除く・2 件まで。番号はこの列で引く。"""
+    """板に出すのは公式の 6 種だけ・bypassPermissions と auto へ移す物は除く (一押しで以後の確認が消える・分類器に任される =
+    1 巡目 #26)・2 件まで。番号はこの列で引く。板の答えが番号で来ても、その 2 つは書かない。"""
+    import permission as PERM
+
     third = dict(GIT_RULE, destination="userSettings")
     board.answer({"type": "allow_always", "suggestion": 1})
-    data = perm("Bash", {"command": "git commit -m x"}, [BYPASS, "junk", {"type": "unknown"}, DIRS, GIT_RULE, third])
+    data = perm("Bash", {"command": "git commit -m x"},
+                [BYPASS, AUTO, "junk", {"type": "unknown"}, DIRS, GIT_RULE, third])
     out = one_json(run("permission.py", data, board.run_file))
     assert board.payload["suggestions"] == [DIRS, GIT_RULE]
     assert out["hookSpecificOutput"]["decision"]["updatedPermissions"] == [GIT_RULE]
+    for skipped in (BYPASS, AUTO):
+        assert PERM.decide({"type": "allow_always", "suggestion": 0}, [skipped]) is None, skipped["mode"]
 
 
 @pytest.mark.parametrize("j", [0, 1, 2])
@@ -326,6 +333,36 @@ def test_perm_write_shows_the_first_40_lines(board):
     assert board.payload["text"] == "新規.md"
     assert b[1]["text"].startswith("行0\n") and "行39\n" in b[1]["text"] and "行40" not in b[1]["text"]
     assert "全 100 行" in b[1]["label"]["ja"]
+
+
+@pytest.mark.parametrize("case", ["url", "file", "description"])
+def test_perm_long_summary_is_clipped_with_a_mark(board, case):
+    """1 行の要約 (url・file 名・Bash の description) は 300 字で切り、切った時は「…」を足す (1 巡目 #28 = 印なしで切れ、
+    切れた url が別の url に見えうる)。他の道具 (WebFetch) の入力の JSON も 2,000 字で切って見出しに書く。"""
+    long = "a" * 3000
+    data = {"url": perm("WebFetch", {"url": "https://example.com/" + long, "prompt": "要約して"}),
+            "file": perm("Read", {"file_path": "/home/u/demo-repo/" + long + ".md"}),
+            "description": perm("Bash", {"command": "ls", "description": "list " + long})}[case]
+    board.answer({"type": "allow_once"})
+    one_json(run("permission.py", data, board.run_file))
+    p = board.payload
+    shown = {"url": "https://example.com/" + long, "file": long + ".md", "description": "list " + long}[case]
+    assert p["text"] == shown[:300] + "…"
+    if case == "url":
+        label = p["blocks"][-1]["label"]
+        assert label["ja"].startswith("input (先頭 2000 字・全 ") and label["ja"].endswith("続きは端末で)")
+
+
+def test_perm_write_head_over_6000_chars_names_the_char_clip(board):
+    """Write の頭の 40 行が 6,000 字を超える時は、見出しに字の切りも書く (1 巡目 #28 = 行数だけを書き、字で切った事が見えなかった)。"""
+    board.answer({"type": "allow_once"})
+    content = "".join("x" * 204 + "\n" for _ in range(50))
+    one_json(run("permission.py", perm("Write", {"file_path": "/home/u/demo-repo/長い.md", "content": content}),
+                 board.run_file))
+    b = board.payload["blocks"][1]
+    assert "先頭 6000 字" in b["label"]["ja"] and "全 50 行" in b["label"]["ja"] and "続きは端末で" in b["label"]["ja"]
+    assert b["label"]["en"].startswith("content (first 6000 chars of the first 40 of 50 lines")
+    assert b["text"] == content[:6000] + "\n…"
 
 
 def test_perm_debug_writes_only_blemma_lines(tmp_path):
@@ -720,3 +757,47 @@ def test_elicitation_field_keeps_its_description_next_to_the_title():
     assert only["title"] == "Delete all records?" and "description" not in only       # 題が無ければ、説明が題になる
     same = E.field_of("ok", {"type": "boolean", "title": "Proceed?", "description": "Proceed?"}, True, False)
     assert "description" not in same                                                  # 同じ文を 2 度出さない
+
+
+def test_visible_marks_hidden_characters_that_the_category_filter_misses():
+    """見えない字の網 = 種 (Cc/Cf/Cs/Zl/Zp) に加えて、結合文字の接着・ハングルの埋め字・点字の空白と、文字の後の異体字セレクタも
+    ⟨U+XXXX⟩ にする (外の目の走査 F3 = 札の見た目と、許可する入力が食い違いうる)。絵文字の後 (❤️) と漢字の後 (葛󠄀) の
+    異体字セレクタは正当 = そのまま。改行とタブもそのまま。"""
+    import permission as PERM
+
+    assert PERM.visible("a​b") == "a⟨U+200B⟩b"                                   # 今までどおり (Cf)
+    assert PERM.visible("r️m -rf") == "r⟨U+FE0F⟩m -rf"                           # 文字の後の異体字セレクタ
+    assert PERM.visible("x\U000e0100y") == "x⟨U+E0100⟩y"
+    assert PERM.visible("a͏bㅤcᅟᅠﾠ⠀") == \
+        "a⟨U+034F⟩b⟨U+3164⟩c⟨U+115F⟩⟨U+1160⟩⟨U+FFA0⟩⟨U+2800⟩"
+    assert PERM.visible("❤️ 葛\U000e0100 \n\t") == "❤️ 葛\U000e0100 \n\t"
+
+
+def test_visible_variation_selectors_need_an_emoji_or_ideograph_base():
+    """異体字セレクタは前の字で決める (UltraReview 2 回目の件 2・件 4)。U+FE0E / U+FE0F は Emoji の性質を持つ字の後だけ正当 =
+    記号の後なら何でも正当、では bash の > | $ = の後の見えない字が札に出ず (件 2)、キーキャップ (1 + U+FE0F + U+20E3) と
+    U+203C + U+FE0F は数字と句読点の後なので壊れて見えた (件 4)。U+E0100〜U+E01EF は CJK 統合漢字の後だけ (かな・ハングルの
+    後は印)。U+FE00〜U+FE0D は常に印。"""
+    import permission as PERM
+
+    for s, want in [(">\U0000FE0F", ">⟨U+FE0F⟩"), ("|\U0000FE0F", "|⟨U+FE0F⟩"), ("$\U0000FE0F", "$⟨U+FE0F⟩"),
+                    ("=\U0000FE0F", "=⟨U+FE0F⟩"), ("∩\U0000FE00", "∩⟨U+FE00⟩"), ("a\U000E0100", "a⟨U+E0100⟩"),
+                    ("か\U000E0100", "か⟨U+E0100⟩"), ("가\U000E0100", "가⟨U+E0100⟩"), ("x\U0000FE0E", "x⟨U+FE0E⟩")]:
+        assert PERM.visible(s) == want, ascii(s)                                  # 印になる
+    for s in ["1\U0000FE0F\U000020E3", "#\U0000FE0F\U000020E3", "*\U0000FE0F\U000020E3", "‼\U0000FE0F", "⁉\U0000FE0F",
+              "↔\U0000FE0F", "©\U0000FE0F", "❤\U0000FE0F", "\U0001F44D\U0000FE0F", "葛\U000E0100", "㐀\U000E0100",
+              "\U00020000\U000E0100"]:
+        assert PERM.visible(s) == s, ascii(s)                                     # 正当 = そのまま
+
+
+def test_visible_keycap_bases_need_the_keycap_mark():
+    """# * 数字の後の U+FE0E / U+FE0F は、次がキーキャップの印 (U+20E3) の時だけ正当 (UltraReview 2 回目の件 2 の締め)。
+    # * 数字は Emoji の性質を持つが bash の字でもある = echo hello 2 + U+FE0F + >f は札で 2>f (fd 2 の redirect) に見えて、
+    bash では 2 + U+FE0F が引数になり stdout が f へ行く (実測)。ほかの Emoji の字 (U+203C など) の後は次の字を見ない。"""
+    import permission as PERM
+
+    for s, want in [("echo hello 2\U0000FE0F>f", "echo hello 2⟨U+FE0F⟩>f"), ("#\U0000FE0F", "#⟨U+FE0F⟩"),
+                    ("*\U0000FE0F", "*⟨U+FE0F⟩"), ("9\U0000FE0Fx", "9⟨U+FE0F⟩x")]:
+        assert PERM.visible(s) == want, ascii(s)                                  # 印になる
+    for s in ["2\U0000FE0F\U000020E3", "#\U0000FE0F\U000020E3", "*\U0000FE0F\U000020E3", "‼\U0000FE0F"]:
+        assert PERM.visible(s) == s, ascii(s)                                     # 正当 = そのまま
